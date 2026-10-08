@@ -7,9 +7,9 @@ import { generateIdentity } from "../src/identity.ts";
 import type { Message } from "../src/protocol.ts";
 import { startRelay } from "../src/relay/bun.ts";
 
-// MC_TEST_RELAY=http://localhost:8787 runs the suite against another relay,
+// KIWI_TEST_RELAY=http://localhost:8787 runs the suite against another relay,
 // e.g. the Cloudflare one under `wrangler dev`.
-const external = process.env.MC_TEST_RELAY;
+const external = process.env.KIWI_TEST_RELAY;
 // Real network round trips (and process spawns) need more than Bun's 5s default.
 setDefaultTimeout(60_000);
 
@@ -43,7 +43,7 @@ const claudeDir = mkdtempSync(join(tmpdir(), "mc-claude-"));
 function mc(home: string, ...args: string[]) {
   return Bun.spawn([...MC, ...args], {
     cwd: home,
-    env: { ...process.env, MC_HOME: home, MC_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir },
+    env: { ...process.env, KIWI_HOME: home, KIWI_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -58,7 +58,7 @@ async function run(home: string, ...args: string[]): Promise<{ code: number; out
 
 async function ok(home: string, ...args: string[]): Promise<string> {
   const r = await run(home, ...args);
-  if (r.code !== 0) throw new Error(`mc ${args.join(" ")} exited ${r.code}: ${r.err}`);
+  if (r.code !== 0) throw new Error(`kiwi ${args.join(" ")} exited ${r.code}: ${r.err}`);
   return r.out;
 }
 
@@ -156,7 +156,7 @@ describe("agents coordinating through the CLI", () => {
     expect(created).toContain("owner dashboard");
     const joined = await joinVia(lead, mac, code, "proj", "mac", "macos");
     expect(joined).toContain('You are agent "mac"');
-    expect(joined).toContain("mc tail");
+    expect(joined).toContain("-c proj --as mac tail");
     await joinVia(lead, win, code, "proj", "win", "windows");
 
     // Someone else with the leaked code asks to be "win": approval refuses the duplicate name; the owner denies.
@@ -366,13 +366,13 @@ describe("images and cross-channel tasks through the CLI", () => {
 describe("several agents on one machine", () => {
   test("each agent keeps its own name, by folder; nothing guesses between them", async () => {
     const owner = home("multi-owner");
-    const shared = home("multi-shared"); // one MC_HOME, like two agents on the same Mac
+    const shared = home("multi-shared"); // one KIWI_HOME, like two agents on the same Mac
     const dirA = home("multi-a");
     const dirB = home("multi-b");
     const code = /join code: (\S+)/.exec(await ok(owner, "create", "m", "--as", "boss"))![1]!;
 
     const inDir = (dir: string, ...args: string[]) =>
-      Bun.spawn([...MC, ...args], { cwd: dir, env: { ...process.env, MC_HOME: shared, MC_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      Bun.spawn([...MC, ...args], { cwd: dir, env: { ...process.env, KIWI_HOME: shared, KIWI_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const runIn = async (dir: string, ...args: string[]) => {
       const p = inDir(dir, ...args);
       const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
@@ -405,13 +405,13 @@ describe("several agents on one machine", () => {
   test("agents in different channels on one machine never touch each other's state", async () => {
     const ownerA = home("iso-owner-a");
     const ownerB = home("iso-owner-b");
-    const shared = home("iso-shared"); // one MC_HOME for every agent on this "machine"
+    const shared = home("iso-shared"); // one KIWI_HOME for every agent on this "machine"
     const [dirA, dirB, dirC, elsewhere] = [home("iso-a"), home("iso-b"), home("iso-c"), home("iso-elsewhere")];
     const codeA = /join code: (\S+)/.exec(await ok(ownerA, "create", "a", "--as", "boss"))![1]!;
     const codeB = /join code: (\S+)/.exec(await ok(ownerB, "create", "b", "--as", "boss"))![1]!;
 
     const inDir = (dir: string, ...args: string[]) =>
-      Bun.spawn([...MC, ...args], { cwd: dir, env: { ...process.env, MC_HOME: shared, MC_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      Bun.spawn([...MC, ...args], { cwd: dir, env: { ...process.env, KIWI_HOME: shared, KIWI_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const runIn = async (dir: string, ...args: string[]) => {
       const p = inDir(dir, ...args);
       const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
@@ -452,7 +452,7 @@ describe("several agents on one machine", () => {
     const owner = home("hb-owner");
     const h = home("hb-home");
     const code = /join code: (\S+)/.exec(await ok(owner, "create", "hb", "--as", "boss"))![1]!;
-    const p = Bun.spawn([...MC, "join", code, "--as", "solo"], { cwd: h, env: { ...process.env, HOME: h, MC_HOME: h, MC_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn([...MC, "join", code, "--as", "solo"], { cwd: h, env: { ...process.env, HOME: h, KIWI_HOME: h, KIWI_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const l = lines(p);
     await l.until((x) => x.some((y) => /verification code/.test(y)));
     await ok(owner, "approve", /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!, "--yes");
@@ -466,7 +466,7 @@ describe("Claude Code hooks", () => {
   async function hook(dir: string, mcHome: string, event: string, input: object): Promise<string> {
     const p = Bun.spawn([...MC, "hook", event], {
       cwd: dir,
-      env: { ...process.env, MC_HOME: mcHome, MC_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir, CLAUDE_PROJECT_DIR: "" },
+      env: { ...process.env, KIWI_HOME: mcHome, KIWI_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir, CLAUDE_PROJECT_DIR: "" },
       stdin: new TextEncoder().encode(JSON.stringify(input)),
       stdout: "pipe",
       stderr: "pipe",
@@ -483,7 +483,7 @@ describe("Claude Code hooks", () => {
     await joinVia(o, a, code, "hk", "worker");
 
     const settings = JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8"));
-    for (const e of ["SessionStart", "UserPromptSubmit", "Stop"]) expect(JSON.stringify(settings.hooks[e])).toContain("# channel-one");
+    for (const e of ["SessionStart", "UserPromptSubmit", "Stop"]) expect(JSON.stringify(settings.hooks[e])).toContain("# kiwi");
 
     // Nothing listening: the first stop is blocked, then it nags at most every 10 minutes.
     expect(await hook(a, a, "stop", { cwd: a, session_id: "s1" })).toContain("nothing listening");
@@ -511,7 +511,7 @@ describe("Claude Code hooks", () => {
 
     // Uninstall leaves the rest of the settings alone.
     await ok(a, "hooks", "uninstall");
-    expect(JSON.stringify(JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8")))).not.toContain("channel-one");
+    expect(JSON.stringify(JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8")))).not.toContain("Kiwi");
   });
 });
 
@@ -519,7 +519,7 @@ describe("MCP server", () => {
   test("exits when its client goes away", async () => {
     const h = home("mcp-exit");
     await ok(h, "create", "e", "--as", "solo");
-    const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, MC_HOME: h, MC_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, KIWI_HOME: h, KIWI_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     await Bun.sleep(500);
     p.stdin.end();
     const code = await Promise.race([p.exited, Bun.sleep(5000).then(() => "still running")]);
@@ -533,7 +533,7 @@ describe("MCP server", () => {
     const code = /join code: (\S+)/.exec(await ok(h, "create", "m", "--as", "agent-a", "--role", "builder"))![1]!;
     await joinVia(h, other, code, "m", "agent-b");
 
-    const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, MC_HOME: h, MC_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, KIWI_HOME: h, KIWI_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     try {
       const reader = p.stdout.getReader();
       let buf = "";

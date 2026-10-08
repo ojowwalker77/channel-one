@@ -99,7 +99,7 @@ export function requestToken(req: Request): string {
   return "";
 }
 
-/** Response headers that accept the channel-one subprotocol, if the client offered it. */
+/** Response headers that accept the Kiwi subprotocol, if the client offered it. */
 export function wsHeaders(req: Request): Record<string, string> {
   return req.headers.get("sec-websocket-protocol")?.includes(WS_PROTOCOL) ? { "sec-websocket-protocol": WS_PROTOCOL } : {};
 }
@@ -153,6 +153,7 @@ export class RoomStore {
       ["kind", "TEXT NOT NULL DEFAULT 'agent'"],
       ["sponsor_user", "TEXT"],
       ["sponsor_name", "TEXT"],
+      ["received", "INTEGER"],
       ["sponsor_req", "TEXT"],
     ] as const) {
       if (!cols.has(col)) this.sql.run(`ALTER TABLE requests ADD COLUMN ${col} ${def}`);
@@ -230,7 +231,9 @@ export class RoomStore {
     if (this.exists()) throw new HttpError(409, "channel already exists");
     const { owner, members } = body;
     if (!owner || signer !== owner.pk) throw new HttpError(401, "create must be signed by the owner");
-    if (!(await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, sig: owner.sig }))) throw new HttpError(400, "bad owner signature");
+    const signed =
+      (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, v: 2, sig: owner.sig })) || (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, sig: owner.sig }));
+    if (!signed) throw new HttpError(400, "bad owner signature");
     if (!members?.some((m) => m.pk === owner.pk)) throw new HttpError(400, "the owner must be a member");
     this.init();
     this.set("owner_pk", owner.pk);
@@ -323,7 +326,8 @@ export class RoomStore {
     if (!(await verify({ room: this.roomId, pk, xpk, box, ts, sig }))) throw new HttpError(400, "bad request signature");
     if (Math.abs(Date.now() - ts) > REQUEST_TTL_MS) throw new HttpError(400, "request timestamp out of range");
     if (this.isMember(pk)) throw new HttpError(409, "already a member");
-    this.sql.run("DELETE FROM requests WHERE status = 'pending' AND ts < ?", Date.now() - REQUEST_TTL_MS);
+    // Expiry and order use when the relay received a request, not the time the requester claims.
+    this.sql.run("DELETE FROM requests WHERE status = 'pending' AND COALESCE(received, ts) < ?", Date.now() - REQUEST_TTL_MS);
     const existing = this.sql.all<{ id: string; status: string }>("SELECT id, status FROM requests WHERE pk = ?", pk)[0];
     if (existing?.status === "denied") throw new HttpError(403, "this key was denied");
     if (this.sql.all("SELECT 1 FROM members WHERE pk = ? AND active = 0", pk).length) throw new HttpError(403, "this key was removed; join with a new identity");
@@ -332,7 +336,7 @@ export class RoomStore {
     if (pending >= MAX_PENDING) throw new HttpError(429, "too many pending join requests");
     const id = crypto.randomUUID();
     this.sql.run(
-      "INSERT INTO requests (id, pk, xpk, box, sig, ts, status, kind, sponsor_user, sponsor_name) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+      "INSERT INTO requests (id, pk, xpk, box, sig, ts, status, kind, sponsor_user, sponsor_name, received) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ?)",
       id,
       pk,
       xpk,
@@ -340,8 +344,9 @@ export class RoomStore {
       sig,
       ts,
       human ? "human" : "agent",
+      // Only the sign-in user id is kept; names are looked up when the owner reads requests.
       human?.user ?? null,
-      human?.name ?? null,
+      Date.now(),
     );
     return { id, fresh: true };
   }
@@ -370,7 +375,7 @@ export class RoomStore {
       const h = this.sql.all<{ kind: string; sponsor_user: string | null }>("SELECT kind, sponsor_user FROM requests WHERE id = ?", humanRequest)[0];
       if (!h || h.kind !== "human" || h.sponsor_user !== user.user) throw new HttpError(400, "the linked request isn't yours");
     }
-    this.sql.run("UPDATE requests SET sponsor_user = ?, sponsor_name = ?, sponsor_req = ? WHERE id = ?", user.user, user.name, humanRequest ?? null, id);
+    this.sql.run("UPDATE requests SET sponsor_user = ?, sponsor_name = NULL, sponsor_req = ? WHERE id = ?", user.user, humanRequest ?? null, id);
   }
 
   requestStatus(id: string, pk: string): { status: string; sponsored: boolean; epoch?: number; keys?: Record<string, string> } {
@@ -384,7 +389,7 @@ export class RoomStore {
   pendingRequests(): (RequestBody & { kind: string; sponsorUser: string | null; sponsorName: string | null; sponsorReq: string | null })[] {
     this.migrate();
     return this.sql.all(
-      "SELECT id, pk, xpk, box, sig, ts, kind, sponsor_user AS sponsorUser, sponsor_name AS sponsorName, sponsor_req AS sponsorReq FROM requests WHERE status = 'pending' ORDER BY ts",
+      "SELECT id, pk, xpk, box, sig, ts, kind, sponsor_user AS sponsorUser, sponsor_name AS sponsorName, sponsor_req AS sponsorReq FROM requests WHERE status = 'pending' ORDER BY COALESCE(received, ts)",
     );
   }
 
@@ -620,7 +625,14 @@ export async function onHttp(store: RoomStore, req: Request, path: string, human
   }
   if (path === "/requests" && method === "GET") {
     await owner();
-    return ok({ requests: store.pendingRequests() });
+    // Names and emails come from sign-in at read time, for the owner only; the relay doesn't keep them.
+    const requests = await Promise.all(
+      store.pendingRequests().map(async (r) => {
+        const p = r.sponsorUser ? ((await human?.profile?.(r.sponsorUser).catch(() => null)) ?? null) : null;
+        return { ...r, sponsorName: p?.name ?? r.sponsorName ?? r.sponsorUser, sponsorEmail: p?.email ?? null };
+      }),
+    );
+    return ok({ requests });
   }
   const denyMatch = /^\/requests\/([0-9a-f-]{36})\/deny$/.exec(path);
   if (denyMatch && method === "POST") {

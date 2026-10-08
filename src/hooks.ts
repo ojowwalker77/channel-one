@@ -1,13 +1,13 @@
 // Claude Code hooks: make "how to join" the only instruction an agent needs.
 //
-// `mc join` / `mc create` bind the agent's working directory to its channel
+// `kiwi join` / `kiwi create` bind the agent's working directory to its channel
 // and install three user-level hooks. They do nothing in any session whose
 // directory isn't bound, so they're safe to keep installed globally:
 //
 //   SessionStart      tell the agent who it is on which channel, and to start listening
 //   UserPromptSubmit  hand the agent any unread messages along with the human's prompt
 //   Stop              don't let the agent go idle with unread messages, or deaf
-//                     (no live `mc tail` / `mc wait` listener for it)
+//                     (no live `kiwi tail` / `kiwi wait` listener for it)
 //
 // Hooks must never break a session: every failure path exits 0 silently.
 
@@ -19,9 +19,9 @@ import { home, loadConfig, updateConfig } from "./config.ts";
 import { formatMessage } from "./format.ts";
 
 /** Marks our entries in settings.json so install/uninstall can find them. */
-const MARK = "# channel-one";
+const MARK = "# kiwi";
 /** What our hooks were tagged with before the rename; cleaned up on (un)install. */
-const OLD_MARKS = ["# modelchannel"];
+const OLD_MARKS = ["# channel-one", "# modelchannel"];
 const EVENTS = { SessionStart: "session-start", UserPromptSubmit: "prompt", Stop: "stop" } as const;
 
 // ---------- directory bindings ----------
@@ -115,7 +115,7 @@ function settingsPath(): string {
   return join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "settings.json");
 }
 
-/** How to invoke this very `mc`, wherever and however it's installed. */
+/** How to invoke this very `kiwi`, wherever and however it's installed. */
 function selfCommand(): string {
   const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const compiled = !/\.(ts|js)$/.test(Bun.main);
@@ -175,12 +175,12 @@ export function hooksInstalled(): boolean {
   return Object.keys(EVENTS).every((e) => s.hooks?.[e]?.some((x) => x.hooks.some((h) => h.command.includes(MARK))));
 }
 
-/** Install automatically when an agent joins from inside Claude Code (opt out with MC_NO_HOOKS=1). */
+/** Install automatically when an agent joins from inside Claude Code (opt out with KIWI_NO_HOOKS=1). */
 export function autoInstallHooks(): string | null {
-  if (process.env.MC_NO_HOOKS || !process.env.CLAUDECODE) return null;
+  if (process.env.KIWI_NO_HOOKS || !process.env.CLAUDECODE) return null;
   try {
-    // Installed, but by an older mc (different path or marker)? Refresh them.
-    return hooksInstalled() && !JSON.stringify(readSettings()).includes(OLD_MARKS[0]!) ? null : installHooks();
+    // Installed, but by an older version (different path or marker)? Refresh them.
+    return hooksInstalled() && !OLD_MARKS.some((m) => JSON.stringify(readSettings()).includes(m)) ? null : installHooks();
   } catch {
     return null;
   }
@@ -205,18 +205,16 @@ function nagDue(session: string): boolean {
   return true;
 }
 
-/** How an agent's shell should call mc: plain `mc` when it's on PATH, else the full path. */
+/** How an agent's shell should call kiwi: plain `kiwi` when it's on PATH, else the full path. */
 export function mcBin(): string {
-  if (Bun.which("mc")) return "mc";
-  const bunGlobal = join(homedir(), ".bun", "bin", "mc");
-  if (existsSync(bunGlobal)) return bunGlobal;
+  if (Bun.which("kiwi")) return "kiwi";
+  const installed = join(homedir(), ".kiwi", "bin", process.platform === "win32" ? "kiwi.exe" : "kiwi");
+  if (existsSync(installed)) return installed;
   return selfCommand();
 }
 
-/** `mc` plus whatever flags this agent needs: none when its working directory is bound to it. */
-export function mcFor(alias: string, as: string, dir = process.cwd()): string {
-  const b = bindingFor(dir);
-  if (b && b.alias === alias && b.as === as) return mcBin();
+/** The exact command for this agent: always naming its channel and itself, so nothing else on the machine can redirect it. */
+export function mcFor(alias: string, as: string, _dir = process.cwd()): string {
   return `${mcBin()} -c ${alias} --as ${as}`;
 }
 
@@ -225,10 +223,10 @@ const MAX_CONTEXT = 6_000;
 async function unreadText(s: AgentSession): Promise<string> {
   const { messages, state } = await s.read();
   const text = messages.map((m) => formatMessage(m, state.trust.get(m.seq), state)).join("\n");
-  return text.length > MAX_CONTEXT ? `${text.slice(0, MAX_CONTEXT)}\n… (more: run \`mc log\`)` : text;
+  return text.length > MAX_CONTEXT ? `${text.slice(0, MAX_CONTEXT)}\n… (more: run \`kiwi log\`)` : text;
 }
 
-/** Entry point for `mc hook <event>`: reads the hook JSON on stdin, prints the hook's answer. */
+/** Entry point for `kiwi hook <event>`: reads the hook JSON on stdin, prints the hook's answer. */
 export async function runHook(event: string): Promise<void> {
   let input: HookInput = {};
   try {
@@ -247,7 +245,7 @@ export async function runHook(event: string): Promise<void> {
 
     if (event === "session-start") {
       const lines = [
-        `You are "${b.as}" in channel "${b.alias}" on channel-one (agents and people coordinating in real time). Your own human gives instructions; skip replies to greetings that need nothing from you.`,
+        `You are "${b.as}" in channel "${b.alias}" on Kiwi (agents and people coordinating in real time). Your own human gives instructions; skip replies to greetings that need nothing from you.`,
         listening
           ? "A listener is already running for you."
           : `First, start a Monitor on \`${mc} tail\` with the longest timeout allowed, and restart it whenever it ends. That's how messages reach you.`,
@@ -261,8 +259,8 @@ export async function runHook(event: string): Promise<void> {
     if (event === "prompt") {
       const unread = await unreadText(s);
       const lines: string[] = [];
-      if (unread) lines.push(`New channel-one messages for you (${b.alias}):`, unread);
-      if (!listening) lines.push(`You're not listening on channel-one: start a Monitor on \`${mc} tail\` (longest timeout).`);
+      if (unread) lines.push(`New Kiwi messages for you (${b.alias}):`, unread);
+      if (!listening) lines.push(`You're not listening on Kiwi: start a Monitor on \`${mc} tail\` (longest timeout).`);
       if (lines.length) process.stdout.write(lines.join("\n"));
       return;
     }
@@ -271,14 +269,14 @@ export async function runHook(event: string): Promise<void> {
       const unread = await unreadText(s);
       if (unread) {
         return process.stdout.write(
-          JSON.stringify({ decision: "block", reason: `Before stopping: unread channel-one messages for you. Handle them (answer with \`${mc} reply N "…"\`):\n${unread}` }),
+          JSON.stringify({ decision: "block", reason: `Before stopping: unread Kiwi messages for you. Handle them (answer with \`${mc} reply N "…"\`):\n${unread}` }),
         );
       }
       if (!listening && !input.stop_hook_active && nagDue(input.session_id ?? "")) {
         return process.stdout.write(
           JSON.stringify({
             decision: "block",
-            reason: `You're about to go idle with nothing listening for you on channel-one, so messages from other agents won't wake you. Start a Monitor on \`${mc} tail\` (longest timeout allowed), then stop.`,
+            reason: `You're about to go idle with nothing listening for you on Kiwi, so messages from other agents won't wake you. Start a Monitor on \`${mc} tail\` (longest timeout allowed), then stop.`,
           }),
         );
       }

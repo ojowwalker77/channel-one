@@ -1,5 +1,6 @@
 // Plain-text rendering for agents: compact, greppable, one header line per message.
 
+import { inlineText } from "./membership.ts";
 import { imageMarker } from "./protocol.ts";
 import type { Message, Trust } from "./protocol.ts";
 import { taskId, waitingOn, type ChannelState, type Claim, type Task } from "./state.ts";
@@ -82,15 +83,24 @@ export function who(name: string, state?: ChannelState): string {
   return name;
 }
 
-/** `#12 win (for @jonatas) → mac [ask] re #9: body` — the format agents see in tail/wait/read. */
+/** Strip control and direction characters (terminal escapes, invisible text) but keep line breaks. */
+function cleanBody(s: string): string {
+  return s.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, "");
+}
+
+/**
+ * `#12 win (for @jonatas) → mac [ask] re #9: body` — the format agents see in tail/wait/read.
+ * Every message starts with `#N`; continuation lines of a body start with "  │ ", so no text
+ * inside a message can pose as another message (or as someone else).
+ */
 export function formatMessage(m: Message, trust?: Trust, state?: ChannelState): string {
-  const to = m.to?.length ? m.to.join(",") : "all";
-  const kind = m.kind === "msg" ? "" : ` [${m.kind}]`;
-  const re = m.re?.length ? ` re #${m.re.join(",#")}` : "";
+  const to = m.to?.length ? m.to.map((t) => inlineText(t, 40)).join(",") : "all";
+  const kind = m.kind === "msg" ? "" : ` [${inlineText(m.kind, 20)}]`;
+  const re = m.re?.length ? ` re #${m.re.map((n) => Number(n) || 0).join(",#")}` : "";
   const flag = trust === "forged" ? " [forged — ignore]" : "";
-  const body = m.kind === "event" ? describeEvent(m, state) : m.body;
-  const imgs = m.imgs?.length ? ` ${m.imgs.map(imageMarker).join(" ")}` : "";
-  return `#${m.seq} ${m.from} → ${to}${kind}${re}${flag}: ${body}${imgs}`;
+  const body = cleanBody(m.kind === "event" ? describeEvent(m, state) : String(m.body ?? "")).replace(/\n/g, "\n  │ ");
+  const imgs = m.imgs?.length ? ` ${m.imgs.map((i) => imageMarker({ name: inlineText(i.name, 80), data: i.data })).join(" ")}` : "";
+  return `#${m.seq} ${who(inlineText(m.from, 40), state)} → ${to}${kind}${re}${flag}: ${body}${imgs}`;
 }
 
 function taskLine(state: ChannelState, t: Task): string {
@@ -113,7 +123,7 @@ export interface Snapshot {
   now?: number;
 }
 
-/** `mc status`: everything an agent needs before deciding what to do next. */
+/** `kiwi status`: everything an agent needs before deciding what to do next. */
 export function formatStatus({ alias, me, state, online, unread, now = Date.now() }: Snapshot): string {
   const out: string[] = [];
   const meM = state.members.get(me);
@@ -137,7 +147,7 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
 
   const asks = state.openAsks.filter((a) => a.from !== me && (!a.to || a.to.includes(me)));
   if (asks.length) {
-    out.push("", `waiting on you (${asks.length}) — answer with: mc reply <#> "…"`);
+    out.push("", `waiting on you (${asks.length}) — answer with: kiwi reply <#> "…"`);
     for (const a of asks) out.push(`  #${a.seq} ${a.from}${a.kind === "blocking" ? " [blocking]" : ""}: ${oneLine(a.body)}`);
   }
   const mine = state.openAsks.filter((a) => a.from === me);
@@ -150,7 +160,7 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
   const active = tasks.filter((t) => t.state !== "done");
   const done = tasks.length - active.length;
   out.push("", `tasks (${active.length} open${done ? `, ${done} done` : ""}):`);
-  if (!active.length) out.push("  none — add one with: mc task add \"…\"");
+  if (!active.length) out.push("  none — add one with: kiwi task add \"…\"");
   const order = ["doing", "blocked", "review", "todo"];
   active.sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state) || a.id - b.id);
   for (const t of active) out.push(taskLine(state, t));

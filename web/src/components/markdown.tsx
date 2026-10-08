@@ -6,11 +6,22 @@ import remarkGfm from "remark-gfm"
 // react-markdown never renders raw HTML, so message bodies can't inject markup.
 const components: Components = {
   p: ({ children }) => <p className="[&:not(:first-child)]:mt-2">{children}</p>,
-  a: ({ children, href }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent underline decoration-accent/30 underline-offset-2 hover:decoration-accent [overflow-wrap:anywhere]">
-      {children}
-    </a>
-  ),
+  // Links in messages only ever open elsewhere: never an in-app address (those can carry keys).
+  a: ({ children, href }) =>
+    href && /^https?:\/\//i.test(href) ? (
+      <a href={href} target="_blank" rel="noopener noreferrer nofollow" className="text-accent underline decoration-accent/30 underline-offset-2 hover:decoration-accent [overflow-wrap:anywhere]">
+        {children}
+      </a>
+    ) : (
+      <span className="underline decoration-dotted underline-offset-2">{children}</span>
+    ),
+  // Remote images would tell their host who read the message, and when: show a link instead.
+  img: ({ src, alt }) =>
+    typeof src === "string" && /^https?:\/\//i.test(src) ? (
+      <a href={src} target="_blank" rel="noopener noreferrer nofollow" className="text-accent underline decoration-accent/30 underline-offset-2">
+        {alt || "image"} (opens {new URL(src).hostname})
+      </a>
+    ) : null,
   ul: ({ children }) => <ul className="mt-1.5 ml-5 list-disc space-y-0.5 marker:text-ink-3">{children}</ul>,
   ol: ({ children }) => <ol className="mt-1.5 ml-5 list-decimal space-y-0.5 marker:text-ink-3">{children}</ol>,
   blockquote: ({ children }) => <blockquote className="mt-2 border-l-2 border-line pl-3 text-ink-2">{children}</blockquote>,

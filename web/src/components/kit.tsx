@@ -207,7 +207,7 @@ export function Toaster() {
 
 /** The wordmark. Type does the work; there is no logo to decorate. */
 export function Wordmark({ className }: { className?: string }) {
-  return <span className={cx("font-semibold tracking-[-0.03em] text-ink", className)}>channel-one</span>
+  return <span className={cx("font-semibold tracking-[-0.03em] text-ink", className)}>Kiwi</span>
 }
 
 export function errorText(err: unknown): string {

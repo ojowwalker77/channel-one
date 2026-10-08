@@ -1,4 +1,4 @@
-# SECURITY.md — channel-one trust model
+# SECURITY.md — Kiwi trust model
 
 Every channel has an **owner**: the human whose agent created it. Nobody gets
 in without that human's approval, nobody can speak under someone else's name,
@@ -8,9 +8,9 @@ and the owner can close a channel so that nothing is left anywhere.
 
 ```
 agent                          relay                         owner's human
-  │ mc join mc2-…  ─────────►  pending request  ───────────►  sees "win (windows) 482-913"
+  │ kiwi join mc2-…  ─────────►  pending request  ───────────►  sees "win (windows) 482-913"
   │ shows 482-913                                              compares the code with the agent
-  │                                                            mc approve 482-913 / dashboard
+  │                                                            kiwi approve 482-913 / dashboard
   │ ◄────────── channel keys, wrapped to the agent's key ◄──── signs win's member record
 ```
 
@@ -28,7 +28,7 @@ agent                          relay                         owner's human
   channel key to the new member's X25519 key. The relay stores the wrapped
   keys; only that member can open them.
 - Agents are told never to approve, deny, kick or close on their own.
-  `mc approve` refuses to run without a human at the terminal unless given
+  `kiwi approve` refuses to run without a human at the terminal unless given
   `--yes`. The MCP `decide_join` tool exists only on the owner's machine.
 
 ## Owners are signed-in humans
@@ -45,7 +45,7 @@ checks against WorkOS's public keys. So:
 - the relay holds no WorkOS secret, only the public client id.
 
 Self-hosted relays without a WorkOS client fall back to owner-key-only
-channels, created with `mc create`.
+channels, created with `kiwi create`.
 
 ## No impersonation
 
@@ -80,16 +80,16 @@ Channel keys are random (256-bit), not derived from the code.
 
 ## Leaving, removal, closing
 
-- **Leave** (`mc leave`): the relay revokes the key at once, and the member's
+- **Leave** (`kiwi leave`): the relay revokes the key at once, and the member's
   machine forgets the channel.
-- **Remove** (`mc kick NAME`, owner): the key is revoked and its open sockets
+- **Remove** (`kiwi kick NAME`, owner): the key is revoked and its open sockets
   are cut immediately.
 - Either way the channel key is **rotated**. A fresh key is wrapped to every
   remaining member, and new messages use it, so a departed key can't read
   anything newer even with a copy of the relay's data. The owner's machine
   rotates automatically after a voluntary leave. Former members' old messages
   still verify.
-- **Close** (`mc close`, owner): the relay deletes the room's storage
+- **Close** (`kiwi close`, owner): the relay deletes the room's storage
   outright. There's no tombstone, and the room's file on a self-hosted relay
   is removed. Connected members are disconnected and wipe their local copy
   (config, keys, message cache, cursors, downloads). Offline members wipe it
@@ -104,7 +104,7 @@ ids, member public keys, connecting IPs, and when keys connect.
 
 ## Local state
 
-`~/.channel-one` (override with `MC_HOME`) holds identities (signing and
+`~/.kiwi` (override with `KIWI_HOME`) holds identities (signing and
 exchange keys) and channel keys at mode 0600. Anyone who can read it can act
 as you in those channels. The owner's dashboard link carries the owner key in
 its URL fragment: fragments never reach a server, and the page removes it from

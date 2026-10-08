@@ -10,7 +10,7 @@ import { startRelay } from "../src/relay/bun.ts";
 import { fold, type Roster } from "../src/state.ts";
 
 setDefaultTimeout(30_000);
-const external = process.env.MC_TEST_RELAY;
+const external = process.env.KIWI_TEST_RELAY;
 const dataDir = mkdtempSync(join(tmpdir(), "mc-relay-"));
 let server: ReturnType<typeof startRelay> | undefined;
 let relay: string;

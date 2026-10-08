@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import { Channel, ChannelGone, myChannels, type HumanSession, type MyChannel, type SendOptions } from "@mc/client.ts"
-import { decodeJoinCode, fromB64url, newRoomId, type ChannelAccess } from "@mc/crypto.ts"
+import { Channel, ChannelGone, myChannels, ownerStatement, type HumanSession, type MyChannel, type SendOptions } from "@mc/client.ts"
+import { decodeJoinCode, fromB64url, newRoomId, ownerFingerprint, type ChannelAccess } from "@mc/crypto.ts"
 import { generateIdentity, withExchangeKey, type Identity } from "@mc/identity.ts"
 import { handleFor, type JoinRequest, type Member } from "@mc/membership.ts"
 import type { Message, Presence } from "@mc/protocol.ts"
@@ -24,7 +24,7 @@ export interface Online {
 
 /**
  * `#<join code>` or `#<join code>&id=<identity>`: the second form comes from
- * `mc web` on the owner's machine (or `--sign-in`) and carries a member key.
+ * `kiwi web` on the owner's machine (or `--sign-in`) and carries a member key.
  * Fragments never reach the server.
  */
 /** `#sponsor=<request>&code=<join code>&agent=<name>`: the link an agent prints for its human. */
@@ -99,6 +99,10 @@ export function loadMember(code: string): StoredMember | null {
 }
 
 export function saveMember(m: StoredMember): void {
+  // This browser's key for a channel is never swapped for another one: losing an owner key
+  // would leave the channel impossible to manage or close.
+  const prior = loadMember(m.code)
+  if (prior && prior.identity.pk !== m.identity.pk) throw new Error(`this browser is already in this channel as ${prior.identity.name}`)
   localStorage.setItem(MEMBER_KEY(m.code), JSON.stringify(m))
   localStorage.removeItem(PENDING_KEY(m.code))
   rememberChannel(m.code)
@@ -107,6 +111,12 @@ export function saveMember(m: StoredMember): void {
 
 export function loadPending(code: string): PendingJoin | null {
   return read<PendingJoin>(PENDING_KEY(code))
+}
+
+/** Drop a join request this browser was waiting on, and nothing else. */
+export function forgetPending(code: string): void {
+  localStorage.removeItem(PENDING_KEY(code))
+  changed()
 }
 
 export function savePending(p: PendingJoin): void {
@@ -325,15 +335,29 @@ function rememberChannel(code: string): void {
 
 /**
  * Become a member from a link that carries a member key (the owner's, from
- * `mc web`): fetch and unwrap this key's channel keys.
+ * `kiwi web`): fetch and unwrap this key's channel keys.
  */
 export async function memberFromLink(code: string, identity: Identity): Promise<StoredMember> {
-  const { roomId } = decodeJoinCode(code)
+  const { roomId, ownerFp } = decodeJoinCode(code)
+  const prior = loadMember(code)
+  if (prior) {
+    if (prior.identity.pk === identity.pk) return prior
+    throw new Error(`This browser is already in this channel as ${prior.identity.name}. A link can’t replace that key.`)
+  }
   const id = await withExchangeKey(identity)
   const probe = new Channel({ roomId, ownerPk: "", ownerXpk: "", epoch: 0, keys: {} }, location.origin, id)
   const info = await probe.info()
-  const ch = new Channel({ roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: info.epoch, keys: {} }, location.origin, id)
-  await ch.refreshKeys()
+  // The link's channel must be the one the code names: same owner, properly signed.
+  if ((await ownerFingerprint(info.ownerPk)) !== ownerFp) throw new Error("The relay is serving a different owner than this code names.")
+  const statement = await ownerStatement(roomId, info)
+  if (!statement) throw new Error("This channel’s owner keys aren’t signed.")
+  const ch = new Channel({ roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: info.epoch, keys: {}, signedKeys: statement === "signed-keys" }, location.origin, id)
+  try {
+    await ch.refreshKeys()
+  } catch {
+    // Never let a bad link touch what this browser already holds.
+    throw new Error("The key in this link isn’t a member of this channel.")
+  }
   const m: StoredMember = { code, identity: id, access: ch.access, at: Date.now() }
   saveMember(m)
   return m
@@ -383,7 +407,10 @@ export async function askToJoin(code: string, name: string, role?: string, token
 export async function checkJoin(p: PendingJoin): Promise<"pending" | "denied" | StoredMember> {
   const st = await Channel.joinStatus(location.origin, p.code, p.identity, p.requestId)
   if (st.status !== "approved") return st.status
-  const m: StoredMember = { code: p.code, identity: p.identity, access: st.access, at: Date.now() }
+  // The owner may have admitted this person under a handle from their account: speak under that one.
+  const record = (await new Channel(st.access, location.origin, p.identity).members().catch(() => [])).find((x) => x.pk === p.identity.pk)
+  const identity = record && record.name !== p.identity.name ? { ...p.identity, name: record.name } : p.identity
+  const m: StoredMember = { code: p.code, identity, access: st.access, at: Date.now() }
   saveMember(m)
   return m
 }

@@ -60,9 +60,33 @@ export interface Member extends MemberInfo {
   at: number;
   /** False once they've left or been removed. */
   active: boolean;
+  /** The relay lists this key as a member, but there's no record the owner signed for it. */
+  unverified?: boolean;
 }
 
 export const NAME_RE = /^[\p{L}\p{N}_.\-]{1,32}$/u;
+
+/** Names nobody may be admitted under: they'd read as someone or something else. */
+export const RESERVED_NAMES = new Set(["human", "owner", "you", "me", "all", "everyone", "system", "kiwi", "admin"]);
+
+/** How names compare: two names that look the same are the same. */
+export function nameKey(n: string): string {
+  return n.normalize("NFKC").toLowerCase();
+}
+
+/**
+ * Text someone else wrote, made safe for one line of agent-facing output: no
+ * control or direction characters, no line breaks (so it can't pose as another
+ * message), bounded length.
+ */
+export function inlineText(s: unknown, max = 120): string {
+  if (typeof s !== "string") return "";
+  const flat = s
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
 
 const ad = (room: string) => `mc-member\n${room}`;
 
@@ -121,7 +145,7 @@ export interface JoinRequest extends MemberInfo {
   code: string;
   ts: number;
   /** Who vouched for it (the relay verified them with WorkOS); null until its human approves. */
-  sponsoredBy: { user: string; name: string } | null;
+  sponsoredBy: { user: string; name: string; email?: string | null } | null;
   /** The request that admits the sponsor alongside the agent, to supervise it. */
   sponsorRequest: string | null;
 }

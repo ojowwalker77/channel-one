@@ -17,6 +17,8 @@ export interface ChannelAccess {
   epoch: number;
   /** Channel key per epoch (base64url), so history stays readable after rotations. */
   keys: Record<string, string>;
+  /** The owner signed that every key it wraps carries its signature: accept no other. */
+  signedKeys?: boolean;
 }
 
 // Plain implementations (no Buffer) so this module also runs in the browser.

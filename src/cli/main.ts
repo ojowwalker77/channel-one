@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// mc: the channel-one command line.
+// kiwi: the Kiwi command line.
 
 import { parseArgs } from "node:util";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -7,7 +7,7 @@ import { join as joinPath } from "node:path";
 import { AgentSession, Rejected } from "../agent.ts";
 import { loadImages } from "../attach.ts";
 import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
-import { DEFAULT_RELAY, forgetIdentities, forgetIdentity, forgetMember, identitiesIn, loadConfig, loadIdentity, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
+import { DEFAULT_RELAY, forgetIdentity, forgetMember, identitiesIn, loadConfig, loadIdentity, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
 import { describeMember, type JoinRequest } from "../membership.ts";
 import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "../format.ts";
@@ -17,55 +17,55 @@ import { parseTaskId, taskId, type ChannelState } from "../state.ts";
 import { VERSION } from "../version.ts";
 import { autoInstallHooks, bindDirectory, bindingFor, hooksInstalled, installHooks, mcFor, runHook, uninstallHooks } from "../hooks.ts";
 
-const HELP = `mc ${VERSION} — real-time coordination for AI agents
+const HELP = `kiwi ${VERSION} — real-time coordination for AI agents
 
 Start
-  mc create [alias] --as NAME [--role R]       create a channel you own; prints the join code and your dashboard
-  mc join <code> [alias] --as NAME [--role R]  ask to join; waits until the owner approves, then prints instructions
-  mc prompt                                    print instructions to paste into an agent
-  mc status                                    members, tasks, claims, facts, questions waiting on you
+  kiwi create [alias] --as NAME [--role R]       create a channel you own; prints the join code and your dashboard
+  kiwi join <code> [alias] --as NAME [--role R]  ask to join; waits until the owner approves, then prints instructions
+  kiwi prompt                                    print instructions to paste into an agent
+  kiwi status                                    members, tasks, claims, facts, questions waiting on you
 
 Membership (the owner's human decides who gets in)
-  mc requests                                  pending join requests and their verification codes (owner)
-  mc approve CODE|NAME [--yes]                 let a requester in, after your human confirms the code (owner)
-  mc deny CODE|NAME                            refuse a request; that key can't ask again (owner)
-  mc members                                   who's in, their roles, and their key fingerprints
-  mc kick NAME                                 remove a member and rotate the channel key (owner)
-  mc leave                                     leave the channel and forget it on this machine
-  mc close [--yes]                             delete the channel everywhere: nothing is kept (owner)
+  kiwi requests                                  pending join requests and their verification codes (owner)
+  kiwi approve CODE [--yes]                      let a requester in, after your human confirms the code (owner)
+  kiwi deny CODE                                 refuse a request; that key can't ask again (owner)
+  kiwi members                                   who's in, their roles, and their key fingerprints
+  kiwi kick NAME                                 remove a member and rotate the channel key (owner)
+  kiwi leave                                     leave the channel and forget it on this machine
+  kiwi close [--yes]                             delete the channel everywhere: nothing is kept (owner)
 
 Claude Code
-  mc hooks install|uninstall|status            hooks that keep agents listening and hand them unread messages
+  kiwi hooks install|uninstall|status            hooks that keep agents listening and hand them unread messages
                                                (installed automatically when an agent joins from Claude Code)
 
 Talk
-  mc send "text" [--to a,b|role:x] [--kind K] [--re N] [--image f.png …]   (text from stdin if omitted)
-  mc ask --to NAME "question" [--wait 10m]     with --wait, block until answered and print the answer
-  mc reply N "text" [--kind done]              answer message #N (goes to its sender)
-  mc save N [dir]                              download message #N's images into dir
-  mc tail [--for-me|--all] [--json]            stream messages for you, one per line (for a Monitor)
-  mc wait [--for-me|--all] [--timeout 10m]     block until the next message for you, print, exit
-  mc watch --webhook URL [--for-me|--all]      POST every message to URL as JSON (wakes threads, CI, phones)
-  mc read [--for-me|--all]                     print unread messages without blocking
-  mc log [-n 30] [--all]                       recent history (doesn't mark read)
+  kiwi send "text" [--to a,b|role:x] [--kind K] [--re N] [--image f.png …]   (text from stdin if omitted)
+  kiwi ask --to NAME "question" [--wait 10m]     with --wait, block until answered and print the answer
+  kiwi reply N "text" [--kind done]              answer message #N (goes to its sender)
+  kiwi save N [dir]                              download message #N's images into dir
+  kiwi tail [--for-me|--all] [--json]            stream messages for you, one per line (for a Monitor)
+  kiwi wait [--for-me|--all] [--timeout 10m]     block until the next message for you, print, exit
+  kiwi watch --webhook URL [--for-me|--all]      POST every message to URL as JSON (wakes threads, CI, phones)
+  kiwi read [--for-me|--all]                     print unread messages without blocking
+  kiwi log [-n 30] [--all]                       recent history (doesn't mark read)
 
 Coordinate
-  mc task add "title" [--owner NAME] [--after T3,T4] [--detail "…"]
-  mc task claim|start|block|review|done|drop T7 ["note"]
-   mc task assign T7 NAME          mc task note T7 "…"          mc task show T7
-   mc tasks [--mine] [--all] [--global]   (--global: every channel you joined)
-  mc claim PATH… [--ttl 30m] [--note "…"]      reserve paths before editing; fails if someone holds them
-  mc release [PATH…]                           release (all of yours if none given)
-  mc claims
-  mc set KEY VALUE    mc get KEY    mc unset KEY    mc facts
-  mc who                                       who is listening right now
+  kiwi task add "title" [--owner NAME] [--after T3,T4] [--detail "…"]
+  kiwi task claim|start|block|review|done|drop T7 ["note"]
+   kiwi task assign T7 NAME          kiwi task note T7 "…"          kiwi task show T7
+   kiwi tasks [--mine] [--all] [--global]   (--global: every channel you joined)
+  kiwi claim PATH… [--ttl 30m] [--note "…"]      reserve paths before editing; fails if someone holds them
+  kiwi release [PATH…]                           release (all of yours if none given)
+  kiwi claims
+  kiwi set KEY VALUE    kiwi get KEY    kiwi unset KEY    kiwi facts
+  kiwi who                                       who is listening right now
 
 More
-  mc hello [--role R] [--about "…"]            update your role/description
-  mc mcp [--push]                              serve the channel as MCP tools (--push: Claude Code channel)
-  mc channels    mc use ALIAS --as NAME (bind this directory)    mc web [--sign-in]    mc relay [--port 8787]
+  kiwi hello [--role R] [--about "…"]            update your role/description
+  kiwi mcp [--push]                              serve the channel as MCP tools (--push: Claude Code channel)
+  kiwi channels    kiwi use ALIAS --as NAME (bind this directory)    kiwi web [--sign-in]    kiwi relay [--port 8787]
 
-Options: -c/--channel ALIAS, --as NAME (or MC_CHANNEL / MC_AS), --relay URL (or MC_RELAY)
+Options: -c/--channel ALIAS, --as NAME (or KIWI_CHANNEL / KIWI_AS), --relay URL (or KIWI_RELAY)
 Kinds: ${CHAT_KINDS.join(", ")}. Task states: ${TASK_STATES.join(", ")}.`;
 
 const { values: opt, positionals: args } = parseArgs({
@@ -108,7 +108,7 @@ const { values: opt, positionals: args } = parseArgs({
 });
 
 function die(msg: string, code = 1): never {
-  process.stderr.write(`mc: ${msg}\n`);
+  process.stderr.write(`kiwi: ${msg}\n`);
   process.exit(code);
 }
 
@@ -119,7 +119,7 @@ function out(line: string): void {
 const NAME_RE = /^[\p{L}\p{N}_.\-]{1,32}$/u;
 
 function relayUrl(): string {
-  return (opt.relay ?? process.env.MC_RELAY ?? DEFAULT_RELAY).replace(/\/+$/, "");
+  return (opt.relay ?? process.env.KIWI_RELAY ?? DEFAULT_RELAY).replace(/\/+$/, "");
 }
 
 /** The channel (and agent) this command acts for, once resolved: the only ones it may ever forget. */
@@ -130,18 +130,18 @@ function channelAlias(): string {
   const all = Object.keys(cfg.channels);
   // Explicit flags win; otherwise the channel this directory is bound to; otherwise the only one.
   // Never a machine-wide default: other agents on this machine are in other channels.
-  const alias = opt.channel ?? process.env.MC_CHANNEL ?? bindingFor(process.cwd())?.alias ?? (all.length === 1 ? all[0] : undefined);
+  const alias = opt.channel ?? process.env.KIWI_CHANNEL ?? bindingFor(process.cwd())?.alias ?? (all.length === 1 ? all[0] : undefined);
   if (!alias) {
     if (!all.length) die("no channel: create or join one first");
-    die(`this directory isn't bound to a channel, and this machine is in several (${all.join(", ")}); pass -c ALIAS --as NAME, or run mc from the directory you joined in`);
+    die(`this directory isn't bound to a channel, and this machine is in several (${all.join(", ")}); pass -c ALIAS --as NAME, or run kiwi from the directory you joined in`);
   }
-  if (!cfg.channels[alias]) die(`unknown channel "${alias}" (see: mc channels)`);
+  if (!cfg.channels[alias]) die(`unknown channel "${alias}" (see: kiwi channels)`);
   acting.alias = alias;
   return alias;
 }
 
 function agentName(ch?: ChannelConfig): string {
-  const explicit = opt.as ?? process.env.MC_AS;
+  const explicit = opt.as ?? process.env.KIWI_AS;
   let raw = explicit;
   if (!raw && ch) {
     // Several agents can share a machine (and a channel): never guess between them.
@@ -188,7 +188,7 @@ function images(): { name: string; mime: string; data: string }[] | undefined {
 }
 
 function taskArg(i = 2): number {
-  const raw = args[i] ?? die(`usage: mc task ${args[1]} T<id>`);
+  const raw = args[i] ?? die(`usage: kiwi task ${args[1]} T<id>`);
   return parseTaskId(raw) ?? die(`"${raw}" isn't a task id (like T12)`);
 }
 
@@ -204,7 +204,11 @@ async function text(from: number): Promise<string> {
 const OWNER_NAME = "human";
 
 function joinedAlias(roomId: string, alias?: string): string {
-  return alias ?? `ch-${roomId.slice(0, 6)}`;
+  const name = alias ?? `ch-${roomId.slice(0, 6)}`;
+  // An alias names one channel. Reusing it for another would strand that channel's keys.
+  const taken = loadConfig().channels[name];
+  if (taken && taken.roomId !== roomId) die(`the alias "${name}" is already another channel on this machine; pick a different one`);
+  return name;
 }
 
 /** Owner dashboard link: the code plus the owner key, so the page can approve and post as the human. */
@@ -215,19 +219,28 @@ async function ownerLink(c: ChannelConfig): Promise<string> {
 
 async function findRequest(s: AgentSession, needle: string): Promise<JoinRequest> {
   const reqs = await s.requests();
+  // Only the 6-digit code identifies a request: a name is whatever the requester typed, and
+  // anyone holding the join code can ask under the same one.
   const digits = needle.replace(/\D/g, "");
-  const r = reqs.find((x) => (digits.length === 6 && x.code.replace("-", "") === digits) || x.name === needle);
-  if (!r) die(reqs.length ? `no pending request matches "${needle}" (see: mc requests)` : "no pending join requests");
+  if (digits.length !== 6) die(`use the 6-digit verification code (see: kiwi requests), not a name`);
+  const matches = reqs.filter((x) => x.code.replace("-", "") === digits);
+  if (matches.length > 1) die(`several requests share code ${needle}; deny them all and ask the requester to try again`);
+  const r = matches[0];
+  if (!r) die(reqs.length ? `no pending request has code ${needle} (see: kiwi requests)` : "no pending join requests");
   return r;
 }
 
 /** Bind this directory to the agent, and make sure Claude Code keeps it listening. */
 function settleIn(alias: string, name: string): void {
-  if (!bindDirectory(process.cwd(), { alias, as: name })) {
-    process.stderr.write(`mc: not binding ${process.cwd()} (too broad); run mc from your project folder, or pass --as ${name}\n`);
+  const here = bindingFor(process.cwd());
+  if (here && (here.alias !== alias || here.as !== name)) {
+    // Another agent already works from this folder; taking it over would make it act as us.
+    process.stderr.write(`kiwi: ${process.cwd()} already belongs to ${here.as} in "${here.alias}"; not rebinding. Use -c ${alias} --as ${name} here.\n`);
+  } else if (!bindDirectory(process.cwd(), { alias, as: name })) {
+    process.stderr.write(`kiwi: not binding ${process.cwd()} (too broad); run kiwi from your project folder, or pass --as ${name}\n`);
   }
   const installed = autoInstallHooks();
-  if (installed) process.stderr.write(`mc: installed Claude Code hooks (${installed}) so this agent keeps listening; \`mc hooks uninstall\` removes them\n`);
+  if (installed) process.stderr.write(`kiwi: installed Claude Code hooks (${installed}) so this agent keeps listening; \`kiwi hooks uninstall\` removes them\n`);
 }
 
 async function confirm(question: string): Promise<boolean> {
@@ -250,7 +263,7 @@ const commands: Record<string, () => Promise<void>> = {
     if ((await relayConfig(relay).catch(() => ({ workosClientId: null }))).workosClientId) {
       die(
         `channels on ${relay} are created and owned by a signed-in human, not an agent.\n` +
-          `  Ask your human to open ${relay}/ , sign in, create the channel, and give you its join line (mc join mc2-… --as ${name}).`,
+          `  Ask your human to open ${relay}/ , sign in, create the channel, and give you its join line (kiwi join mc2-… --as ${name}).`,
       );
     }
     const roomId = newRoomId();
@@ -272,7 +285,7 @@ const commands: Record<string, () => Promise<void>> = {
     settleIn(alias, name);
     process.stderr.write(`created "${alias}": you (${OWNER_NAME}) own it, ${name} is in (key ${fingerprint(agent.pk)})\n`);
     out(`join code: ${code}`);
-    out(`  Agents ask to join with: mc join ${code}${relay === DEFAULT_RELAY ? "" : ` --relay ${relay}`} --as <name> [--role <role>]`);
+    out(`  Agents ask to join with: kiwi join ${code}${relay === DEFAULT_RELAY ? "" : ` --relay ${relay}`} --as <name> [--role <role>]`);
     out(`  The code only lets them ask. Your human approves each one after checking its 6-digit verification code.`);
     out(`owner dashboard (private, it carries the owner key): ${await ownerLink(cfg.channels[alias]!)}`);
     out("");
@@ -280,7 +293,7 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async join() {
-    const code = (args[1] ?? die("usage: mc join <code> [alias] --as NAME [--role ROLE]")).trim();
+    const code = (args[1] ?? die("usage: kiwi join <code> [alias] --as NAME [--role ROLE]")).trim();
     try {
       decodeJoinCode(code);
     } catch {
@@ -322,7 +335,7 @@ const commands: Record<string, () => Promise<void>> = {
         out("your human approved you; waiting for the channel owner…");
       }
       if (st.status === "denied") {
-        forgetIdentities(decodeJoinCode(code).roomId);
+        forgetIdentity(name, decodeJoinCode(code).roomId);
         die("the owner denied this request");
       }
       if (st.status === "approved") {
@@ -355,8 +368,8 @@ const commands: Record<string, () => Promise<void>> = {
     const sub = args[1] ?? "status";
     if (sub === "install") return out(`installed hooks in ${installHooks()}`);
     if (sub === "uninstall") return out(`removed hooks from ${uninstallHooks()}`);
-    if (sub === "status") return out(hooksInstalled() ? "installed" : "not installed (mc hooks install)");
-    die("usage: mc hooks install|uninstall|status");
+    if (sub === "status") return out(hooksInstalled() ? "installed" : "not installed (kiwi hooks install)");
+    die("usage: kiwi hooks install|uninstall|status");
   },
 
   async requests() {
@@ -371,7 +384,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   async approve() {
     const s = await session();
-    const r = await findRequest(s, args[1] ?? die("usage: mc approve CODE|NAME [--name NEWNAME] [--yes]"));
+    const r = await findRequest(s, args[1] ?? die("usage: kiwi approve CODE [--name NEWNAME] [--yes]"));
     const name = opt.name ?? r.name;
     if (!NAME_RE.test(name) || name === OWNER_NAME) die(`"${name}" isn't an allowed name; approve with --name NAME`);
     const taken = (await s.members(true)).find((m) => m.name === name && m.active);
@@ -385,7 +398,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   async deny() {
     const s = await session();
-    const r = await findRequest(s, args[1] ?? die("usage: mc deny CODE|NAME"));
+    const r = await findRequest(s, args[1] ?? die("usage: kiwi deny CODE"));
     await s.ownerCh!.deny(r.id);
     out(`denied ${r.name} (${r.code})`);
   },
@@ -401,16 +414,16 @@ const commands: Record<string, () => Promise<void>> = {
   async kick() {
     const s = await session();
     if (!s.ownerCh) die("only the channel owner can remove members");
-    const name = args[1] ?? die("usage: mc kick NAME");
+    const name = args[1] ?? die("usage: kiwi kick NAME");
     const m = (await s.members(true)).find((x) => x.name === name && x.active) ?? die(`"${name}" isn't a member`);
-    if (m.owner) die("the owner can't be removed; `mc close` deletes the channel");
+    if (m.owner) die("the owner can't be removed; `kiwi close` deletes the channel");
     await s.ownerCh.remove(m.pk);
     out(`removed ${name}; rotated the channel key so they can't read anything new`);
   },
 
   async leave() {
     const s = await session();
-    if (s.ownerCh) die("you own this channel; `mc close` deletes it for everyone");
+    if (s.ownerCh) die("you own this channel; `kiwi close` deletes it for everyone");
     await s.ch.leave();
     forgetMember(s.alias, s.me);
     out(`${s.me} left "${s.alias}"; its key is gone from this machine`);
@@ -436,15 +449,15 @@ const commands: Record<string, () => Promise<void>> = {
     }
   },
 
-  /** Bind this directory to a channel and agent, so plain `mc` here acts as them. */
+  /** Bind this directory to a channel and agent, so plain `kiwi` here acts as them. */
   async use() {
     const cfg = loadConfig();
-    const alias = args[1] ?? die("usage: mc use <alias> --as NAME");
+    const alias = args[1] ?? die("usage: kiwi use <alias> --as NAME");
     const c = cfg.channels[alias] ?? die(`unknown channel "${alias}"`);
     const name = agentName(c);
     if (!identitiesIn(c.roomId).includes(name)) die(`${name} has no key in "${alias}" on this machine`);
     if (!bindDirectory(process.cwd(), { alias, as: name })) die("won't bind your home folder or the filesystem root; cd into a project first");
-    out(`mc in ${process.cwd()} now acts as ${name} in "${alias}"`);
+    out(`kiwi in ${process.cwd()} now acts as ${name} in "${alias}"`);
   },
 
   async status() {
@@ -477,7 +490,7 @@ const commands: Record<string, () => Promise<void>> = {
   async ask() {
     const s = await session();
     const body = await text(1);
-    if (!body.trim()) die('usage: mc ask --to NAME "question" [--wait 10m]');
+    if (!body.trim()) die('usage: kiwi ask --to NAME "question" [--wait 10m]');
     const waitSec = opt.wait ? parseDuration(opt.wait) : 0;
     const kind = (opt.kind ?? "ask") as Kind;
     const { seq, replies } = await s.ask(body, { to: list(opt.to), kind, waitSec, imgs: images() });    if (!waitSec) return out(`asked #${seq}`);
@@ -487,7 +500,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   async reply() {
     const s = await session();
-    const seq = Number((args[1] ?? "").replace(/^#/, "")) || die('usage: mc reply N "text"');
+    const seq = Number((args[1] ?? "").replace(/^#/, "")) || die('usage: kiwi reply N "text"');
     const body = await text(2);
     if (!body.trim()) die("empty reply");
     out(`sent #${await s.reply(seq, body, (opt.kind ?? "msg") as Kind, images())}`);
@@ -495,7 +508,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   async save() {
     const s = await session();
-    const seq = Number((args[1] ?? "").replace(/^#/, "")) || die("usage: mc save N [dir]");
+    const seq = Number((args[1] ?? "").replace(/^#/, "")) || die("usage: kiwi save N [dir]");
     const { messages } = await s.state();
     const m = messages.find((x) => x.seq === seq) ?? die(`no message #${seq}`);
     if (!m.imgs?.length) die(`message #${seq} has no images`);
@@ -528,7 +541,7 @@ const commands: Record<string, () => Promise<void>> = {
       client: "tail",
       forMe: opt["for-me"],
       all: opt.all,
-      onStatus: (msg) => process.stderr.write(`mc: ${msg}\n`),
+      onStatus: (msg) => process.stderr.write(`kiwi: ${msg}\n`),
       onNotice: (text) => out(`* ${text}`),
     });
   },
@@ -552,7 +565,7 @@ const commands: Record<string, () => Promise<void>> = {
         forMe: opt["for-me"],
         all: opt.all,
         signal: ac.signal,
-        onStatus: (msg) => process.stderr.write(`mc: ${msg}\n`),
+        onStatus: (msg) => process.stderr.write(`kiwi: ${msg}\n`),
         onNotice: (text) => {
           out(`* ${text}`);
           woke();
@@ -564,11 +577,11 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async watch() {
-    const url = opt.webhook ?? die("usage: mc watch --webhook URL [--for-me|--all]");
+    const url = opt.webhook ?? die("usage: kiwi watch --webhook URL [--for-me|--all]");
     if (!/^https?:\/\//.test(url)) die("--webhook must be an http(s) URL");
     const secret = opt.secret ?? process.env.MC_WEBHOOK_SECRET;
     const s = await session();
-    process.stderr.write(`mc: watching ${s.alias} as ${s.me}, POSTing to ${url}\n`);
+    process.stderr.write(`kiwi: watching ${s.alias} as ${s.me}, POSTing to ${url}\n`);
     await s.listen(
       async (m, state) => {
         const body = JSON.stringify({
@@ -586,23 +599,23 @@ const commands: Record<string, () => Promise<void>> = {
         try {
           const res = await fetch(url, {
             method: "POST",
-            headers: { "content-type": "application/json", ...(secret ? { "x-mc-secret": secret } : {}) },
+            headers: { "content-type": "application/json", ...(secret ? { "x-kiwi-secret": secret } : {}) },
             body,
           });
-          if (!res.ok) process.stderr.write(`mc: webhook ${res.status} for #${m.seq}\n`);
+          if (!res.ok) process.stderr.write(`kiwi: webhook ${res.status} for #${m.seq}\n`);
         } catch (err) {
-          process.stderr.write(`mc: webhook failed for #${m.seq}: ${err instanceof Error ? err.message : err}\n`);
+          process.stderr.write(`kiwi: webhook failed for #${m.seq}: ${err instanceof Error ? err.message : err}\n`);
         }
       },
       {
         client: "watch",
         forMe: opt["for-me"],
         all: opt.all,
-        onStatus: (msg) => process.stderr.write(`mc: ${msg}\n`),
+        onStatus: (msg) => process.stderr.write(`kiwi: ${msg}\n`),
         onNotice: (text) =>
           void fetch(url, {
             method: "POST",
-            headers: { "content-type": "application/json", ...(secret ? { "x-mc-secret": secret } : {}) },
+            headers: { "content-type": "application/json", ...(secret ? { "x-kiwi-secret": secret } : {}) },
             body: JSON.stringify({ channel: s.alias, kind: "notice", text, ts: Date.now() }),
           }).catch(() => {}),
       },
@@ -611,11 +624,11 @@ const commands: Record<string, () => Promise<void>> = {
 
   async task() {
     const s = await session();
-    const sub = args[1] ?? die("usage: mc task add|claim|start|block|review|done|drop|assign|note|show …");
+    const sub = args[1] ?? die("usage: kiwi task add|claim|start|block|review|done|drop|assign|note|show …");
     const STATE_FOR: Record<string, TaskState> = { start: "doing", block: "blocked", review: "review", done: "done" };
     if (sub === "add") {
       const title = await text(2);
-      if (!title.trim()) die('usage: mc task add "title" [--owner NAME] [--after T3]');
+      if (!title.trim()) die('usage: kiwi task add "title" [--owner NAME] [--after T3]');
       const after = list(opt.after)?.map((x) => parseTaskId(x) ?? die(`"${x}" isn't a task id`));
       return out(`added ${taskId(await s.taskAdd(title, { owner: opt.owner, after, detail: opt.detail }))}`);
     }
@@ -630,8 +643,8 @@ const commands: Record<string, () => Promise<void>> = {
     if (sub === "claim") state = await s.taskClaim(id);
     else if (sub in STATE_FOR) state = await s.taskUpdate(id, { state: STATE_FOR[sub], note });
     else if (sub === "drop") state = await s.taskUpdate(id, { owner: null, note });
-    else if (sub === "assign") state = await s.taskUpdate(id, { owner: args[3] ?? die("usage: mc task assign T7 NAME") });
-    else if (sub === "note") state = await s.taskUpdate(id, { note: note ?? die('usage: mc task note T7 "…"') });
+    else if (sub === "assign") state = await s.taskUpdate(id, { owner: args[3] ?? die("usage: kiwi task assign T7 NAME") });
+    else if (sub === "note") state = await s.taskUpdate(id, { note: note ?? die('usage: kiwi task note T7 "…"') });
     else die(`unknown task command "${sub}"`);
     const t = state.tasks.get(id)!;
     out(`${taskId(id)} ${t.state}${t.owner ? ` @${t.owner}` : ""}: ${t.title}`);
@@ -641,7 +654,7 @@ const commands: Record<string, () => Promise<void>> = {
     if (opt.global) {
       const cfg = loadConfig();
       const aliases = Object.keys(cfg.channels).sort();
-      if (!aliases.length) die("no channels yet (see: mc create, mc join)");
+      if (!aliases.length) die("no channels yet (see: kiwi create, kiwi join)");
       for (const alias of aliases) {
         const c = cfg.channels[alias]!;
         const sess = await AgentSession.open(alias, c, agentName(c));
@@ -661,7 +674,7 @@ const commands: Record<string, () => Promise<void>> = {
   async claim() {
     const s = await session();
     const paths = args.slice(1);
-    if (!paths.length) die('usage: mc claim PATH… [--ttl 30m] [--note "…"]');
+    if (!paths.length) die('usage: kiwi claim PATH… [--ttl 30m] [--note "…"]');
     const state = await s.claim(paths, parseDuration(opt.ttl ?? "30m"), opt.note);
     out(formatClaims({ ...state, claims: state.claims.filter((c) => c.owner === s.me) }));
   },
@@ -680,14 +693,14 @@ const commands: Record<string, () => Promise<void>> = {
   async set() {
     const s = await session();
     const [key, ...rest] = args.slice(1);
-    if (!key || !rest.length) die("usage: mc set KEY VALUE");
+    if (!key || !rest.length) die("usage: kiwi set KEY VALUE");
     await s.setFact(key, rest.join(" "));
     out(`${key} = ${rest.join(" ")}`);
   },
 
   async get() {
     const s = await session();
-    const key = args[1] ?? die("usage: mc get KEY");
+    const key = args[1] ?? die("usage: kiwi get KEY");
     const f = (await s.state()).state.facts.get(key);
     if (!f) die(`no fact "${key}"`, 2);
     out(f.value);
@@ -695,7 +708,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   async unset() {
     const s = await session();
-    await s.delFact(args[1] ?? die("usage: mc unset KEY"));
+    await s.delFact(args[1] ?? die("usage: kiwi unset KEY"));
   },
 
   async facts() {
@@ -716,7 +729,7 @@ const commands: Record<string, () => Promise<void>> = {
     const c = loadConfig().channels[alias]!;
     if (c.owner && !opt["sign-in"]) {
       out(await ownerLink(c));
-      process.stderr.write("mc: this link carries the owner key (approve, remove, close); keep it private\n");
+      process.stderr.write("kiwi: this link carries the owner key (approve, remove, close); keep it private\n");
       return;
     }
     let link = `${c.relay}/#${encodeURIComponent(c.code)}`;
@@ -726,8 +739,8 @@ const commands: Record<string, () => Promise<void>> = {
       link += `&id=${b64url(new TextEncoder().encode(JSON.stringify(id)))}`;
     }
     out(link);
-    if (opt["sign-in"]) process.stderr.write("mc: this link carries your identity; keep it private\n");
-    else process.stderr.write("mc: opening it asks to join; the owner approves the browser like any agent\n");
+    if (opt["sign-in"]) process.stderr.write("kiwi: this link carries your identity; keep it private\n");
+    else process.stderr.write("kiwi: opening it asks to join; the owner approves the browser like any agent\n");
   },
 
   async prompt() {
@@ -743,14 +756,14 @@ const commands: Record<string, () => Promise<void>> = {
   async relay() {
     const { startRelay } = await import("../relay/bun.ts");
     const server = startRelay({ port: Number(opt.port ?? 8787), dataDir: opt.data });
-    process.stderr.write(`channel-one relay listening on ${server.url}\n`);
+    process.stderr.write(`Kiwi relay listening on ${server.url}\n`);
     await new Promise(() => {});
   },
 };
 
 export function agentPrompt(alias: string, agent: string): string {
   const mc = mcFor(alias, agent);
-  return `You are agent "${agent}" in channel "${alias}" on channel-one. Other agents (often on other machines) and the user ("human") are on it too. Use it to coordinate directly and fast. Never wait for the user to relay anything.
+  return `You are agent "${agent}" in channel "${alias}" on Kiwi. Other agents (often on other machines) and the user ("human") are on it too. Use it to coordinate directly and fast. Never wait for the user to relay anything.
 
 ## Stay reachable (always)
 Run a Monitor on \`${mc} tail\` with the longest timeout allowed. In Claude Code, hooks remind you if you stop listening and hand you anything you missed. Each line is a message for you:
@@ -795,7 +808,7 @@ if (import.meta.main) {
     process.exit(0);
   }
   const shortcuts: Record<string, string> = { s: "status", t: "tasks" };
-  const run = commands[shortcuts[cmd] ?? cmd] ?? die(`unknown command "${cmd}" (see: mc help)`);
+  const run = commands[shortcuts[cmd] ?? cmd] ?? die(`unknown command "${cmd}" (see: kiwi help)`);
   try {
     await run();
     if (cmd !== "mcp" && cmd !== "relay") process.exit(0);

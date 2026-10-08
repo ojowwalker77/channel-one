@@ -16,8 +16,8 @@ import {
   verificationCode,
   type ChannelAccess,
 } from "./crypto.ts";
-import { sign, verify, type Identity } from "./identity.ts";
-import { makeRecord, openRecord, sealRecord, type JoinRequest, type Member, type MemberInfo } from "./membership.ts";
+import { sign, signText, verify, verifyText, type Identity } from "./identity.ts";
+import { handleFor, inlineText, makeRecord, NAME_RE, nameKey, openRecord, RESERVED_NAMES, sealRecord, type JoinRequest, type Member, type MemberInfo } from "./membership.ts";
 import {
   CLOSE_CLOSED,
   CLOSE_REMOVED,
@@ -25,6 +25,7 @@ import {
   PING,
   PROTOCOL_VERSION,
   WS_PROTOCOL,
+  wellFormed,
   type Envelope,
   type Event,
   type ImageAttachment,
@@ -109,19 +110,52 @@ interface Info {
   title?: { iv: string; ct: string } | null;
 }
 
+/**
+ * Check the owner's signature over its own keys. Channels made by this version
+ * sign a second promise into it (v: 2): every channel key the owner hands out
+ * carries its signature. The relay can't fake or strip that promise, so a
+ * member of such a channel never accepts a key the owner didn't sign.
+ */
+export async function ownerStatement(roomId: string, info: { ownerPk: string; ownerXpk: string; ownerSig: string }): Promise<"signed-keys" | "legacy" | null> {
+  if (await verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, v: 2, sig: info.ownerSig })) return "signed-keys";
+  if (await verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, sig: info.ownerSig })) return "legacy";
+  return null;
+}
+
 /** Fetch a room's public info and check it against the owner pinned in the join code. */
-async function pinnedInfo(relay: string, code: string): Promise<{ roomId: string; info: Info }> {
+async function pinnedInfo(relay: string, code: string): Promise<{ roomId: string; info: Info; signedKeys: boolean }> {
   const { roomId, ownerFp } = decodeJoinCode(code);
   const info = await call<Info>(relay, roomId, "/info");
   if ((await ownerFingerprint(info.ownerPk)) !== ownerFp) throw new Error("this relay is serving a different owner than the join code names; refusing");
-  if (!(await verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, sig: info.ownerSig }))) throw new Error("the channel owner's keys aren't signed; refusing");
-  return { roomId, info };
+  const statement = await ownerStatement(roomId, info);
+  if (!statement) throw new Error("the channel owner's keys aren't signed; refusing");
+  return { roomId, info, signedKeys: statement === "signed-keys" };
 }
 
-async function unwrapKeys(id: Identity, roomId: string, wrapped: Record<string, string>): Promise<Record<string, string>> {
+const keyStatement = (room: string, e: number | string, memberPk: string, box: string) => `kiwi-key\n${room}\n${e}\n${memberPk}\n${box}`;
+
+/** Wrap a channel key for one member, signed by the owner so the member knows it came from them. */
+async function wrapFor(owner: Identity, roomId: string, e: number | string, memberPk: string, memberXpk: string, key: string): Promise<string> {
+  const box = await sealTo(memberXpk, key, keyInfo(roomId, e));
+  return JSON.stringify({ box, sig: await signText(owner, keyStatement(roomId, e, memberPk, box)) });
+}
+
+/** Unwrap this member's keys, keeping only ones the owner signed (or, on older channels, unsigned ones). */
+async function unwrapKeys(id: Identity, roomId: string, wrapped: Record<string, string>, ownerPk: string, signedOnly: boolean): Promise<Record<string, string>> {
   if (!id.xsk) throw new Error("identity has no exchange key");
   const out: Record<string, string> = {};
-  for (const [e, box] of Object.entries(wrapped)) {
+  for (const [e, w] of Object.entries(wrapped)) {
+    let box = w;
+    if (w.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(w) as { box?: unknown; sig?: unknown };
+        if (typeof parsed.box !== "string" || typeof parsed.sig !== "string") continue;
+        if (!(await verifyText(ownerPk, parsed.sig, keyStatement(roomId, e, id.pk, parsed.box)))) continue;
+        box = parsed.box;
+      } catch {
+        continue;
+      }
+    } else if (signedOnly) continue;
     const k = await openFrom(id.xsk, box, keyInfo(roomId, e));
     if (k) out[e] = k;
   }
@@ -180,12 +214,12 @@ export class Channel {
   ): Promise<{ code: string; access: ChannelAccess }> {
     if (!owner.xpk) throw new Error("owner identity has no exchange key");
     const key = newChannelKey();
-    const ownerSig = await sign(owner, { room: roomId, xpk: owner.xpk });
+    const ownerSig = await sign(owner, { room: roomId, xpk: owner.xpk, v: 2 });
     const enroll = async (id: Identity, info: MemberInfo, isOwner: boolean) => ({
       pk: id.pk,
       xpk: id.xpk!,
       rec: await sealRecord(key, await makeRecord(owner, roomId, { ...info, pk: id.pk, xpk: id.xpk!, owner: isOwner })),
-      keys: { "0": await sealTo(id.xpk!, key, keyInfo(roomId, 0)) },
+      keys: { "0": await wrapFor(owner, roomId, 0, id.pk, id.xpk!, key) },
     });
     const members = [await enroll(owner, ownerInfo, true), ...(await Promise.all(agents.map((a) => enroll(a, a.info, false))))];
     const sealedTitle = title ? await seal(key, roomId, { name: title }) : undefined;
@@ -195,7 +229,7 @@ export class Channel {
       human,
       body: JSON.stringify({ owner: { pk: owner.pk, xpk: owner.xpk, sig: ownerSig.sig }, members, ...(sealedTitle ? { title: sealedTitle } : {}) }),
     });
-    const access: ChannelAccess = { roomId, ownerPk: owner.pk, ownerXpk: owner.xpk, epoch: 0, keys: { "0": key } };
+    const access: ChannelAccess = { roomId, ownerPk: owner.pk, ownerXpk: owner.xpk, epoch: 0, keys: { "0": key }, signedKeys: true };
     return { code: encodeJoinCode({ roomId, ownerFp: await ownerFingerprint(owner.pk) }), access };
   }
 
@@ -227,12 +261,12 @@ export class Channel {
     id: Identity,
     requestId: string,
   ): Promise<{ status: "pending" | "denied"; sponsored: boolean } | { status: "approved"; sponsored: boolean; access: ChannelAccess }> {
-    const { roomId, info } = await pinnedInfo(relay, code);
+    const { roomId, info, signedKeys } = await pinnedInfo(relay, code);
     const r = await call<{ status: string; sponsored?: boolean; epoch?: number; keys?: Record<string, string> }>(relay, roomId, `/requests/${requestId}`, { identity: id });
     const sponsored = !!r.sponsored;
     if (r.status !== "approved") return { status: r.status === "denied" ? "denied" : "pending", sponsored };
-    const keys = await unwrapKeys(id, roomId, r.keys ?? {});
-    return { status: "approved", sponsored, access: { roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: r.epoch ?? 0, keys } };
+    const keys = await unwrapKeys(id, roomId, r.keys ?? {}, info.ownerPk, signedKeys);
+    return { status: "approved", sponsored, access: { roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: r.epoch ?? 0, keys, signedKeys } };
   }
 
   /** What an agent's human sees before vouching for it: its kind, state and verification code. Nothing secret. */
@@ -255,8 +289,9 @@ export class Channel {
         const r = await this.request<{ epoch: number; keys: Record<string, string> }>("/keys").catch((err) => {
           throw gone(err);
         });
-        const keys = await unwrapKeys(this.identity, this.roomId, r.keys);
-        this.access = { ...this.access, epoch: r.epoch, keys: { ...this.access.keys, ...keys } };
+        const keys = await unwrapKeys(this.identity, this.roomId, r.keys, this.access.ownerPk, !!this.access.signedKeys);
+        // A key this member already holds for an epoch never changes: nobody may swap it.
+        this.access = { ...this.access, epoch: r.epoch, keys: { ...keys, ...this.access.keys } };
         this.onAccess?.(this.access);
       } finally {
         this.refreshing = null;
@@ -290,6 +325,8 @@ export class Channel {
       }
       const member = key ? await openRecord(key, m.rec, this.roomId, this.access.ownerPk, m.pk) : null;
       if (member) out.push({ ...member, active: !!m.active });
+      // A key the relay says is a member, with no record we can verify: show it, so the owner can remove it.
+      else if (m.active) out.push({ name: `unverified-${m.pk.slice(0, 6)}`, pk: m.pk, xpk: m.xpk, owner: false, at: 0, active: true, unverified: true });
     }
     return out;
   }
@@ -319,6 +356,7 @@ export class Channel {
         kind?: string;
         sponsorUser?: string | null;
         sponsorName?: string | null;
+        sponsorEmail?: string | null;
         sponsorReq?: string | null;
       }[];
     }>("/requests");
@@ -330,10 +368,11 @@ export class Channel {
       try {
         info = JSON.parse(raw ?? "{}") as MemberInfo;
       } catch {}
+      // Whoever holds the join code chose these: keep them to one safe line each.
       out.push({
-        name: info.name,
-        role: info.role,
-        about: info.about,
+        name: inlineText(info.name, 40) || "?",
+        role: inlineText(info.role, 60) || undefined,
+        about: inlineText(info.about, 200) || undefined,
         // The relay knows (from sign-in) whether a person or an agent asked; it's not up to the requester.
         kind: r.kind === "human" ? "human" : "agent",
         id: r.id,
@@ -341,7 +380,7 @@ export class Channel {
         xpk: r.xpk,
         ts: r.ts,
         code: await verificationCode(this.roomId, r.pk),
-        sponsoredBy: r.sponsorUser ? { user: r.sponsorUser, name: r.sponsorName ?? r.sponsorUser } : null,
+        sponsoredBy: r.sponsorUser ? { user: r.sponsorUser, name: inlineText(r.sponsorName, 80) || r.sponsorUser, email: r.sponsorEmail ?? null } : null,
         sponsorRequest: r.sponsorReq ?? null,
       });
     }
@@ -353,14 +392,28 @@ export class Channel {
    * also joins to supervise it (unless they're already a member). Returns
    * every member admitted.
    */
-  /** Refuse to admit a second key under a name someone in the channel already has. */
+  /**
+   * Refuse names that can't be admitted: invalid ones (every client would drop the record and the
+   * member would read invisibly), reserved ones, and any that matches a current member's, even
+   * when it only looks the same.
+   */
   private async assertNamesFree(names: string[]): Promise<void> {
-    const taken = new Set((await this.members()).filter((m) => m.active).map((m) => m.name));
+    const taken = new Set((await this.members()).filter((m) => m.active).map((m) => nameKey(m.name)));
     const seen = new Set<string>();
     for (const n of names) {
-      if (taken.has(n) || seen.has(n)) throw new Error(`"${n}" is already someone's name in this channel; they need to ask again under another name`);
-      seen.add(n);
+      if (!NAME_RE.test(n)) throw new Error(`"${inlineText(n, 40)}" isn't a valid name (1-32 letters, digits, _ . or -); they need to ask again under another name`);
+      if (RESERVED_NAMES.has(nameKey(n))) throw new Error(`"${n}" is a reserved name; they need to ask again under another name`);
+      if (taken.has(nameKey(n)) || seen.has(nameKey(n))) throw new Error(`"${n}" is already someone's name in this channel; they need to ask again under another name`);
+      seen.add(nameKey(n));
     }
+  }
+
+  /** A handle no current member has: "jonatas-walker", or "jonatas-walker-2" if that's taken. */
+  private async freeHandle(base: string): Promise<string> {
+    const taken = new Set((await this.members()).filter((m) => m.active).map((m) => nameKey(m.name)));
+    let name = RESERVED_NAMES.has(nameKey(base)) ? `${base}-1` : base;
+    for (let i = 2; taken.has(nameKey(name)); i++) name = `${base.slice(0, 29)}-${i}`;
+    return name;
   }
 
   async approveWithSponsor(req: JoinRequest, as?: MemberInfo): Promise<Member[]> {
@@ -373,9 +426,10 @@ export class Channel {
       if (!handle && req.sponsorRequest) {
         const human = (await this.requests()).find((r) => r.id === req.sponsorRequest);
         if (human) {
-          await this.assertNamesFree([human.name, as?.name ?? req.name]);
-          admitted.push(await this.approve(human));
-          handle = human.name;
+          await this.assertNamesFree([as?.name ?? req.name]);
+          const person = await this.approve(human);
+          admitted.push(person);
+          handle = person.name;
         }
       }
     }
@@ -386,8 +440,11 @@ export class Channel {
   /** Admit a requester: sign its record, and wrap every epoch key to it. */
   async approve(req: JoinRequest, as?: MemberInfo, sponsorHandle?: string): Promise<Member> {
     this.ownerOnly();
-    await this.assertNamesFree([as?.name ?? req.name]);
     const kind = req.kind ?? "agent";
+    // A person is admitted under a handle made from their signed-in account, not one they typed, so
+    // nobody can ask to join as "bob-smith". (Their browser adopts it when it learns it's in.)
+    if (kind === "human" && req.sponsoredBy && !as?.name) as = { ...as, name: await this.freeHandle(handleFor(req.sponsoredBy.name, req.sponsoredBy.email ?? undefined)) };
+    await this.assertNamesFree([as?.name ?? req.name]);
     const sponsor = req.sponsoredBy ? { ...req.sponsoredBy, ...(kind === "human" ? { handle: as?.name ?? req.name } : sponsorHandle ? { handle: sponsorHandle } : {}) } : undefined;
     const info: MemberInfo = {
       name: as?.name ?? req.name,
@@ -400,7 +457,7 @@ export class Channel {
     const current = this.access.keys[String(this.access.epoch)]!;
     const rec = await makeRecord(this.identity, this.roomId, { ...info, pk: req.pk, xpk: req.xpk });
     const keys: Record<string, string> = {};
-    for (const [e, k] of Object.entries(this.access.keys)) keys[e] = await sealTo(req.xpk, k, keyInfo(this.roomId, e));
+    for (const [e, k] of Object.entries(this.access.keys)) keys[e] = await wrapFor(this.identity, this.roomId, e, req.pk, req.xpk, k);
     await this.request("/members", { method: "POST", body: JSON.stringify({ pk: req.pk, xpk: req.xpk, rec: await sealRecord(current, rec), keys, request: req.id }) });
     return { pk: req.pk, xpk: req.xpk, ...info, owner: false, at: rec.at, active: true };
   }
@@ -420,12 +477,14 @@ export class Channel {
   /** New channel key, wrapped to every remaining member. */
   async rotate(): Promise<number> {
     this.ownerOnly();
-    const members = (await this.request<{ members: { pk: string; xpk: string; active: number }[] }>("/members")).members.filter((m) => m.active);
+    // The new key goes only to members whose admission the owner signed, under the exchange key in
+    // that record: never to whatever list or key the relay hands back.
+    const members = (await this.members()).filter((m) => m.active && !m.unverified);
     const { epoch } = await this.info();
     const next = epoch + 1;
     const key = newChannelKey();
     const keys: Record<string, string> = {};
-    for (const m of members) keys[m.pk] = await sealTo(m.xpk, key, keyInfo(this.roomId, next));
+    for (const m of members) keys[m.pk] = await wrapFor(this.identity, this.roomId, next, m.pk, m.xpk, key);
     await this.request("/epochs", { method: "POST", body: JSON.stringify({ epoch: next, keys }) });
     this.access = { ...this.access, epoch: next, keys: { ...this.access.keys, [String(next)]: key } };
     this.onAccess?.(this.access);
@@ -496,8 +555,9 @@ export class Channel {
   async decrypt(env: Envelope): Promise<Message | null> {
     const key = await this.keyFor(env.e ?? 0);
     if (!key) return null;
-    const p = (await open(key, this.roomId, env.iv, env.ct)) as Payload | null;
-    if (!p || p.v !== PROTOCOL_VERSION || typeof p.body !== "string" || typeof p.from !== "string") return null;
+    const p = (await open(key, this.roomId, env.iv, env.ct).catch(() => null)) as unknown;
+    // Anything that isn't a well-formed message is dropped here, before any client folds it.
+    if (!wellFormed(p)) return null;
     // Drop malformed attachments rather than the whole message.
     const imgs = Array.isArray(p.imgs)
       ? p.imgs.filter(

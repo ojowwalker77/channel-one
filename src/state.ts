@@ -150,108 +150,114 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
   let head = 0;
 
   for (const m of messages) {
-    head = Math.max(head, m.seq);
-    const at = m.rts ?? m.ts;
+    // One bad message must never take the whole channel down for everyone: skip it.
+    try {
+      head = Math.max(head, m.seq);
+      const at = m.rts ?? m.ts;
 
-    // Identity: only a key the owner admitted under this name may speak for it.
-    const member = members.get(m.from);
-    const t: Trust = m.sigOk && !!m.pk && !!keysByName.get(m.from)?.has(m.pk) ? "verified" : "forged";
-    trust.set(m.seq, t);
-    if (t === "forged" || !member) {
-      rejected.set(m.seq, member ? `not signed by ${m.from}'s key` : `${m.from} isn't a member`);
-      continue;
-    }
-    member.lastSeen = Math.max(member.lastSeen, at);
-    member.messages++;
+      // Identity: only a key the owner admitted under this name may speak for it.
+      const member = members.get(m.from);
+      const t: Trust = m.sigOk && !!m.pk && !!keysByName.get(m.from)?.has(m.pk) ? "verified" : "forged";
+      trust.set(m.seq, t);
+      if (t === "forged" || !member) {
+        rejected.set(m.seq, member ? `not signed by ${m.from}'s key` : `${m.from} isn't a member`);
+        continue;
+      }
+      member.lastSeen = Math.max(member.lastSeen, at);
+      member.messages++;
 
-    for (const r of m.re ?? []) {
-      let set = answered.get(r);
-      if (!set) answered.set(r, (set = new Set()));
-      set.add(m.from);
-    }
+      for (const r of m.re ?? []) {
+        let set = answered.get(r);
+        if (!set) answered.set(r, (set = new Set()));
+        set.add(m.from);
+      }
 
-    const ev = m.ev;
-    if (m.kind !== "event" || !ev) continue;
-    const reject = (why: string) => rejected.set(m.seq, why);
+      const ev = m.ev;
+      if (m.kind !== "event" || !ev) continue;
+      const reject = (why: string) => rejected.set(m.seq, why);
 
-    switch (ev.op) {
-      case "hello":
-        if (ev.role !== undefined) member.role = ev.role || undefined;
-        if (ev.about !== undefined) member.about = ev.about || undefined;
-        break;
+      switch (ev.op) {
+        case "hello":
+          if (ev.role !== undefined) member.role = ev.role || undefined;
+          if (ev.about !== undefined) member.about = ev.about || undefined;
+          break;
 
-      case "task.add":
-        tasks.set(m.seq, {
-          id: m.seq,
-          title: String(ev.title).slice(0, 200),
-          detail: ev.detail,
-          state: "todo",
-          owner: ev.owner || undefined,
-          createdBy: m.from,
-          createdAt: at,
-          updatedAt: at,
-          after: (ev.after ?? []).filter((d) => tasks.has(d)),
-          notes: [],
-        });
-        break;
+        case "task.add":
+          tasks.set(m.seq, {
+            id: m.seq,
+            title: String(ev.title).slice(0, 200),
+            detail: ev.detail,
+            state: "todo",
+            owner: ev.owner || undefined,
+            createdBy: m.from,
+            createdAt: at,
+            updatedAt: at,
+            after: (ev.after ?? []).filter((d) => tasks.has(d)),
+            notes: [],
+          });
+          break;
 
-      case "task.claim": {
-        const task = tasks.get(ev.task);
-        if (!task) reject(`no task ${taskId(ev.task)}`);
-        else if (task.state === "done") reject(`${taskId(task.id)} is already done`);
-        else if (task.owner && task.owner !== m.from) reject(`${taskId(task.id)} is owned by ${task.owner}`);
-        else {
-          task.owner = m.from;
-          if (task.state === "todo") task.state = "doing";
+        case "task.claim": {
+          const task = tasks.get(ev.task);
+          if (!task) reject(`no task ${taskId(ev.task)}`);
+          else if (task.state === "done") reject(`${taskId(task.id)} is already done`);
+          else if (task.owner && task.owner !== m.from) reject(`${taskId(task.id)} is owned by ${task.owner}`);
+          else {
+            task.owner = m.from;
+            if (task.state === "todo") task.state = "doing";
+            task.updatedAt = at;
+          }
+          break;
+        }
+
+        case "task.update": {
+          const task = tasks.get(ev.task);
+          if (!task) {
+            reject(`no task ${taskId(ev.task)}`);
+            break;
+          }
+          if (ev.owner !== undefined) task.owner = ev.owner || undefined;
+          if (ev.state) task.state = ev.state;
+          if (ev.title) task.title = ev.title.slice(0, 200);
+          if (ev.note) task.notes.push({ seq: m.seq, by: m.from, ts: at, text: ev.note });
+          // Unassigning work in progress puts it back on the board.
+          if (ev.owner === null && task.state === "doing") task.state = "todo";
           task.updatedAt = at;
-        }
-        break;
-      }
-
-      case "task.update": {
-        const task = tasks.get(ev.task);
-        if (!task) {
-          reject(`no task ${taskId(ev.task)}`);
           break;
         }
-        if (ev.owner !== undefined) task.owner = ev.owner || undefined;
-        if (ev.state) task.state = ev.state;
-        if (ev.title) task.title = ev.title.slice(0, 200);
-        if (ev.note) task.notes.push({ seq: m.seq, by: m.from, ts: at, text: ev.note });
-        // Unassigning work in progress puts it back on the board.
-        if (ev.owner === null && task.state === "doing") task.state = "todo";
-        task.updatedAt = at;
-        break;
-      }
 
-      case "claim": {
-        const live = claims.filter((c) => c.expires > at);
-        const ttl = Math.min(Math.max(Number(ev.ttl) || 0, 60), 24 * 3600) * 1000;
-        const conflict = ev.paths
-          .map((p) => live.find((c) => c.owner !== m.from && overlaps(c.path, p)))
-          .find(Boolean);
-        if (conflict) {
-          reject(`${conflict.path} is claimed by ${conflict.owner}`);
+        case "claim": {
+          const live = claims.filter((c) => c.expires > at);
+          const ttl = Math.min(Math.max(Number(ev.ttl) || 0, 60), 24 * 3600) * 1000;
+          const conflict = ev.paths
+            .map((p) => live.find((c) => c.owner !== m.from && overlaps(c.path, p)))
+            .find(Boolean);
+          if (conflict) {
+            reject(`${conflict.path} is claimed by ${conflict.owner}`);
+            break;
+          }
+          claims = live.filter((c) => !(c.owner === m.from && ev.paths.includes(c.path)));
+          for (const path of ev.paths) {
+            claims.push({ owner: m.from, path, seq: m.seq, since: at, expires: at + ttl, note: ev.note });
+          }
           break;
         }
-        claims = live.filter((c) => !(c.owner === m.from && ev.paths.includes(c.path)));
-        for (const path of ev.paths) {
-          claims.push({ owner: m.from, path, seq: m.seq, since: at, expires: at + ttl, note: ev.note });
-        }
-        break;
+
+        case "release":
+          claims = claims.filter((c) => c.owner !== m.from || (ev.paths?.length ? !ev.paths.includes(c.path) : false));
+          break;
+
+        case "fact.set":
+          facts.set(ev.key, { key: ev.key, value: ev.value, by: m.from, ts: at, seq: m.seq });
+          break;
+
+        case "fact.del":
+          facts.delete(ev.key);
+          break;
       }
-
-      case "release":
-        claims = claims.filter((c) => c.owner !== m.from || (ev.paths?.length ? !ev.paths.includes(c.path) : false));
-        break;
-
-      case "fact.set":
-        facts.set(ev.key, { key: ev.key, value: ev.value, by: m.from, ts: at, seq: m.seq });
-        break;
-
-      case "fact.del":
-        facts.delete(ev.key);
-        break;
+      } catch {
+      trust.set(m.seq, "forged");
+      rejected.set(m.seq, "malformed message");
     }
   }
 

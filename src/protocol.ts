@@ -163,3 +163,54 @@ export interface Presence {
 export function isRoomId(s: string): boolean {
   return /^[0-9a-f]{32}$/.test(s);
 }
+
+const str = (x: unknown, max = 10_000): x is string => typeof x === "string" && x.length <= max;
+const strs = (x: unknown, n: number): x is string[] => Array.isArray(x) && x.length <= n && x.every((y) => str(y, 512));
+const nums = (x: unknown, n: number): x is number[] => Array.isArray(x) && x.length <= n && x.every((y) => Number.isSafeInteger(y) && y >= 0);
+const opt = <T>(x: unknown, ok: (v: unknown) => v is T): boolean => x === undefined || ok(x);
+
+/** Whether an event has the shape its op promises (anything else is dropped, not folded). */
+export function wellFormedEvent(ev: unknown): ev is Event {
+  if (!ev || typeof ev !== "object") return false;
+  const e = ev as Record<string, unknown>;
+  const n = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
+  switch (e.op) {
+    case "hello":
+      return opt(e.role, (x): x is string => str(x, 200)) && opt(e.about, (x): x is string => str(x, 2000));
+    case "task.add":
+      return str(e.title, 500) && opt(e.detail, (x): x is string => str(x)) && opt(e.owner, (x): x is string => str(x, 64)) && opt(e.after, (x): x is number[] => nums(x, 50));
+    case "task.claim":
+      return n(e.task);
+    case "task.update":
+      return n(e.task) && opt(e.state, (x): x is string => typeof x === "string" && (TASK_STATES as readonly string[]).includes(x)) && (e.owner === undefined || e.owner === null || str(e.owner, 64)) && opt(e.title, (x): x is string => str(x, 500)) && opt(e.note, (x): x is string => str(x));
+    case "claim":
+      return strs(e.paths, 100) && (e.paths as string[]).length > 0 && Number.isFinite(e.ttl) && (e.ttl as number) > 0 && opt(e.note, (x): x is string => str(x, 500));
+    case "release":
+      return opt(e.paths, (x): x is string[] => strs(x, 100));
+    case "fact.set":
+      return str(e.key, 200) && str(e.value, 10_000);
+    case "fact.del":
+      return str(e.key, 200);
+    default:
+      return false;
+  }
+}
+
+/** Whether a decrypted payload has the shape every client relies on. Malformed ones are dropped. */
+export function wellFormed(p: unknown): p is Payload {
+  if (!p || typeof p !== "object") return false;
+  const m = p as Record<string, unknown>;
+  return (
+    m.v === PROTOCOL_VERSION &&
+    str(m.id, 100) &&
+    str(m.from, 64) &&
+    str(m.body, 100_000) &&
+    typeof m.kind === "string" &&
+    (KINDS as readonly string[]).includes(m.kind) &&
+    Number.isFinite(m.ts) &&
+    opt(m.to, (x): x is string[] => strs(x, 50)) &&
+    opt(m.re, (x): x is number[] => nums(x, 20)) &&
+    (m.ev === undefined || wellFormedEvent(m.ev)) &&
+    (m.kind !== "event" || m.ev !== undefined)
+  );
+}

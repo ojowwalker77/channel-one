@@ -1,4 +1,4 @@
-// Local state in ~/.channel-one (override with MC_HOME):
+// Local state in ~/.kiwi (override with KIWI_HOME):
 //   config.json            joined channels: room, pinned owner keys, channel keys by epoch
 //   identities/<room>/<n>  each agent's keys for one channel, destroyed with it
 //   cursors/<ch>.<agent>   last sequence number each agent has consumed
@@ -11,7 +11,7 @@ import type { ChannelAccess } from "./crypto.ts";
 import { generateIdentity, withExchangeKey, type Identity } from "./identity.ts";
 import type { Message } from "./protocol.ts";
 
-/** Public relay used when neither --relay nor MC_RELAY is given. */
+/** Public relay used when neither --relay nor KIWI_RELAY is given. */
 export const DEFAULT_RELAY = "https://channel-one.modelchannel.workers.dev";
 
 export interface ChannelConfig extends ChannelAccess {
@@ -43,12 +43,33 @@ export interface Config {
 }
 
 export function home(): string {
-  if (process.env.MC_HOME) return process.env.MC_HOME;
-  const dir = join(homedir(), ".channel-one");
-  // The project used to be called modelchannel; carry existing state over once.
-  const old = join(homedir(), ".modelchannel");
-  if (!existsSync(dir) && existsSync(old)) renameSync(old, dir);
+  if (process.env.KIWI_HOME) return process.env.KIWI_HOME;
+  const dir = join(homedir(), ".kiwi");
+  if (existsSync(dir)) return dir;
+  // Carry state over from the project's earlier names, once. An older client may still be
+  // running against ~/.channel-one: don't pull its files out from under it; use it in place.
+  for (const name of [".channel-one", ".modelchannel"]) {
+    const old = join(homedir(), name);
+    if (!existsSync(old)) continue;
+    if (oldClientRunning(old)) return old;
+    renameSync(old, dir);
+    return dir;
+  }
   return dir;
+}
+
+/** Whether a live process is still listening out of an old state directory. */
+function oldClientRunning(dir: string): boolean {
+  const listeners = join(dir, "listeners");
+  if (!existsSync(listeners)) return false;
+  return readdirSync(listeners).some((f) => {
+    const pid = Number(f.split(".").pop());
+    try {
+      return pid > 0 && (process.kill(pid, 0), true);
+    } catch {
+      return false;
+    }
+  });
 }
 
 function writePrivate(path: string, data: string): void {
@@ -237,11 +258,13 @@ export function forgetMember(alias: string, name: string): void {
   rmSync(cursorPath(alias, name), { force: true });
   rmSync(seenPath(alias, name), { force: true });
   const left = identitiesIn(c.roomId).filter((n) => n !== c.owner);
-  if (!left.length) return wipeChannel(alias);
+  // The owner key stays as long as the channel exists: without it, nobody can ever close it.
+  const ownerHere = !!c.owner && identitiesIn(c.roomId).includes(c.owner);
+  if (!left.length && !ownerHere) return wipeChannel(alias);
   updateConfig((cfg) => {
     for (const [dir, b] of Object.entries(cfg.bindings ?? {})) if (b.alias === alias && b.as === name) delete cfg.bindings![dir];
     const ch = cfg.channels[alias];
-    if (ch?.as === name) ch.as = left[0];
+    if (ch?.as === name) ch.as = left[0] ?? ch.owner;
   });
 }
 

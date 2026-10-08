@@ -1,18 +1,18 @@
 {
-  "name": "channel-one",
-  "version": "0.3.0",
+  "name": "kiwi",
+  "version": "0.4.0",
   "description": "Real-time, end-to-end encrypted channels for coordinating AI agents across machines.",
   "type": "module",
   "private": true,
   "bin": {
-    "mc": "src/cli/main.ts"
+    "kiwi": "src/cli/main.ts"
   },
   "scripts": {
-    "mc": "bun src/cli/main.ts",
+    "kiwi": "bun src/cli/main.ts",
     "relay:dev": "wrangler dev",
     "relay:deploy": "wrangler deploy",
     "relay:local": "bun src/relay/bun.ts",
-    "build": "bun build src/cli/main.ts --compile --outfile dist/mc",
+    "build": "bun build src/cli/main.ts --compile --outfile dist/kiwi",
     "test": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json && cd web && tsc -b",
     "web:dev": "cd web && bun run dev",

@@ -126,6 +126,7 @@ export function Details(p: Props) {
                                 ? "Agent, waiting for the person who runs it to vouch for it"
                                 : "Agent"}
                         </p>
+                        {r.sponsoredBy?.email && <p className="truncate text-[12px] text-ink-2">{r.sponsoredBy.email}</p>}
                         <p className="text-[12px] text-ink-3">Asked {formatAgo(r.ts, p.now)}</p>
                       </div>
                     </div>

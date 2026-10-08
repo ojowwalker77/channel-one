@@ -9,7 +9,7 @@ import {
   askToJoin,
   checkJoin,
   createChannel,
-  forgetChannel,
+  forgetPending,
   isJoinCode,
   loadMember,
   loadPending,
@@ -208,6 +208,7 @@ type Phase =
   | { kind: "waiting"; pending: PendingJoin }
   | { kind: "denied" }
   | { kind: "member"; member: StoredMember }
+  | { kind: "confirmLink"; identity: Identity }
   | { kind: "error"; message: string }
 
 /** Decide what this browser is in a channel: a member, waiting for approval, or a visitor who may ask. */
@@ -219,12 +220,9 @@ export function ChannelGate({ code, identity, listed, onBack, onGone }: { code: 
     void (async () => {
       if (!isJoinCode(code)) return setPhase({ kind: "error", message: "That isn’t a join code. Join codes start with mc2-." })
       try {
-        if (identity) {
-          const m = await memberFromLink(code, identity)
-          if (!cancelled) setPhase({ kind: "member", member: m })
-          return
-        }
         const stored = loadMember(code)
+        // A link carrying a key: ask before using it, unless it's the key this browser already holds.
+        if (identity && stored?.identity.pk !== identity.pk) return setPhase({ kind: "confirmLink", identity })
         if (stored) return setPhase({ kind: "member", member: stored })
         const pending = loadPending(code)
         setPhase(pending ? { kind: "waiting", pending } : { kind: "ask" })
@@ -261,9 +259,38 @@ export function ChannelGate({ code, identity, listed, onBack, onGone }: { code: 
 
   if (phase.kind === "member") return <Conversation member={phase.member} onBack={onBack} onGone={onGone} />
 
+  // Cancelling or being declined drops only the request; nothing this browser holds is touched.
   const giveUp = () => {
-    forgetChannel(code)
+    forgetPending(code)
     onGone()
+  }
+
+  if (phase.kind === "confirmLink") {
+    const id = phase.identity
+    return (
+      <Stage>
+        <Heading title={`Open this channel as ${id.name}?`}>
+          This link carries a private key. Open it only if you made it yourself, with kiwi web on your own computer. Never open one that someone sent you.
+        </Heading>
+        <p className="mt-4 text-[12px] text-ink-3">Key {id.pk.slice(0, 16)}</p>
+        <div className="mt-6 flex gap-2">
+          <Button
+            size="lg"
+            onClick={() => {
+              setPhase({ kind: "loading" })
+              memberFromLink(code, id)
+                .then((m) => setPhase({ kind: "member", member: m }))
+                .catch((err: unknown) => setPhase({ kind: "error", message: errorText(err) }))
+            }}
+          >
+            Open channel
+          </Button>
+          <Button size="lg" variant="secondary" onClick={onBack}>
+            Cancel
+          </Button>
+        </div>
+      </Stage>
+    )
   }
 
   // The owner's key never leaves the browser that made it, so another device can only point back there.
@@ -305,7 +332,7 @@ export function ChannelGate({ code, identity, listed, onBack, onGone }: { code: 
           <Heading title={phase.kind === "denied" ? "The owner didn’t let you in" : "This channel won’t open"}>
             {phase.kind === "denied" ? "Your request was declined. Ask the owner for a new code if that was a mistake." : phase.message}
           </Heading>
-          <Button variant="secondary" className="mt-6" onClick={giveUp}>
+          <Button variant="secondary" className="mt-6" onClick={phase.kind === "denied" ? giveUp : onBack}>
             Back to channels
           </Button>
         </>

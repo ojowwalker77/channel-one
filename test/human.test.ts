@@ -141,10 +141,11 @@ describe("an agent needs its own human's approval too", () => {
     // The owner sees whose agent it is, and admits both in one go.
     const reqs = await ownerCh.requests();
     r = reqs.find((x) => x.id === req.requestId);
-    expect(r!.sponsoredBy).toEqual({ user: "user_bob", name: "Bob Builder" });
+    expect(r!.sponsoredBy).toMatchObject({ user: "user_bob", name: "Bob Builder" });
     expect(reqs.find((x) => x.id === bobReq.requestId)).toMatchObject({ kind: "human", sponsoredBy: { name: "Bob Builder" } });
     const admitted = await ownerCh.approveWithSponsor(r!);
-    expect(admitted.map((m) => m.name)).toEqual(["bob", "helper"]);
+    // People are admitted under a handle from their verified account, whatever they typed.
+    expect(admitted.map((m) => m.name)).toEqual(["bob-builder", "helper"]);
 
     // Everyone sees verified real names and who acts for whom.
     const st = await Channel.joinStatus(relay, code, agent, req.requestId);
@@ -152,8 +153,8 @@ describe("an agent needs its own human's approval too", () => {
     const roster = await new Channel(st.access, relay, agent).members();
     const by = Object.fromEntries(roster.map((m) => [m.name, m]));
     expect(by.alice).toMatchObject({ kind: "human", display: "Alice Owner", owner: true });
-    expect(by.bob).toMatchObject({ kind: "human", display: "Bob Builder" });
-    expect(by.helper).toMatchObject({ kind: "agent", sponsor: { user: "user_bob", name: "Bob Builder", handle: "bob" } });
+    expect(by["bob-builder"]).toMatchObject({ kind: "human", display: "Bob Builder" });
+    expect(by.helper).toMatchObject({ kind: "agent", sponsor: { user: "user_bob", name: "Bob Builder", handle: "bob-builder" } });
     await ownerCh.close();
   });
 });
@@ -200,14 +201,20 @@ describe("names", () => {
     expect(handleFor("Jonatas Walker")).toBe("jonatas-walker");
     expect(handleFor("  José  da Silva ")).toBe("jose-da-silva");
 
-    const [owner, twin] = await Promise.all([generateIdentity("alice"), generateIdentity("alice")]);
+    const [owner, bob1, bob2, agent] = await Promise.all([generateIdentity("alice"), generateIdentity("alice"), generateIdentity("x"), generateIdentity("alice")]);
     const alice = () => token("user_alice");
     const { code, access } = await Channel.create(relay, owner, { name: "alice", kind: "human" }, [], undefined, await alice());
     const ownerCh = new Channel(access, relay, owner, undefined, alice);
-    await Channel.requestJoin(relay, code, twin, { name: "alice" }, await token("user_bob"));
-    const [r] = await ownerCh.requests();
-    await expect(ownerCh.approve(r!)).rejects.toThrow(/already someone's name/);
-    expect((await ownerCh.members()).filter((m) => m.active).map((m) => m.name)).toEqual(["alice"]);
+    // A person who types someone else's name still gets the handle of their own account.
+    await Channel.requestJoin(relay, code, bob1, { name: "alice" }, await token("user_bob"));
+    await ownerCh.approve((await ownerCh.requests())[0]!);
+    // The same account again (another browser) gets a distinct handle.
+    await Channel.requestJoin(relay, code, bob2, { name: "whatever" }, await token("user_bob"));
+    await ownerCh.approve((await ownerCh.requests())[0]!);
+    // An agent can't take a name someone has.
+    await Channel.requestJoin(relay, code, agent, { name: "alice" });
+    await expect(ownerCh.approve((await ownerCh.requests())[0]!)).rejects.toThrow(/already someone's name/);
+    expect((await ownerCh.members()).filter((m) => m.active).map((m) => m.name).sort()).toEqual(["alice", "bob-builder", "bob-builder-2"]);
     await ownerCh.close();
   });
 });

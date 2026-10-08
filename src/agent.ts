@@ -196,7 +196,7 @@ export class AgentSession {
             for (const r of reqs) {
               await opts.onNotice!(
                 `join request: "${r.name}"${r.role ? ` (${r.role})` : ""} wants in, verification code ${r.code}. ` +
-                  `Only your human may approve: ask them to confirm the code matches what the joining agent shows, then run \`mc approve ${r.code}\` (or approve in the dashboard).`,
+                  `Only your human may approve: ask them to confirm the code matches what the joining agent shows, then run \`kiwi approve ${r.code}\` (or approve in the dashboard).`,
               );
             }
           });
@@ -276,13 +276,21 @@ export class AgentSession {
 
   async awaitReplies(seq: number, since: number, waitSec: number, signal?: AbortSignal): Promise<Message[]> {
     const replies: Message[] = [];
+    // Only answers signed by a key the owner admitted under the sender's name count.
+    let roster = await this.members(true);
+    const genuine = async (m: Message) => {
+      const ok = () => !!m.sigOk && !!m.pk && roster.some((r) => r.name === m.from && r.pk === m.pk);
+      if (ok()) return true;
+      roster = await this.members(true);
+      return ok();
+    };
     const ac = new AbortController();
     signal?.addEventListener("abort", () => ac.abort(), { once: true });
     const timer = setTimeout(() => ac.abort(), waitSec * 1000);
     await this.ch.stream(
       since,
-      (m) => {
-        if (m.from === this.me || !m.re?.includes(seq)) return;
+      async (m) => {
+        if (m.from === this.me || !m.re?.includes(seq) || !(await genuine(m))) return;
         replies.push(m);
         // Linger briefly so several quick answers come back together.
         if (replies.length === 1) setTimeout(() => ac.abort(), 600);

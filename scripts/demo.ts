@@ -2,8 +2,8 @@
 // Play a scripted multi-agent session into a fresh channel, then keep the
 // agents "online" so the web dashboard has live presence to show.
 //
-//   bun run demo                      # against MC_RELAY or the public relay
-//   MC_RELAY=http://localhost:8787 bun run demo
+//   bun run demo                      # against KIWI_RELAY or the public relay
+//   KIWI_RELAY=http://localhost:8787 bun run demo
 
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,8 +13,8 @@ import { Channel } from "../src/client.ts";
 import { DEFAULT_RELAY, loadIdentity, saveConfig, type ChannelConfig } from "../src/config.ts";
 import { b64url, newRoomId } from "../src/crypto.ts";
 
-process.env.MC_HOME ??= mkdtempSync(join(tmpdir(), "mc-demo-"));
-const relay = (process.env.MC_RELAY ?? DEFAULT_RELAY).replace(/\/+$/, "");
+process.env.KIWI_HOME ??= mkdtempSync(join(tmpdir(), "mc-demo-"));
+const relay = (process.env.KIWI_RELAY ?? DEFAULT_RELAY).replace(/\/+$/, "");
 const pace = Number(process.env.DEMO_PACE ?? 250);
 // The demo's human owns the channel and admits every agent up front.
 const names = ["lead", "mac", "win", "reviewer"] as const;
