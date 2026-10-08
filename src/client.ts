@@ -139,8 +139,12 @@ export class Channel {
     return this.identity.pk === this.access.ownerPk;
   }
 
-  private request<T>(path: string, init: RequestInit = {}, params: Record<string, string | number> = {}): Promise<T> {
-    return call<T>(this.relay, this.roomId, path, { ...init, identity: this.identity }, params);
+  private async request<T>(path: string, init: RequestInit = {}, params: Record<string, string | number> = {}): Promise<T> {
+    try {
+      return await call<T>(this.relay, this.roomId, path, { ...init, identity: this.identity }, params);
+    } catch (err) {
+      throw gone(err);
+    }
   }
 
   // ---------- lifecycle ----------
@@ -480,10 +484,11 @@ export class Channel {
   }
 }
 
-/** Map relay errors that mean "you're out" to ChannelGone. */
+/** Map the relay errors that mean "you're out" to ChannelGone; leave everything else alone. */
 function gone(err: unknown): unknown {
-  if (err instanceof RelayError && err.status === 403) return new ChannelGone("removed");
-  if (err instanceof RelayError && err.status === 404) return new ChannelGone("closed");
+  if (!(err instanceof RelayError)) return err;
+  if (err.status === 403 && /not a member/.test(err.message)) return new ChannelGone("removed");
+  if (err.status === 404 && /no such channel/.test(err.message)) return new ChannelGone("closed");
   return err;
 }
 

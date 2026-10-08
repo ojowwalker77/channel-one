@@ -14,7 +14,7 @@ if ! command -v bun >/dev/null 2>&1; then
 fi
 echo "installing mc from $REPO…" >&2
 bun add -g "$REPO" >&2
-MC="$HOME/.bun/bin/mc"
+MC="${BUN_INSTALL:-$HOME/.bun}/bin/mc"
 "$MC" --version >/dev/null
 if command -v mc >/dev/null 2>&1; then
   echo "mc $("$MC" --version) installed: run mc join <code> --as <name>"
