@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 
-import { Boundary, Toaster } from "@/components/kit"
+import { Boundary, Button, Toaster, errorText, toast } from "@/components/kit"
+import { hasChannelsToMove, moveChannels, NEW_ORIGIN, receiveChannels } from "@/lib/move"
 import { ChannelGate, JoinWithCode, NewChannel, SponsorPage, Welcome } from "@/components/onboarding"
 import { Sidebar } from "@/components/sidebar"
 import { useAuth } from "@/lib/auth"
@@ -34,6 +35,17 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash)
   }, [])
 
+  // The old address hands this browser's channels to the new one (see lib/move.ts).
+  const [movable, setMovable] = useState(hasChannelsToMove)
+  useEffect(() => {
+    if (location.hash !== "#import") return
+    return receiveChannels((count) => {
+      history.replaceState(null, "", "/")
+      toast(count ? `Moved ${count} ${count === 1 ? "channel" : "channels"} to this address` : "Nothing new to move")
+      setTimeout(() => location.reload(), 900)
+    })
+  }, [])
+
   const close = () => {
     history.replaceState(null, "", location.pathname)
     setHash({ code: "", identity: null })
@@ -41,6 +53,24 @@ export default function App() {
 
   return (
     <>
+      {movable && (
+        <div className="flex items-center gap-3 bg-accent-wash px-4 py-2 text-[13px]">
+          <span className="min-w-0 flex-1">Channels moved to {NEW_ORIGIN.replace("https://", "")}. Move this browser’s channels and keys there.</span>
+          <Button
+            size="sm"
+            onClick={() =>
+              moveChannels()
+                .then((n) => {
+                  setMovable(false)
+                  toast(`Moved ${n} ${n === 1 ? "channel" : "channels"}. Use ${NEW_ORIGIN.replace("https://", "")} from now on.`)
+                })
+                .catch((err: unknown) => toast(errorText(err), "error"))
+            }
+          >
+            Move
+          </Button>
+        </div>
+      )}
       {sponsor ? (
         <SponsorPage {...sponsor} onOpen={open} />
       ) : (

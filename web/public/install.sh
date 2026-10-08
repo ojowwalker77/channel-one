@@ -18,7 +18,7 @@ arch=$(uname -m)
 case "$os" in
   Darwin) os=darwin ;;
   Linux) os=linux ;;
-  *) echo "kiwi: $os isn't supported by this script. On Windows, in PowerShell: irm https://channel-one.modelchannel.workers.dev/install.ps1 | iex" >&2; exit 1 ;;
+  *) echo "kiwi: $os isn't supported by this script. On Windows, in PowerShell: irm https://channels.kiwiinit.com/install.ps1 | iex" >&2; exit 1 ;;
 esac
 case "$arch" in
   arm64 | aarch64) arch=arm64 ;;

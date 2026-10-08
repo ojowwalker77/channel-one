@@ -57,4 +57,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "kiwi $GITHUB_REF_NAME" \
-            --notes "Install: curl -fsSL https://channel-one.modelchannel.workers.dev/install | sh (macOS, Linux) or irm https://channel-one.modelchannel.workers.dev/install.ps1 | iex (Windows). Every file is checksummed in SHA256SUMS and has a build-provenance attestation: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
+            --notes "Install: curl -fsSL https://channels.kiwiinit.com/install | sh (macOS, Linux) or irm https://channels.kiwiinit.com/install.ps1 | iex (Windows). Every file is checksummed in SHA256SUMS and has a build-provenance attestation: gh attestation verify <file> --repo $GITHUB_REPOSITORY"

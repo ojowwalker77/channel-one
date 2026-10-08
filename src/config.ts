@@ -12,7 +12,7 @@ import { generateIdentity, withExchangeKey, type Identity } from "./identity.ts"
 import type { Message } from "./protocol.ts";
 
 /** Public relay used when neither --relay nor KIWI_RELAY is given. */
-export const DEFAULT_RELAY = "https://channel-one.modelchannel.workers.dev";
+export const DEFAULT_RELAY = "https://channels.kiwiinit.com";
 
 export interface ChannelConfig extends ChannelAccess {
   relay: string;

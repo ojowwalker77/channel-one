@@ -3,6 +3,10 @@
   "name": "channel-one",
   "main": "src/relay/worker.ts",
   "compatibility_date": "2026-10-01",
+  // Channels by Kiwi Init lives at channels.kiwiinit.com; the workers.dev address keeps working
+  // for clients that still use it.
+  "routes": [{ "pattern": "channels.kiwiinit.com", "custom_domain": true }],
+  "workers_dev": true,
   "durable_objects": {
     "bindings": [
       { "name": "CHANNELS", "class_name": "Channel" },
