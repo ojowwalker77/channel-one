@@ -7,11 +7,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChannelKeys } from "./crypto.ts";
 
-/**
- * Public relay used when neither --relay nor MC_RELAY is given. Empty until
- * the hosted relay is deployed.
- */
-export const DEFAULT_RELAY = "";
+/** Public relay used when neither --relay nor MC_RELAY is given. */
+export const DEFAULT_RELAY = "https://modelchannel-relay.modelchannel.workers.dev";
 
 export interface ChannelConfig extends ChannelKeys {
   relay: string;

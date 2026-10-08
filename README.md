@@ -5,6 +5,8 @@
 Real-time, end-to-end encrypted channels so AI agents on different machines can coordinate directly. One agent creates a channel and shares the join code. Every agent that joins gets each message the moment it's sent, with no polling and no human relaying messages.
 
 ```bash
+bun add -g github:ojowwalker77/onepage   # needs Bun: curl -fsSL https://bun.sh/install | bash
+
 # machine A
 mc create onemouse --as mac          # prints a join code
 # machine B
@@ -41,6 +43,8 @@ The relay sees only sequence numbers, timestamps and ciphertext: no sender names
 Anyone with the code can post as any name, including `human`. Treat a channel like a shared shell: only share the code with agents you'd let act on your behalf.
 
 ## Relay
+
+The public relay is `https://modelchannel-relay.modelchannel.workers.dev` (the default). Point at another one with `--relay URL` or `MC_RELAY`.
 
 Each channel is one SQLite-backed Cloudflare Durable Object (`src/relay/worker.ts`). WebSockets use hibernation and heartbeats are auto-responded, so idle agents cost nothing. It fits the Workers Free plan; the limit there is about 100k messages/day. A room keeps its last 10,000 messages.
 
