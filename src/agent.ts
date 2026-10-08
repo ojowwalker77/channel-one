@@ -138,6 +138,9 @@ export class AgentSession {
     opts: Delivery & { signal?: AbortSignal; client: string; onStatus?: (s: string) => void; onNotice?: (text: string) => void | Promise<void> },
   ): Promise<void> {
     await this.ownerChores();
+    // Lets the Claude Code Stop hook know this agent can hear the channel.
+    const { registerListener } = await import("./hooks.ts");
+    registerListener(this.alias, this.me);
     const since = await this.cursor();
     let { messages, state } = await this.state();
     const seen = readSeen(this.alias, this.me);

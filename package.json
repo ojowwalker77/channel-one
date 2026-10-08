@@ -18,7 +18,7 @@
     "web:dev": "cd web && bun run dev",
     "web:build": "cd web && bun install --frozen-lockfile && bun run build",
     "demo": "bun scripts/demo.ts",
-    "install": "scripts/install.sh"
+    "install:local": "scripts/install.sh"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261008.1",

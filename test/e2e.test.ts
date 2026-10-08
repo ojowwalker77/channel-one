@@ -26,9 +26,13 @@ afterAll(() => server?.stop(true));
 
 const MC = ["bun", join(import.meta.dir, "../src/cli/main.ts")];
 
+// Tests never touch the real Claude Code settings.
+const claudeDir = mkdtempSync(join(tmpdir(), "mc-claude-"));
+
 function mc(home: string, ...args: string[]) {
   return Bun.spawn([...MC, ...args], {
-    env: { ...process.env, MC_HOME: home, MC_RELAY: relay },
+    cwd: home,
+    env: { ...process.env, MC_HOME: home, MC_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -334,6 +338,59 @@ describe("images and cross-channel tasks through the CLI", () => {
     expect(hooks.length).toBeGreaterThanOrEqual(1);
     const bodies = hooks.map((h) => JSON.parse(h) as { from: string; text: string; kind: string });
     expect(bodies).toContainEqual(expect.objectContaining({ channel: "w", from: "peer", text: "ping the hook", kind: "msg" }));
+  });
+});
+
+describe("Claude Code hooks", () => {
+  async function hook(dir: string, mcHome: string, event: string, input: object): Promise<string> {
+    const p = Bun.spawn([...MC, "hook", event], {
+      cwd: dir,
+      env: { ...process.env, MC_HOME: mcHome, MC_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir, CLAUDE_PROJECT_DIR: "" },
+      stdin: new TextEncoder().encode(JSON.stringify(input)),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = await new Response(p.stdout).text();
+    expect(await p.exited).toBe(0);
+    return out;
+  }
+
+  test("joining installs them; stop won't let an agent go idle behind or deaf", async () => {
+    const o = home("hk-owner");
+    const a = home("hk-agent");
+    const code = /join code: (\S+)/.exec(await ok(o, "create", "hk", "--as", "boss"))![1]!;
+    await joinVia(o, a, code, "hk", "worker");
+
+    const settings = JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8"));
+    for (const e of ["SessionStart", "UserPromptSubmit", "Stop"]) expect(JSON.stringify(settings.hooks[e])).toContain("# modelchannel");
+
+    // Nothing listening: the first stop is blocked, then it nags at most every 10 minutes.
+    expect(await hook(a, a, "stop", { cwd: a, session_id: "s1" })).toContain("nothing listening");
+    expect(await hook(a, a, "stop", { cwd: a, session_id: "s1" })).toBe("");
+
+    // Unread messages always block a stop, and are handed to the agent.
+    await ok(o, "send", "--to", "worker", "hello worker");
+    const blocked = JSON.parse(await hook(a, a, "stop", { cwd: a, session_id: "s1" }));
+    expect(blocked.decision).toBe("block");
+    expect(blocked.reason).toContain("boss → worker: hello worker");
+
+    // Listening: session start says so, and a caught-up agent may stop.
+    const tail = lines(mc(a, "tail"));
+    await Bun.sleep(800);
+    expect(await hook(a, a, "session-start", { cwd: a })).toContain("A listener is already running");
+    expect(await hook(a, a, "stop", { cwd: a, session_id: "s2" })).toBe("");
+    await ok(o, "send", "--to", "worker", "while listening");
+    await tail.until((l) => l.some((x) => x.includes("while listening")));
+    await tail.stop();
+
+    // A directory nobody joined from: the hooks do nothing at all.
+    const elsewhere = home("hk-elsewhere");
+    expect(await hook(elsewhere, a, "stop", { cwd: elsewhere, session_id: "s3" })).toBe("");
+    expect(await hook(elsewhere, a, "prompt", { cwd: elsewhere })).toBe("");
+
+    // Uninstall leaves the rest of the settings alone.
+    await ok(a, "hooks", "uninstall");
+    expect(JSON.stringify(JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8")))).not.toContain("modelchannel");
   });
 });
 

@@ -15,6 +15,7 @@ import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
 import { parseTaskId, taskId, type ChannelState } from "../state.ts";
 import { VERSION } from "../version.ts";
+import { autoInstallHooks, bindDirectory, hooksInstalled, installHooks, mcFor, runHook, uninstallHooks } from "../hooks.ts";
 
 const HELP = `mc ${VERSION} — real-time coordination for AI agents
 
@@ -32,6 +33,10 @@ Membership (the owner's human decides who gets in)
   mc kick NAME                                 remove a member and rotate the channel key (owner)
   mc leave                                     leave the channel and forget it on this machine
   mc close [--yes]                             delete the channel everywhere: nothing is kept (owner)
+
+Claude Code
+  mc hooks install|uninstall|status            hooks that keep agents listening and hand them unread messages
+                                               (installed automatically when an agent joins from Claude Code)
 
 Talk
   mc send "text" [--to a,b|role:x] [--kind K] [--re N] [--image f.png …]   (text from stdin if omitted)
@@ -172,12 +177,6 @@ async function text(from: number): Promise<string> {
   return (await new Response(Bun.stdin.stream()).text()).replace(/\n$/, "");
 }
 
-/** `mc` with whatever flags this agent needs to reach this channel. */
-function mcFor(alias: string, agent: string): string {
-  const cfg = loadConfig();
-  const implicit = cfg.default === alias && cfg.channels[alias]?.as === agent;
-  return implicit ? "mc" : `mc -c ${alias} --as ${agent}`;
-}
 
 /** The name the owner's human signs as. Agents can't use it. */
 const OWNER_NAME = "human";
@@ -198,6 +197,13 @@ async function findRequest(s: AgentSession, needle: string): Promise<JoinRequest
   const r = reqs.find((x) => (digits.length === 6 && x.code.replace("-", "") === digits) || x.name === needle);
   if (!r) die(reqs.length ? `no pending request matches "${needle}" (see: mc requests)` : "no pending join requests");
   return r;
+}
+
+/** Bind this directory to the agent, and make sure Claude Code keeps it listening. */
+function settleIn(alias: string, name: string): void {
+  bindDirectory(process.cwd(), { alias, as: name });
+  const installed = autoInstallHooks();
+  if (installed) process.stderr.write(`mc: installed Claude Code hooks (${installed}) so this agent keeps listening; \`mc hooks uninstall\` removes them\n`);
 }
 
 async function confirm(question: string): Promise<boolean> {
@@ -229,6 +235,7 @@ const commands: Record<string, () => Promise<void>> = {
     writeCursor(alias, name, 0);
     const s = await AgentSession.open(alias, cfg.channels[alias]!, name);
     await s.hello(opt.role, opt.about);
+    settleIn(alias, name);
     process.stderr.write(`created "${alias}": you (${OWNER_NAME}) own it, ${name} is in (key ${fingerprint(agent.pk)})\n`);
     out(`join code: ${code}`);
     out(`  Agents ask to join with: mc join ${code}${relay === DEFAULT_RELAY ? "" : ` --relay ${relay}`} --as <name> [--role <role>]`);
@@ -267,6 +274,7 @@ const commands: Record<string, () => Promise<void>> = {
         const s = await AgentSession.open(alias, cfg.channels[alias]!, name);
         writeCursor(alias, name, await s.ch.head());
         await s.hello(opt.role, opt.about);
+        settleIn(alias, name);
         process.stderr.write(`joined "${alias}" as ${name} (key ${fingerprint(id.pk)})\n`);
         out("approved.\n");
         out(agentPrompt(alias, name));
@@ -275,6 +283,18 @@ const commands: Record<string, () => Promise<void>> = {
       if (Date.now() > deadline) die(`still waiting for approval (code ${req.verify}); run the same command again to keep waiting`, 3);
       await Bun.sleep(1500);
     }
+  },
+
+  async hook() {
+    await runHook(args[1] ?? "");
+  },
+
+  async hooks() {
+    const sub = args[1] ?? "status";
+    if (sub === "install") return out(`installed hooks in ${installHooks()}`);
+    if (sub === "uninstall") return out(`removed hooks from ${uninstallHooks()}`);
+    if (sub === "status") return out(hooksInstalled() ? "installed" : "not installed (mc hooks install)");
+    die("usage: mc hooks install|uninstall|status");
   },
 
   async requests() {
@@ -662,7 +682,7 @@ export function agentPrompt(alias: string, agent: string): string {
   return `You are agent "${agent}" on the modelchannel channel "${alias}". Other agents (often on other machines) and the user ("human") are on it too. Use it to coordinate directly and fast. Never wait for the user to relay anything.
 
 ## Stay reachable (always)
-Run a Monitor on \`${mc} tail\` with the longest timeout allowed. Each line is a message for you:
+Run a Monitor on \`${mc} tail\` with the longest timeout allowed. In Claude Code, hooks remind you if you stop listening and hand you anything you missed. Each line is a message for you:
   #42 win → mac [ask] re #40: <text>
 When the monitor ends, start it again right away. It resumes from your read cursor, so nothing is lost.
 No Monitor tool? Run \`${mc} wait\` in the background instead, handle what it prints, then run it again.

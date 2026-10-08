@@ -38,6 +38,8 @@ export interface Config {
   default?: string;
   channels: Record<string, ChannelConfig>;
   pending?: Record<string, PendingJoin>;
+  /** Working directory → the agent working there (read by the Claude Code hooks). */
+  bindings?: Record<string, { alias: string; as: string }>;
 }
 
 export function home(): string {
@@ -130,6 +132,7 @@ export function wipeChannel(alias: string): void {
   const c = cfg.channels[alias];
   delete cfg.channels[alias];
   if (cfg.default === alias) cfg.default = Object.keys(cfg.channels)[0];
+  for (const [dir, b] of Object.entries(cfg.bindings ?? {})) if (b.alias === alias) delete cfg.bindings![dir];
   saveConfig(cfg);
   if (c) {
     rmSync(cachePath(c.roomId), { force: true });
