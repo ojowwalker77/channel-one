@@ -15,7 +15,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { AgentSession } from "./agent.ts";
-import { home, loadConfig, updateConfig } from "./config.ts";
+import { forgetMember, home, loadConfig, updateConfig, wipeChannel } from "./config.ts";
+import { ChannelGone } from "./client.ts";
 import { formatMessage } from "./format.ts";
 
 /** Marks our entries in settings.json so install/uninstall can find them. */
@@ -282,5 +283,11 @@ export async function runHook(event: string): Promise<void> {
       }
     }
   })();
-  await Promise.race([work.catch(() => {}), deadline]);
+  await Promise.race([
+    work.catch((err: unknown) => {
+      // The channel is gone for this agent: forget only what this agent held, quietly.
+      if (err instanceof ChannelGone) (err.why === "closed" ? wipeChannel(b.alias) : forgetMember(b.alias, b.as));
+    }),
+    deadline,
+  ]);
 }

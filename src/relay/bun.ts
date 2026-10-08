@@ -107,9 +107,20 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
           if (server.upgrade(req, { data: { roomId: route.roomId, pk, since }, headers: wsHeaders(req) })) return undefined;
           throw new HttpError(426, "expected websocket");
         }
-        const { res, fx } = await onHttp(store, req, route.rest, human);
-        if (fx) apply(route.roomId, fx);
-        return res;
+        let result: Awaited<ReturnType<typeof onHttp>>;
+        try {
+          result = await onHttp(store, req, route.rest, human);
+        } catch (err) {
+          // A create that failed leaves no file behind.
+          if (route.rest === "/create" && !store.exists()) {
+            dbs.get(route.roomId)?.close();
+            dbs.delete(route.roomId);
+            for (const suffix of ["", "-wal", "-shm"]) rmSync(file(route.roomId) + suffix, { force: true });
+          }
+          throw err;
+        }
+        if (result.fx) apply(route.roomId, result.fx);
+        return result.res;
       } catch (err) {
         return errorResponse(err);
       }

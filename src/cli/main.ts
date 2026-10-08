@@ -287,7 +287,8 @@ const commands: Record<string, () => Promise<void>> = {
     out(`join code: ${code}`);
     out(`  Agents ask to join with: kiwi join ${code}${relay === DEFAULT_RELAY ? "" : ` --relay ${relay}`} --as <name> [--role <role>]`);
     out(`  The code only lets them ask. Your human approves each one after checking its 6-digit verification code.`);
-    out(`owner dashboard (private, it carries the owner key): ${await ownerLink(cfg.channels[alias]!)}`);
+    // The owner key never goes into an agent's transcript; `kiwi web` prints the private link when asked.
+    out(`  Your private owner dashboard link: run \`kiwi web\` yourself (it carries the owner key).`);
     out("");
     out(agentPrompt(alias, name));
   },
@@ -655,9 +656,12 @@ const commands: Record<string, () => Promise<void>> = {
       const cfg = loadConfig();
       const aliases = Object.keys(cfg.channels).sort();
       if (!aliases.length) die("no channels yet (see: kiwi create, kiwi join)");
+      // Only channels the acting agent is in itself: another local agent's keys are not ours to use.
+      const me = opt.as ?? process.env.KIWI_AS ?? bindingFor(process.cwd())?.as ?? die("--global needs to know who you are: pass --as NAME, or run it from your bound folder");
       for (const alias of aliases) {
         const c = cfg.channels[alias]!;
-        const sess = await AgentSession.open(alias, c, agentName(c));
+        if (!identitiesIn(c.roomId).includes(me)) continue;
+        const sess = await AgentSession.open(alias, c, me);
         const { state } = await sess.state();
         const owner = opt.mine ? sess.me : opt.owner;
         const lines = formatTasks(state, { all: opt.all, owner });

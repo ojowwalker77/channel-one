@@ -61,6 +61,10 @@ function b64urlDecode(s: string): Uint8Array<ArrayBuffer> {
  */
 export function workosHumanAuth(clientId: string, jwksUrls: string | string[] = `https://api.workos.com/sso/jwks/${clientId}`): HumanAuth {
   const urls = Array.isArray(jwksUrls) ? jwksUrls : [jwksUrls];
+  const issuers = new Set([
+    `https://api.workos.com/user_management/${clientId}`,
+    ...urls.filter((u) => !u.startsWith("https://api.workos.com/")).map((u) => new URL(u).origin),
+  ]);
   let keys: Promise<Map<string, CryptoKey>> | null = null;
   let fetchedAt = 0;
 
@@ -110,9 +114,11 @@ export function workosHumanAuth(clientId: string, jwksUrls: string | string[] = 
         if (!key) return null;
         const ok = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, b64urlDecode(s), enc.encode(`${h}.${p}`));
         if (!ok) return null;
-        const claims = JSON.parse(new TextDecoder().decode(b64urlDecode(p))) as { sub?: string; exp?: number; nbf?: number };
+        const claims = JSON.parse(new TextDecoder().decode(b64urlDecode(p))) as { sub?: string; exp?: number; nbf?: number; iss?: string };
         const now = Date.now() / 1000;
         if (!claims.sub || !claims.exp || claims.exp < now - 30 || (claims.nbf && claims.nbf > now + 30)) return null;
+        // Only tokens issued for this app: WorkOS user management for our client, or our AuthKit domain.
+        if (!issuers.has((claims.iss ?? "").replace(/\/$/, ""))) return null;
         return claims.sub;
       } catch {
         return null;

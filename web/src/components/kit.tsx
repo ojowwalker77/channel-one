@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react"
+import { Component, useEffect, useSyncExternalStore, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react"
 
 import { initials } from "@/lib/format"
 import { cx } from "@/lib/utils"
@@ -217,4 +217,29 @@ export function Wordmark({ className, byline = true }: { className?: string; byl
 
 export function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/** If a view crashes, keep the app alive: say so, and offer a way back. */
+export class Boundary extends Component<{ children: ReactNode; resetKey?: string }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+  componentDidUpdate(prev: { resetKey?: string }) {
+    if (prev.resetKey !== this.props.resetKey && this.state.failed) this.setState({ failed: false })
+  }
+  render() {
+    if (!this.state.failed) return this.props.children
+    return (
+      <div className="flex h-full flex-1 items-center justify-center p-8">
+        <div className="max-w-xs">
+          <p className="text-[14px] font-semibold">This view hit a problem</p>
+          <p className="mt-1 text-[13px] leading-normal text-ink-2">Nothing was lost. Reload to try again; your other channels still work.</p>
+          <Button className="mt-4" onClick={() => location.reload()}>
+            Reload
+          </Button>
+        </div>
+      </div>
+    )
+  }
 }

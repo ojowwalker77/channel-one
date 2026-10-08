@@ -11,7 +11,8 @@ import { join } from "node:path";
 import { z } from "zod";
 import { AgentSession, Rejected } from "./agent.ts";
 import { loadImages } from "./attach.ts";
-import { home, identitiesIn, loadConfig } from "./config.ts";
+import { forgetMember, home, identitiesIn, loadConfig, wipeChannel } from "./config.ts";
+import { ChannelGone } from "./client.ts";
 import { formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "./format.ts";
 import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
 import { parseTaskId, taskId } from "./state.ts";
@@ -23,11 +24,20 @@ type Result = { content: Content[]; isError?: boolean };
 const ok = (text: string): Result => ({ content: [{ type: "text", text }] });
 const fail = (text: string): Result => ({ content: [{ type: "text", text }], isError: true });
 
+/** Set by runMcp: what to forget when the channel turns out to be gone. */
+let forget: ((err: ChannelGone) => void) | null = null;
+
 function guard<A>(fn: (a: A) => Promise<string>): (a: A) => Promise<Result> {
   return async (a) => {
     try {
       return ok(await fn(a));
     } catch (err) {
+      if (err instanceof ChannelGone) {
+        // Closed or removed: forget what this agent held here, answer once, then stop serving.
+        forget?.(err);
+        setTimeout(() => process.exit(4), 200);
+        return fail(`${err.message}; forgot it on this machine`);
+      }
       return fail(err instanceof Error ? err.message : String(err));
     }
   };
@@ -50,6 +60,7 @@ function withImages(text: string, messages: Message[]): Result {
 }
 
 export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Promise<void> {
+  forget = (err) => (err.why === "closed" ? wipeChannel(s.alias) : forgetMember(s.alias, s.me));
   const server = new McpServer(
     { name: "kiwi-channels", version: VERSION },
     {
@@ -215,7 +226,8 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
       const m = messages.find((x) => x.seq === seq);
       if (!m) throw new Rejected(`no message #${seq}`);
       if (!m.imgs?.length) throw new Rejected(`message #${seq} has no images`);
-      const out = dir ?? join(home(), "downloads");
+      // Under the channel's own folder, so closing the channel deletes them too.
+      const out = dir ?? join(home(), "downloads", s.ch.roomId);
       mkdirSync(out, { recursive: true });
       const paths: string[] = [];
       for (const img of m.imgs) {
@@ -242,10 +254,9 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
       const out: string[] = [];
       for (const alias of aliases) {
         const c = cfg.channels[alias]!;
-        // Read each channel as an agent that's actually in it here; never mint a key in someone else's channel.
-        const as = identitiesIn(c.roomId).includes(s.me) ? s.me : identitiesIn(c.roomId).find((n) => n !== c.owner);
-        if (!as) continue;
-        const sess = await AgentSession.open(alias, c, as);
+        // Only channels this agent is in itself: never read another local agent's channel with its key.
+        if (!identitiesIn(c.roomId).includes(s.me)) continue;
+        const sess = await AgentSession.open(alias, c, s.me);
         const { state } = await sess.state();
         const owner = mine ? sess.me : undefined;
         const lines = formatTasks(state, { all, owner });

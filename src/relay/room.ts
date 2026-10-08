@@ -353,6 +353,7 @@ export class RoomStore {
 
   /** What the sponsor page shows about an agent's request: enough to check it's theirs, nothing secret. */
   publicRequest(id: string): { kind: string; pk: string; status: string; sponsored: boolean } {
+    this.meta();
     this.migrate();
     const r = this.sql.all<{ kind: string; pk: string; status: string; sponsor_user: string | null }>("SELECT kind, pk, status, sponsor_user FROM requests WHERE id = ?", id)[0];
     if (!r) throw new HttpError(404, "no such request");
@@ -365,6 +366,7 @@ export class RoomStore {
    * alongside it to supervise.
    */
   sponsor(id: string, user: { user: string; name: string }, humanRequest?: string): void {
+    this.meta();
     this.migrate();
     const r = this.sql.all<{ kind: string; status: string; sponsor_user: string | null }>("SELECT kind, status, sponsor_user FROM requests WHERE id = ?", id)[0];
     if (!r) throw new HttpError(404, "no such request");
@@ -379,6 +381,7 @@ export class RoomStore {
   }
 
   requestStatus(id: string, pk: string): { status: string; sponsored: boolean; epoch?: number; keys?: Record<string, string> } {
+    this.meta();
     this.migrate();
     const r = this.sql.all<{ pk: string; status: string; sponsor_user: string | null }>("SELECT pk, status, sponsor_user FROM requests WHERE id = ?", id)[0];
     if (!r || r.pk !== pk) throw new HttpError(404, "no such request");

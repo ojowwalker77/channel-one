@@ -168,6 +168,9 @@ export class AgentSession {
           messages = [...messages, m];
           appendCache(this.cfg.roomId, [m]);
           state = fold(messages, await this.members());
+          // From someone we don't know yet? We may have missed a roster update while offline:
+          // check again before calling it forged and moving past it for good.
+          if (state.trust.get(m.seq) === "forged") state = fold(messages, await this.members(true));
         }
         if (!seen.has(m.seq) && this.wants(m, state, opts)) await onMessage(m, state);
         writeCursor(this.alias, this.me, m.seq);
@@ -176,6 +179,8 @@ export class AgentSession {
         signal: opts.signal,
         onStatus: opts.onStatus,
         onOpen: ({ presence }) => {
+          // Members may have joined or left while we were disconnected.
+          void this.members(true).catch(() => {});
           announce = () => void presence({ client: opts.client, ...(role ? { role } : {}) });
           announce();
           clearInterval(beacon);

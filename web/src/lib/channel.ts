@@ -18,6 +18,8 @@ export interface Online {
   client: string
   role?: string
   at: number
+  /** The key that signed the announcement. */
+  pk?: string
 }
 
 // ---------- the URL fragment ----------
@@ -522,7 +524,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
     }
     const onPresence = (p: Presence & { sigOk: boolean }) => {
       if (p.client === "probe" || !p.sigOk) return
-      setOnline((prev) => new Map(prev).set(p.from, { client: p.client, role: p.role, at: Date.now() }))
+      setOnline((prev) => new Map(prev).set(p.from, { client: p.client, role: p.role, at: Date.now(), pk: p.pk }))
     }
 
     ;(async () => {
@@ -570,7 +572,8 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
     [roster]
   )
   const state = useMemo(() => fold(messages, rosterForFold, now), [messages, rosterForFold, now])
-  const live = useMemo(() => new Map([...online].filter(([name, o]) => keyOf.has(name) && now - o.at < PRESENCE_TTL)), [online, keyOf, now])
+  // Online only if signed by the very key the owner admitted under that name.
+  const live = useMemo(() => new Map([...online].filter(([name, o]) => !!o.pk && keyOf.get(name) === o.pk && now - o.at < PRESENCE_TTL)), [online, keyOf, now])
 
   const chRef = useRef(ch)
   chRef.current = ch

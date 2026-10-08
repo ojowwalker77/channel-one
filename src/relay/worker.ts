@@ -113,8 +113,9 @@ export class Channel extends DurableObject<Env> {
         if ((ws.deserializeAttachment() as { pk?: string } | null)?.pk === fx.disconnect) close(ws, CLOSE_REMOVED, "removed from channel");
       }
     }
+    // People's channel lists are best-effort: a failure there must never stop a close from wiping.
     if (fx.directory?.length) {
-      await Promise.all(
+      await Promise.allSettled(
         fx.directory.map((u) => this.env.PEOPLE.get(this.env.PEOPLE.idFromName(u.user)).fetch("https://directory/apply", { method: "POST", body: JSON.stringify(u) })),
       );
     }

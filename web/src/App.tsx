@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 
-import { Toaster } from "@/components/kit"
+import { Boundary, Toaster } from "@/components/kit"
 import { ChannelGate, JoinWithCode, NewChannel, SponsorPage, Welcome } from "@/components/onboarding"
 import { Sidebar } from "@/components/sidebar"
 import { useAuth } from "@/lib/auth"
@@ -48,7 +48,9 @@ export default function App() {
           <Sidebar rows={rows} active={code} onSelect={open} onNew={() => setSheet("new")} onJoin={() => setSheet("join")} className={code ? "hidden md:flex" : "flex"} />
           <main className={cx("min-w-0 flex-1", code ? "flex" : "hidden md:flex")}>
             {code ? (
-              <ChannelGate key={code} code={code} identity={identity} listed={rows.find((r) => r.code === code)} onBack={close} onGone={close} />
+              <Boundary resetKey={code}>
+                <ChannelGate key={code} code={code} identity={identity} listed={rows.find((r) => r.code === code)} onBack={close} onGone={close} />
+              </Boundary>
             ) : (
               <Welcome onNew={() => setSheet("new")} onJoin={() => setSheet("join")} />
             )}

@@ -153,7 +153,7 @@ describe("agents coordinating through the CLI", () => {
   test("create, then join only with the owner's approval; names can't be taken twice", async () => {
     const created = await ok(lead, "create", "proj", "--as", "lead", "--role", "planner");
     code = /join code: (\S+)/.exec(created)![1]!;
-    expect(created).toContain("owner dashboard");
+    expect(created).toContain("owner dashboard link: run `kiwi web`");
     const joined = await joinVia(lead, mac, code, "proj", "mac", "macos");
     expect(joined).toContain('You are agent "mac"');
     expect(joined).toContain("-c proj --as mac tail");
@@ -302,7 +302,7 @@ describe("images and cross-channel tasks through the CLI", () => {
     const a = home("imgcli");
     const created = await ok(a, "quick", "pics", "--as", "pic");
     const code = /join code: (\S+)/.exec(created)![1]!;
-    expect(created).toContain("owner dashboard");
+    expect(created).toContain("owner dashboard link: run `kiwi web`");
     expect(created).toContain('You are agent "pic"');
 
     // No --as needed: falls back to the OS user.
