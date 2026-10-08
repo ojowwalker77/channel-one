@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react"
 
-import { GlobalBoard } from "@/components/channel/global-board"
-import { JoinGate } from "@/components/channel/join-gate"
-import { SponsorPage } from "@/components/channel/sponsor-page"
-import { knownChannels, parseHash, parseSponsorHash } from "@/lib/channel"
-import { JoinScreen } from "@/components/channel/join-screen"
-import { Toaster } from "@/components/ui/sonner"
-import { TooltipProvider } from "@/components/ui/tooltip"
+import { Toaster } from "@/components/kit"
+import { ChannelGate, JoinWithCode, NewChannel, SponsorPage, Welcome } from "@/components/onboarding"
+import { Sidebar } from "@/components/sidebar"
+import { parseHash, parseSponsorHash } from "@/lib/channel"
+import { cx } from "@/lib/utils"
 
 // The join code (and optionally a signing identity) live in the URL
 // fragment, which browsers never send to the server.
@@ -17,49 +15,60 @@ function readHash() {
   return parsed
 }
 
+const open = (code: string) => (location.hash = encodeURIComponent(code))
+
 export default function App() {
   const [sponsor, setSponsor] = useState(() => parseSponsorHash(location.hash))
   const [{ code, identity }, setHash] = useState(readHash)
-  const setCode = (c: string) => setHash({ code: c, identity: null })
-  const [global, setGlobal] = useState(false)
-  const [channels, setChannels] = useState(knownChannels)
+  const [sheet, setSheet] = useState<"new" | "join" | null>(null)
 
   useEffect(() => {
     const onHash = () => {
       setSponsor(parseSponsorHash(location.hash))
       setHash(readHash())
-      setGlobal(false)
-      setChannels(knownChannels())
     }
     window.addEventListener("hashchange", onHash)
     return () => window.removeEventListener("hashchange", onHash)
   }, [])
 
+  const close = () => {
+    history.replaceState(null, "", location.pathname)
+    setHash({ code: "", identity: null })
+  }
+
   return (
-    <TooltipProvider delayDuration={300}>
+    <>
       {sponsor ? (
-        <SponsorPage {...sponsor} onOpen={(c) => (location.hash = encodeURIComponent(c))} />
-      ) : code ? (
-        <JoinGate
-          key={code}
-          code={code}
-          identity={identity}
-          onLeave={() => {
-            history.replaceState(null, "", location.pathname)
-            setCode("")
-            setChannels(knownChannels())
-          }}
-        />
-      ) : global && channels.length ? (
-        <GlobalBoard channels={channels} onOpen={(c) => (location.hash = encodeURIComponent(c))} onBack={() => setGlobal(false)} />
+        <SponsorPage {...sponsor} onOpen={open} />
       ) : (
-        <JoinScreen
-          channels={channels}
-          onJoin={(c) => (location.hash = encodeURIComponent(c))}
-          onGlobal={() => setGlobal(true)}
-        />
+        <div className="flex h-svh overflow-hidden">
+          <Sidebar active={code} onSelect={open} onNew={() => setSheet("new")} className={code ? "hidden md:flex" : "flex"} />
+          <main className={cx("min-w-0 flex-1", code ? "flex" : "hidden md:flex")}>
+            {code ? (
+              <ChannelGate key={code} code={code} identity={identity} onBack={close} onGone={close} />
+            ) : (
+              <Welcome onNew={() => setSheet("new")} onJoin={() => setSheet("join")} />
+            )}
+          </main>
+        </div>
       )}
-      <Toaster position="top-center" />
-    </TooltipProvider>
+      <NewChannel
+        open={sheet === "new"}
+        onClose={() => setSheet(null)}
+        onCreated={(c) => {
+          setSheet(null)
+          open(c)
+        }}
+      />
+      <JoinWithCode
+        open={sheet === "join"}
+        onClose={() => setSheet(null)}
+        onJoin={(c) => {
+          setSheet(null)
+          open(c)
+        }}
+      />
+      <Toaster />
+    </>
   )
 }

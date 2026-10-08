@@ -102,6 +102,7 @@ export function saveMember(m: StoredMember): void {
   localStorage.setItem(MEMBER_KEY(m.code), JSON.stringify(m))
   localStorage.removeItem(PENDING_KEY(m.code))
   rememberChannel(m.code)
+  changed()
 }
 
 export function loadPending(code: string): PendingJoin | null {
@@ -116,9 +117,67 @@ export function savePending(p: PendingJoin): void {
 export function forgetChannel(code: string): void {
   localStorage.removeItem(MEMBER_KEY(code))
   localStorage.removeItem(PENDING_KEY(code))
+  localStorage.removeItem(RECENT_KEY(code))
   try {
     localStorage.setItem(REGISTRY_KEY, JSON.stringify(knownChannels().filter((c) => c.code !== code)))
   } catch {}
+  changed()
+}
+
+// ---------- what the channel list shows ----------
+
+/** Fired whenever the list of channels, or what they last said, changes. */
+const CHANGED = "mc:channels"
+function changed(): void {
+  window.dispatchEvent(new Event(CHANGED))
+}
+
+/** The last thing said in a channel, and who's in it, as of the last time this browser had it open. */
+export interface Recent {
+  from: string
+  text: string
+  ts: number
+  people: string[]
+}
+
+const RECENT_KEY = (code: string) => `mc.recent.${code}`
+
+export function loadRecent(code: string): Recent | null {
+  return read<Recent>(RECENT_KEY(code))
+}
+
+export function saveRecent(code: string, r: Recent): void {
+  const next = JSON.stringify(r)
+  if (localStorage.getItem(RECENT_KEY(code)) === next) return
+  try {
+    localStorage.setItem(RECENT_KEY(code), next)
+  } catch {}
+  changed()
+}
+
+/** A channel's title: its name if this browser created it, else who's in it, like a group chat. */
+export function channelTitle(c: { name?: string }, recent: Recent | null): string {
+  if (c.name) return c.name
+  const p = recent?.people ?? []
+  if (!p.length) return "New channel"
+  if (p.length === 1) return p[0]!
+  if (p.length <= 3) return `${p.slice(0, -1).join(", ")} & ${p[p.length - 1]}`
+  return `${p.slice(0, 2).join(", ")} & ${p.length - 2} more`
+}
+
+/** The channels this browser is in, kept current as they change. */
+export function useKnownChannels(): KnownChannel[] {
+  const [list, setList] = useState(knownChannels)
+  useEffect(() => {
+    const update = () => setList(knownChannels())
+    window.addEventListener(CHANGED, update)
+    window.addEventListener("storage", update)
+    return () => {
+      window.removeEventListener(CHANGED, update)
+      window.removeEventListener("storage", update)
+    }
+  }, [])
+  return list
 }
 
 export interface KnownChannel {
