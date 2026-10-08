@@ -22,10 +22,10 @@ import {
 } from "./room.ts";
 
 interface Env {
-  ROOM: DurableObjectNamespace<Room>;
+  CHANNELS: DurableObjectNamespace<Channel>;
 }
 
-export class Room extends DurableObject<Env> {
+export class Channel extends DurableObject<Env> {
   private readonly sql: Sql;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -114,6 +114,6 @@ export default {
     const url = new URL(req.url);
     const route = parseRoomPath(url.pathname);
     if (!route) return errorResponse(new HttpError(404, "not found"));
-    return env.ROOM.get(env.ROOM.idFromName(route.roomId)).fetch(req);
+    return env.CHANNELS.get(env.CHANNELS.idFromName(route.roomId)).fetch(req);
   },
 } satisfies ExportedHandler<Env>;

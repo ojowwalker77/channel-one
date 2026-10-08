@@ -140,6 +140,7 @@ describe("presence over a membership channel", () => {
     expect(got.map((m) => m.body)).toEqual(["before", "live"]);
     expect(seenPresence).toEqual(["mac:true"]);
     expect(await winCh.head()).toBe(2);
+    await new Channel(access, relay, human).close();
   });
 });
 

@@ -99,7 +99,9 @@ function settingsPath(): string {
 function selfCommand(): string {
   const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const compiled = !/\.(ts|js)$/.test(Bun.main);
-  return compiled ? q(process.execPath) : `${q(process.execPath)} ${q(Bun.main)}`;
+  // Prefer the PATH entry for bun (e.g. /opt/homebrew/bin/bun) over its versioned real path, which upgrades remove.
+  const bun = Bun.which("bun") ?? process.execPath;
+  return compiled ? q(process.execPath) : `${q(bun)} ${q(Bun.main)}`;
 }
 
 type HookEntry = { matcher?: string; hooks: { type: "command"; command: string; timeout?: number }[] };
