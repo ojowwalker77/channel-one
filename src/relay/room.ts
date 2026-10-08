@@ -5,6 +5,7 @@
 import {
   WS_PROTOCOL,
   MAX_CT_LENGTH,
+  MAX_EPH_LENGTH,
   PAGE_LIMIT,
   ROOM_RETENTION,
   type ClientFrame,
@@ -106,15 +107,22 @@ export function welcomeFrames(store: RoomStore, since: number): string[] {
 }
 
 /**
- * Handle one client frame. Returns the frame to broadcast to every socket (if
- * any) and the reply for the sender.
+ * Handle one client frame. Returns what to send: `broadcast` to every socket,
+ * `others` to every socket except the sender, `reply` to the sender alone.
  */
-export function onClientFrame(store: RoomStore, raw: string): { broadcast?: string; reply: string } {
+export function onClientFrame(store: RoomStore, raw: string): { broadcast?: string; others?: string; reply?: string } {
   let frame: ClientFrame;
   try {
     frame = JSON.parse(raw);
   } catch {
     return { reply: JSON.stringify({ t: "err", error: "bad json" } satisfies ServerFrame) };
+  }
+  if (frame.t === "eph") {
+    // Presence and other ephemeral signals: relayed, never stored, never acked.
+    if (typeof frame.iv !== "string" || typeof frame.ct !== "string" || frame.ct.length > MAX_EPH_LENGTH) {
+      return { reply: JSON.stringify({ t: "err", error: "bad ephemeral frame" } satisfies ServerFrame) };
+    }
+    return { others: JSON.stringify({ t: "eph", iv: frame.iv, ct: frame.ct } satisfies ServerFrame) };
   }
   if (frame.t !== "send") return { reply: JSON.stringify({ t: "err", error: "unknown frame" } satisfies ServerFrame) };
   try {

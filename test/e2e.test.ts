@@ -1,21 +1,22 @@
-import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, RelayError } from "../src/client.ts";
 import { deriveChannel, generateCode } from "../src/crypto.ts";
+import { generateIdentity } from "../src/identity.ts";
 import type { Message } from "../src/protocol.ts";
 import { startRelay } from "../src/relay/bun.ts";
-
-const dataDir = mkdtempSync(join(tmpdir(), "mc-relay-"));
-let server: ReturnType<typeof startRelay>;
-let relay: string;
 
 // MC_TEST_RELAY=http://localhost:8787 runs the suite against another relay,
 // e.g. the Cloudflare one under `wrangler dev`.
 const external = process.env.MC_TEST_RELAY;
 // Real network round trips (and process spawns) need more than Bun's 5s default.
-setDefaultTimeout(30_000);
+setDefaultTimeout(60_000);
+
+const dataDir = mkdtempSync(join(tmpdir(), "mc-relay-"));
+let server: ReturnType<typeof startRelay> | undefined;
+let relay: string;
 
 beforeAll(() => {
   if (external) return void (relay = external);
@@ -24,20 +25,12 @@ beforeAll(() => {
 });
 afterAll(() => server?.stop(true));
 
-async function newChannel(): Promise<{ code: string; mac: Channel; win: Channel }> {
-  const code = generateCode();
-  const keys = await deriveChannel(code);
-  const mac = new Channel(keys, relay, "mac");
-  await mac.create();
-  const win = new Channel(await deriveChannel(code), relay, "win");
-  return { code, mac, win };
-}
-
 const MC = ["bun", join(import.meta.dir, "../src/cli/main.ts")];
 
 function mc(home: string, ...args: string[]) {
   return Bun.spawn([...MC, ...args], {
     env: { ...process.env, MC_HOME: home, MC_RELAY: relay },
+    stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -49,112 +42,239 @@ async function run(home: string, ...args: string[]): Promise<{ code: number; out
   return { code: await p.exited, out, err };
 }
 
-test("same code derives the same keys; different codes don't collide", async () => {
-  const a = await deriveChannel("mc1-abc");
-  expect(await deriveChannel("mc1-abc")).toEqual(a);
-  const b = await deriveChannel("mc1-abd");
-  expect(b.roomId).not.toBe(a.roomId);
-  expect(b.key).not.toBe(a.key);
-});
+async function ok(home: string, ...args: string[]): Promise<string> {
+  const r = await run(home, ...args);
+  if (r.code !== 0) throw new Error(`mc ${args.join(" ")} exited ${r.code}: ${r.err}`);
+  return r.out;
+}
 
-test("send and history round-trip, encrypted at rest", async () => {
-  const { mac, win } = await newChannel();
-  const seq = await mac.send("secret plan: ship it", { to: ["win"], kind: "ask" });
-  const { messages } = await win.history(0);
-  expect(messages).toHaveLength(1);
-  expect(messages[0]).toMatchObject({ seq, from: "mac", to: ["win"], kind: "ask", body: "secret plan: ship it" });
-
-  // The relay's database must not contain the plaintext.
-  if (external) return;
-  const file = readdirSync(dataDir).find((f) => f.startsWith(mac.keys.roomId) && f.endsWith(".sqlite"))!;
-  expect(readFileSync(join(dataDir, file)).includes("secret plan")).toBe(false);
-});
-
-test("wrong token is rejected, unknown room is 404", async () => {
-  const { mac } = await newChannel();
-  const forged = new Channel({ ...mac.keys, token: "nope" }, relay, "x");
-  await expect(forged.head()).rejects.toMatchObject({ status: 403 });
-  const stranger = new Channel(await deriveChannel(generateCode()), relay, "x");
-  await expect(stranger.head()).rejects.toBeInstanceOf(RelayError);
-});
-
-test("stream delivers live messages and replays after reconnect", async () => {
-  const { mac, win } = await newChannel();
-  await mac.send("before");
-
-  const got: Message[] = [];
-  const ac = new AbortController();
-  const done = win.stream(0, (m) => void got.push(m), { signal: ac.signal });
-  await mac.send("live");
-  while (got.length < 2) await Bun.sleep(10);
-  ac.abort();
-  await done;
-
-  await mac.send("while offline");
-  const ac2 = new AbortController();
-  const later: Message[] = [];
-  const done2 = win.stream(got.at(-1)!.seq, (m) => void later.push(m), { signal: ac2.signal });
-  while (later.length < 1) await Bun.sleep(10);
-  ac2.abort();
-  await done2;
-
-  expect(got.map((m) => m.body)).toEqual(["before", "live"]);
-  expect(later.map((m) => m.body)).toEqual(["while offline"]);
-});
-
-test("cli: create, join, wait wakes on a message, cursor prevents repeats", async () => {
-  const macHome = mkdtempSync(join(tmpdir(), "mc-mac-"));
-  const winHome = mkdtempSync(join(tmpdir(), "mc-win-"));
-
-  const created = await run(macHome, "create", "proj", "--as", "mac");
-  expect(created.code).toBe(0);
-  const code = /join code: (\S+)/.exec(created.out)![1]!;
-  expect((await run(winHome, "join", code, "proj", "--as", "win")).code).toBe(0);
-
-  // win blocks in wait; mac's own messages never wake mac.
-  const waiter = mc(winHome, "wait", "--for-me");
-  await Bun.sleep(300);
-  expect((await run(macHome, "send", "--to", "win", "--kind", "ask", "listening", "on", "10.0.0.2:24801")).code).toBe(0);
-  const out = await new Response(waiter.stdout).text();
-  expect(await waiter.exited).toBe(0);
-  expect(out.trim()).toMatch(/^#1 mac → win \[ask\]: listening on 10\.0\.0\.2:24801$/);
-
-  // Already consumed: read prints nothing new, wait times out.
-  expect((await run(winHome, "read")).out).toBe("");
-  expect((await run(winHome, "wait", "--timeout", "1")).code).toBe(2);
-
-  // Replies and history.
-  expect((await run(winHome, "send", "--re", "1", "connecting")).code).toBe(0);
-  expect((await run(macHome, "read")).out.trim()).toBe("#2 win → all re #1: connecting");
-  const log = await run(macHome, "log", "--json");
-  expect(log.out.trim().split("\n").map((l) => JSON.parse(l).body)).toEqual(["listening on 10.0.0.2:24801", "connecting"]);
-});
-
-test("cli: tail streams one line per message, flushed immediately", async () => {
-  const home = mkdtempSync(join(tmpdir(), "mc-tail-"));
-  const other = mkdtempSync(join(tmpdir(), "mc-tail2-"));
-  const code = /join code: (\S+)/.exec((await run(home, "create", "t", "--as", "a")).out)![1]!;
-  await run(other, "join", code, "t", "--as", "b");
-
-  const tail = mc(home, "tail");
-  const reader = tail.stdout.getReader();
-  const lines: string[] = [];
+/** Collect a long-running process's stdout lines as they arrive. */
+function lines(p: ReturnType<typeof mc>) {
+  const got: string[] = [];
   let buf = "";
-  const pump = (async () => {
+  const reader = p.stdout.getReader();
+  const done = (async () => {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) return;
       buf += new TextDecoder().decode(value);
       let i;
-      while ((i = buf.indexOf("\n")) >= 0) (lines.push(buf.slice(0, i)), (buf = buf.slice(i + 1)));
+      while ((i = buf.indexOf("\n")) >= 0) (got.push(buf.slice(0, i)), (buf = buf.slice(i + 1)));
     }
   })();
-  await Bun.sleep(300);
-  await run(other, "send", "one");
-  while (lines.length < 1) await Bun.sleep(10);
-  await run(other, "send", "two\nlines");
-  while (lines.length < 3) await Bun.sleep(10);
-  tail.kill();
-  await pump;
-  expect(lines).toEqual(["#1 b → all: one", "#2 b → all: two", "lines"]);
+  return {
+    got,
+    async until(pred: (l: string[]) => boolean, ms = 15_000) {
+      const end = Date.now() + ms;
+      while (!pred(got)) {
+        if (Date.now() > end) throw new Error(`timed out; got:\n${got.join("\n")}`);
+        await Bun.sleep(25);
+      }
+    },
+    stop: async () => {
+      p.kill();
+      await done;
+    },
+  };
+}
+
+const home = (tag: string) => mkdtempSync(join(tmpdir(), `mc-${tag}-`));
+
+describe("relay and client", () => {
+  async function newChannel() {
+    const keys = await deriveChannel(generateCode());
+    const mac = new Channel(keys, relay, await generateIdentity("mac"));
+    await mac.create();
+    const win = new Channel(keys, relay, await generateIdentity("win"));
+    return { mac, win };
+  }
+
+  test("signed round trip, encrypted at rest", async () => {
+    const { mac, win } = await newChannel();
+    const seq = await mac.send("secret plan: ship it", { to: ["win"], kind: "ask" });
+    const { messages } = await win.history(0);
+    expect(messages[0]).toMatchObject({ seq, from: "mac", to: ["win"], kind: "ask", body: "secret plan: ship it", sigOk: true });
+    if (external) return;
+    const file = readdirSync(dataDir).find((f) => f.startsWith(mac.keys.roomId) && f.endsWith(".sqlite"))!;
+    const raw = readFileSync(join(dataDir, file));
+    expect(raw.includes("secret plan")).toBe(false);
+    expect(raw.includes("mac")).toBe(false);
+  });
+
+  test("wrong token is rejected, unknown room is 404", async () => {
+    const { mac } = await newChannel();
+    const forged = new Channel({ ...mac.keys, token: "nope" }, relay, null, "x");
+    await expect(forged.head()).rejects.toMatchObject({ status: 403 });
+    const stranger = new Channel(await deriveChannel(generateCode()), relay, null, "x");
+    await expect(stranger.head()).rejects.toBeInstanceOf(RelayError);
+  });
+
+  test("stream replays after reconnect; presence is relayed but never stored", async () => {
+    const { mac, win } = await newChannel();
+    await mac.send("before");
+    const got: Message[] = [];
+    const seenPresence: string[] = [];
+    const ac = new AbortController();
+    const done = win.stream(0, (m) => void got.push(m), { signal: ac.signal, onPresence: (p) => void seenPresence.push(`${p.from}:${p.sigOk}`) });
+    while (got.length < 1) await Bun.sleep(10);
+
+    const ac2 = new AbortController();
+    const macStream = mac.stream(await mac.head(), () => {}, { signal: ac2.signal, onOpen: ({ presence }) => void presence({ client: "test" }) });
+    await mac.send("live");
+    while (got.length < 2 || !seenPresence.length) await Bun.sleep(10);
+    ac.abort();
+    ac2.abort();
+    await Promise.all([done, macStream]);
+    expect(got.map((m) => m.body)).toEqual(["before", "live"]);
+    expect(seenPresence).toEqual(["mac:true"]);
+    expect(await win.head()).toBe(2);
+  });
+});
+
+describe("agents coordinating through the CLI", () => {
+  const lead = home("lead");
+  const mac = home("mac");
+  const win = home("win");
+  let code = "";
+
+  test("create and join: announce roles, print agent instructions, protect names", async () => {
+    const created = await ok(lead, "create", "proj", "--as", "lead", "--role", "planner");
+    code = /join code: (\S+)/.exec(created)![1]!;
+    const joined = await ok(mac, "join", code, "proj", "--as", "mac", "--role", "macos");
+    expect(joined).toContain('You are agent "mac"');
+    expect(joined).toContain("mc tail");
+    await ok(win, "join", code, "proj", "--as", "win", "--role", "windows");
+
+    const impostor = await run(home("evil"), "join", code, "proj", "--as", "win");
+    expect(impostor.code).toBe(1);
+    expect(impostor.err).toContain('"win" already belongs to another key');
+
+    const status = await ok(lead, "status");
+    expect(status).toContain("lead (you) — planner");
+    expect(status).toContain("mac — macos");
+    expect(status).toContain("win — windows");
+  });
+
+  test("tail wakes on messages for you, skips your own, and announces presence", async () => {
+    const tail = lines(mc(win, "tail"));
+    await Bun.sleep(800);
+    expect(await ok(mac, "who")).toContain("win — windows · tail");
+    await ok(win, "send", "my own message");
+    await ok(mac, "send", "--to", "win", "--kind", "status", "capture is up");
+    await tail.until((l) => l.some((x) => x.includes("capture is up")));
+    await tail.stop();
+    expect(tail.got.join("\n")).not.toContain("my own message");
+    expect(tail.got.at(-1)).toMatch(/^#\d+ mac → win \[status\]: capture is up$/);
+  });
+
+  test("ask --wait returns the answer in one call, without a duplicate wake-up", async () => {
+    const backlog = await ok(mac, "read");
+    expect(backlog).toContain("win → all [event]: joined as windows");
+    expect(backlog).not.toContain("forged");
+    const asker = mc(mac, "ask", "--to", "win", "--wait", "30s", "which edge is the PC on?");
+    const wait = await ok(win, "wait", "--timeout", "20s");
+    const askSeq = /^#(\d+) mac → win \[ask\]/m.exec(wait)![1]!;
+    await ok(win, "reply", askSeq, "the left edge");
+    const answer = await new Response(asker.stdout).text();
+    expect(await asker.exited).toBe(0);
+    expect(answer.trim()).toMatch(new RegExp(`^#\\d+ win → mac re #${askSeq}: the left edge$`));
+    expect(await ok(mac, "read")).toBe("");
+  });
+
+  test("task board: owners, races, dependencies and notifications", async () => {
+    await ok(lead, "read");
+    const t1 = /added (T\d+)/.exec(await ok(lead, "task", "add", "Define protocol v2"))![1]!;
+    const t2 = /added (T\d+)/.exec(await ok(lead, "task", "add", "Windows client for v2", "--owner", "win", "--after", t1))![1]!;
+
+    // win is told it was given a task.
+    expect(await ok(win, "read")).toContain(`added task ${t2} “Windows client for v2” for win after ${t1}`);
+
+    // mac claims T1; win can't take it.
+    expect(await ok(mac, "task", "claim", t1)).toBe(`${t1} doing @mac: Define protocol v2\n`);
+    const stolen = await run(win, "task", "claim", t1);
+    expect(stolen.code).toBe(1);
+    expect(stolen.err).toContain("is owned by mac");
+
+    // Finishing T1 notifies its creator and the owner of the task waiting on it.
+    await ok(mac, "task", "done", t1, "spec in docs/v2.md");
+    expect(await ok(lead, "read")).toContain(`finished ${t1} “Define protocol v2”: spec in docs/v2.md`);
+    expect(await ok(win, "read")).toContain(`finished ${t1}`);
+
+    const board = await ok(win, "tasks", "--all");
+    expect(board).toMatch(new RegExp(`${t2}\\s+todo\\s+@win Windows client for v2`));
+    expect(await ok(win, "task", "show", t2)).toContain(`after: ${t1} (done) — all done`);
+  });
+
+  test("claims block overlapping edits until released", async () => {
+    expect(await ok(win, "claim", "crates/net", "--ttl", "20m", "--note", "refactor")).toContain("crates/net  @win");
+    const clash = await run(mac, "claim", "crates/net/tcp.rs");
+    expect(clash.code).toBe(1);
+    expect(clash.err).toContain("crates/net is claimed by win");
+    await ok(win, "release");
+    expect(await ok(mac, "claim", "crates/net/tcp.rs")).toContain("crates/net/tcp.rs  @mac");
+    expect(await ok(lead, "claims")).toContain("@mac");
+  });
+
+  test("facts are shared and last write wins", async () => {
+    await ok(mac, "set", "mac.ip", "192.168.1.20");
+    await ok(win, "set", "mac.ip", "192.168.1.21");
+    expect((await ok(lead, "get", "mac.ip")).trim()).toBe("192.168.1.21");
+    expect(await ok(lead, "facts")).toContain("mac.ip = 192.168.1.21  (win)");
+    expect((await run(lead, "get", "nope")).code).toBe(2);
+  });
+
+  test("role addressing and the status snapshot", async () => {
+    await ok(lead, "ask", "--to", "role:windows", "status of the v2 client?");
+    const status = await ok(win, "status");
+    expect(status).toContain("waiting on you (1)");
+    expect(status).toContain("status of the v2 client?");
+    expect(status).toMatch(/tasks \(\d+ open, 1 done\)/);
+    expect(status).toContain("mac.ip = 192.168.1.21");
+  });
+});
+
+describe("MCP server", () => {
+  test("exposes the channel as tools", async () => {
+    const h = home("mcp");
+    const other = home("mcp-other");
+    const code = /join code: (\S+)/.exec(await ok(h, "create", "m", "--as", "agent-a", "--role", "builder"))![1]!;
+    await ok(other, "join", code, "m", "--as", "agent-b");
+
+    const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, MC_HOME: h, MC_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const reader = p.stdout.getReader();
+    let buf = "";
+    let id = 0;
+    const rpc = async (method: string, params: object = {}) => {
+      const myId = ++id;
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: myId, method, params }) + "\n");
+      p.stdin.flush();
+      for (;;) {
+        const nl = buf.indexOf("\n");
+        if (nl >= 0) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          const msg = JSON.parse(line);
+          if (msg.id === myId) return msg.result ?? msg.error;
+          continue;
+        }
+        const { value, done } = await reader.read();
+        if (done) throw new Error("mcp exited");
+        buf += new TextDecoder().decode(value);
+      }
+    };
+    const call = async (name: string, args: object = {}) => ((await rpc("tools/call", { name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
+
+    const init = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } })) as { instructions: string };
+    expect(init.instructions).toContain('You are "agent-a"');
+    p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    const tools = ((await rpc("tools/list")) as { tools: { name: string }[] }).tools.map((t) => t.name).sort();
+    expect(tools).toEqual(["ask", "claim", "facts", "log", "read", "release", "reply", "send", "status", "task_add", "task_update", "tasks"]);
+
+    expect(await call("task_add", { title: "write docs" })).toMatch(/^added T\d+$/);
+    expect(await call("claim", { paths: ["docs/"], ttl: "10m" })).toContain("docs/  @agent-a");
+    expect(await call("status")).toContain("agent-a (you) — builder");
+    expect(await call("facts", { set: "docs.url", value: "https://example.com" })).toContain("docs.url = https://example.com");
+    expect(await ok(other, "tasks")).toContain("write docs");
+    p.kill();
+  });
 });

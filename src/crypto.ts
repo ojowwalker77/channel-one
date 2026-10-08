@@ -6,7 +6,6 @@
 //   key    - AES-256-GCM key for message contents (never leaves the clients)
 // The relay can route and store messages but cannot read or forge them.
 
-import { PROTOCOL_VERSION, type Payload } from "./protocol.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -75,11 +74,14 @@ export async function tokenVerifier(token: string): Promise<string> {
   return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(token))));
 }
 
-async function aesKey(key: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", fromB64url(key), "AES-GCM", false, ["encrypt", "decrypt"]);
+const aesKeys = new Map<string, Promise<CryptoKey>>();
+function aesKey(key: string): Promise<CryptoKey> {
+  let k = aesKeys.get(key);
+  if (!k) aesKeys.set(key, (k = crypto.subtle.importKey("raw", fromB64url(key), "AES-GCM", false, ["encrypt", "decrypt"])));
+  return k;
 }
 
-export async function seal(keys: ChannelKeys, payload: Payload): Promise<{ iv: string; ct: string }> {
+export async function seal(keys: ChannelKeys, payload: object): Promise<{ iv: string; ct: string }> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await crypto.subtle.encrypt(
     // Binding the room id stops a relay from replaying ciphertext across channels.
@@ -90,16 +92,15 @@ export async function seal(keys: ChannelKeys, payload: Payload): Promise<{ iv: s
   return { iv: b64url(iv), ct: b64url(new Uint8Array(ct)) };
 }
 
-/** Decrypt an envelope, or return null if it isn't a valid message for this channel. */
-export async function open(keys: ChannelKeys, iv: string, ct: string): Promise<Payload | null> {
+/** Decrypt an envelope to its JSON payload, or null if it isn't valid for this channel. */
+export async function open(keys: ChannelKeys, iv: string, ct: string): Promise<unknown> {
   try {
     const pt = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: fromB64url(iv), additionalData: enc.encode(keys.roomId) },
       await aesKey(keys.key),
       fromB64url(ct),
     );
-    const p = JSON.parse(dec.decode(pt)) as Payload;
-    return p.v === PROTOCOL_VERSION && typeof p.body === "string" && typeof p.from === "string" ? p : null;
+    return JSON.parse(dec.decode(pt));
   } catch {
     return null;
   }

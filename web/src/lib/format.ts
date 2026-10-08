@@ -14,7 +14,7 @@ export function initials(name: string): string {
   return (parts.length > 1 ? parts[0]![0]! + parts[1]![0]! : name.slice(0, 2)).toUpperCase()
 }
 
-export const KIND_META: Record<Exclude<Kind, "msg">, { label: string; icon: LucideIcon; className: string }> = {
+export const KIND_META: Record<Exclude<Kind, "msg" | "event">, { label: string; icon: LucideIcon; className: string }> = {
   ask: { label: "Ask", icon: CircleHelpIcon, className: "bg-sky-500/10 text-sky-600 dark:text-sky-400" },
   blocking: { label: "Blocking", icon: OctagonAlertIcon, className: "bg-red-500/10 text-red-600 dark:text-red-400" },
   status: { label: "Status", icon: RadioIcon, className: "bg-violet-500/10 text-violet-600 dark:text-violet-400" },

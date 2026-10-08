@@ -2,6 +2,7 @@ import { ArrowDownIcon, MessagesSquareIcon } from "lucide-react"
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import type { Message } from "@mc/protocol.ts"
+import type { ChannelState } from "@mc/state.ts"
 import { Button } from "@/components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -11,7 +12,7 @@ import { MessageItem } from "./message-item"
 const GROUP_MS = 5 * 60_000
 
 function startsGroup(prev: Message | undefined, m: Message): boolean {
-  if (!prev || prev.from !== m.from || m.ts - prev.ts > GROUP_MS) return true
+  if (!prev || prev.kind === "event" || prev.from !== m.from || m.ts - prev.ts > GROUP_MS) return true
   if (formatDay(prev.ts) !== formatDay(m.ts)) return true
   // Anything with routing or a kind deserves its own header.
   return m.kind !== "msg" || !!m.to?.length || !!m.re?.length
@@ -21,12 +22,14 @@ interface Props {
   messages: Message[]
   all: Message[]
   me: string
+  state: ChannelState
   loading: boolean
   empty: { title: string; description: string }
   onReply: (m: Message) => void
+  onOpenTask: (id: number) => void
 }
 
-export function MessageList({ messages, all, me, loading, empty, onReply }: Props) {
+export function MessageList({ messages, all, me, state, loading, empty, onReply, onOpenTask }: Props) {
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const [unseen, setUnseen] = useState(0)
@@ -121,6 +124,9 @@ export function MessageList({ messages, all, me, loading, empty, onReply }: Prop
                   )}
                   <MessageItem
                     message={m}
+                    trust={state.trust.get(m.seq)}
+                    state={m.kind === "event" ? state : undefined}
+                    onOpenTask={onOpenTask}
                     compact={!newDay && !startsGroup(prev, m)}
                     me={me}
                     highlighted={highlight === m.seq}

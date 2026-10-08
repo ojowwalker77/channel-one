@@ -57,9 +57,10 @@ export class Room extends DurableObject<Env> {
   }
 
   override webSocketMessage(ws: WebSocket, data: string | ArrayBuffer): void {
-    const { broadcast, reply } = onClientFrame(this.store, typeof data === "string" ? data : new TextDecoder().decode(data));
-    ws.send(reply);
+    const { broadcast, others, reply } = onClientFrame(this.store, typeof data === "string" ? data : new TextDecoder().decode(data));
+    if (reply) ws.send(reply);
     if (broadcast) this.broadcast(broadcast);
+    if (others) this.broadcast(others, ws);
   }
 
   override webSocketClose(ws: WebSocket, code: number): void {
@@ -68,8 +69,9 @@ export class Room extends DurableObject<Env> {
     } catch {}
   }
 
-  private broadcast(frame: string): void {
+  private broadcast(frame: string, except?: WebSocket): void {
     for (const ws of this.ctx.getWebSockets()) {
+      if (ws === except) continue;
       try {
         ws.send(frame);
       } catch {}

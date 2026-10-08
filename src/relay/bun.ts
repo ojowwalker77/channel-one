@@ -43,8 +43,8 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
     return s;
   };
 
-  const broadcast = (roomId: string, frame: string) => {
-    for (const ws of sockets.get(roomId) ?? []) ws.send(frame);
+  const broadcast = (roomId: string, frame: string, except?: ServerWebSocket<SocketData>) => {
+    for (const ws of sockets.get(roomId) ?? []) if (ws !== except) ws.send(frame);
   };
 
   return Bun.serve<SocketData>({
@@ -82,9 +82,10 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
       message(ws, data) {
         const raw = typeof data === "string" ? data : new TextDecoder().decode(data);
         if (raw === PING) return void ws.send(PONG);
-        const { broadcast: frame, reply } = onClientFrame(storeFor(ws.data.roomId), raw);
-        ws.send(reply);
+        const { broadcast: frame, others, reply } = onClientFrame(storeFor(ws.data.roomId), raw);
+        if (reply) ws.send(reply);
         if (frame) broadcast(ws.data.roomId, frame);
+        if (others) broadcast(ws.data.roomId, others, ws);
       },
       close(ws) {
         sockets.get(ws.data.roomId)?.delete(ws);

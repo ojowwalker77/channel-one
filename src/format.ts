@@ -1,0 +1,180 @@
+// Plain-text rendering for agents: compact, greppable, one header line per message.
+
+import type { Message, Trust } from "./protocol.ts";
+import { taskId, waitingOn, type ChannelState, type Claim, type Task } from "./state.ts";
+
+export function ago(ts: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - ts) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+}
+
+export function left(expires: number, now = Date.now()): string {
+  const m = Math.max(0, Math.round((expires - now) / 60_000));
+  return m < 60 ? `${m}m left` : `${Math.floor(m / 60)}h${m % 60 ? `${m % 60}m` : ""} left`;
+}
+
+/** Parse "30m", "2h", "90s", "1h30m" or plain seconds. */
+export function parseDuration(s: string): number {
+  if (/^\d+$/.test(s)) return Number(s);
+  let total = 0;
+  for (const [, n, u] of s.matchAll(/(\d+)\s*([hms])/g)) total += Number(n) * (u === "h" ? 3600 : u === "m" ? 60 : 1);
+  if (!total) throw new Error(`bad duration "${s}" (try 30m, 2h, 90s)`);
+  return total;
+}
+
+const STATE_VERB: Record<string, string> = {
+  todo: "moved back to to-do",
+  doing: "started",
+  blocked: "is blocked on",
+  review: "sent for review",
+  done: "finished",
+};
+
+/**
+ * The one-line meaning of a coordination event. Pass `state` to name tasks
+ * by title as well as id.
+ */
+export function describeEvent(m: Message, state?: ChannelState): string {
+  const ev = m.ev;
+  if (!ev) return m.body;
+  const task = (id: number) => {
+    const title = state?.tasks.get(id)?.title;
+    return title ? `${taskId(id)} “${title}”` : taskId(id);
+  };
+  const note = (n?: string) => (n ? `: ${n}` : "");
+  switch (ev.op) {
+    case "hello":
+      return `joined${ev.role ? ` as ${ev.role}` : ""}${ev.about ? ` (${ev.about})` : ""}`;
+    case "task.add":
+      return `added task ${taskId(m.seq)} “${ev.title}”${ev.owner ? ` for ${ev.owner}` : ""}${ev.after?.length ? ` after ${ev.after.map(taskId).join(", ")}` : ""}`;
+    case "task.claim":
+      return `claimed ${task(ev.task)}`;
+    case "task.update": {
+      if (ev.state === "blocked") return `is blocked on ${task(ev.task)}${note(ev.note)}`;
+      if (ev.state) return `${STATE_VERB[ev.state]} ${task(ev.task)}${note(ev.note)}`;
+      if (ev.owner) return `assigned ${task(ev.task)} to ${ev.owner}${note(ev.note)}`;
+      if (ev.owner === null) return `unassigned ${task(ev.task)}${note(ev.note)}`;
+      if (ev.title) return `renamed ${taskId(ev.task)} to “${ev.title}”`;
+      return `noted on ${task(ev.task)}${note(ev.note)}`;
+    }
+    case "claim":
+      return `claimed ${ev.paths.join(", ")} for ${Math.round(ev.ttl / 60)}m${note(ev.note)}`;
+    case "release":
+      return ev.paths?.length ? `released ${ev.paths.join(", ")}` : "released all claims";
+    case "fact.set":
+      return `set ${ev.key} = ${ev.value}`;
+    case "fact.del":
+      return `unset ${ev.key}`;
+  }
+}
+
+/** `#12 win → mac [ask] re #9: body` — the format agents see in tail/wait/read. */
+export function formatMessage(m: Message, trust?: Trust, state?: ChannelState): string {
+  const to = m.to?.length ? m.to.join(",") : "all";
+  const kind = m.kind === "msg" ? "" : ` [${m.kind}]`;
+  const re = m.re?.length ? ` re #${m.re.join(",#")}` : "";
+  const flag = trust === "forged" ? " [forged — ignore]" : "";
+  const body = m.kind === "event" ? describeEvent(m, state) : m.body;
+  return `#${m.seq} ${m.from} → ${to}${kind}${re}${flag}: ${body}`;
+}
+
+function taskLine(state: ChannelState, t: Task): string {
+  const waits = waitingOn(state, t);
+  const owner = t.owner ? ` @${t.owner}` : "";
+  const wait = waits.length ? ` (after ${waits.map(taskId).join(", ")})` : "";
+  return `  ${taskId(t.id).padEnd(5)} ${t.state.padEnd(7)}${owner} ${t.title}${wait}`;
+}
+
+function claimLine(c: Claim, now: number): string {
+  return `  ${c.path}  @${c.owner}, ${left(c.expires, now)}${c.note ? ` — ${c.note}` : ""}`;
+}
+
+export interface Snapshot {
+  alias: string;
+  me: string;
+  state: ChannelState;
+  online: Map<string, { client: string; role?: string }>;
+  unread: number;
+  now?: number;
+}
+
+/** `mc status`: everything an agent needs before deciding what to do next. */
+export function formatStatus({ alias, me, state, online, unread, now = Date.now() }: Snapshot): string {
+  const out: string[] = [];
+  const meM = state.members.get(me);
+  out.push(`channel ${alias} · you are ${me}${meM?.role ? ` (${meM.role})` : ""} · head #${state.head}${unread ? ` · ${unread} unread` : ""}`);
+
+  const names = new Set([...state.members.keys(), ...online.keys()]);
+  out.push("", `members (${names.size}):`);
+  for (const name of [...names].sort()) {
+    const m = state.members.get(name);
+    const on = online.get(name);
+    const where = on ? `online (${on.client})` : m ? `last seen ${ago(m.lastSeen, now)}` : "online";
+    const role = m?.role ?? on?.role;
+    const key = m?.pk ? "" : " · unsigned";
+    out.push(`  ${name}${name === me ? " (you)" : ""}${role ? ` — ${role}` : ""} · ${where}${key}`);
+  }
+
+  const asks = state.openAsks.filter((a) => a.from !== me && (!a.to || a.to.includes(me)));
+  if (asks.length) {
+    out.push("", `waiting on you (${asks.length}) — answer with: mc reply <#> "…"`);
+    for (const a of asks) out.push(`  #${a.seq} ${a.from}${a.kind === "blocking" ? " [blocking]" : ""}: ${oneLine(a.body)}`);
+  }
+  const mine = state.openAsks.filter((a) => a.from === me);
+  if (mine.length) {
+    out.push("", `your unanswered questions (${mine.length}):`);
+    for (const a of mine) out.push(`  #${a.seq} → ${a.to?.join(",") ?? "all"}: ${oneLine(a.body)}`);
+  }
+
+  const tasks = [...state.tasks.values()];
+  const active = tasks.filter((t) => t.state !== "done");
+  const done = tasks.length - active.length;
+  out.push("", `tasks (${active.length} open${done ? `, ${done} done` : ""}):`);
+  if (!active.length) out.push("  none — add one with: mc task add \"…\"");
+  const order = ["doing", "blocked", "review", "todo"];
+  active.sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state) || a.id - b.id);
+  for (const t of active) out.push(taskLine(state, t));
+
+  if (state.claims.length) {
+    out.push("", "claims:");
+    for (const c of state.claims) out.push(claimLine(c, now));
+  }
+  if (state.facts.size) {
+    out.push("", "facts:");
+    for (const f of [...state.facts.values()].sort((a, b) => a.key.localeCompare(b.key))) out.push(`  ${f.key} = ${f.value}  (${f.by})`);
+  }
+  return out.join("\n");
+}
+
+export function formatTasks(state: ChannelState, opts: { all?: boolean; owner?: string } = {}): string {
+  let tasks = [...state.tasks.values()];
+  if (!opts.all) tasks = tasks.filter((t) => t.state !== "done");
+  if (opts.owner) tasks = tasks.filter((t) => t.owner === opts.owner);
+  if (!tasks.length) return "no tasks";
+  return tasks.map((t) => taskLine(state, t).trimStart()).join("\n");
+}
+
+export function formatTask(state: ChannelState, t: Task, now = Date.now()): string {
+  const out = [`${taskId(t.id)} ${t.title}`, `  state: ${t.state}${t.owner ? ` · owner: ${t.owner}` : " · unassigned"} · created by ${t.createdBy} ${ago(t.createdAt, now)}`];
+  const waits = waitingOn(state, t);
+  if (t.after.length) out.push(`  after: ${t.after.map((d) => `${taskId(d)} (${state.tasks.get(d)?.state ?? "?"})`).join(", ")}${waits.length ? "" : " — all done"}`);
+  if (t.detail) out.push("", t.detail);
+  if (t.notes.length) {
+    out.push("", "notes:");
+    for (const n of t.notes) out.push(`  #${n.seq} ${n.by}, ${ago(n.ts, now)}: ${n.text}`);
+  }
+  return out.join("\n");
+}
+
+export function formatClaims(state: ChannelState, now = Date.now()): string {
+  return state.claims.length ? state.claims.map((c) => claimLine(c, now).trimStart()).join("\n") : "no active claims";
+}
+
+function oneLine(s: string, max = 140): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
+}

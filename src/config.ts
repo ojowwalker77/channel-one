@@ -1,11 +1,15 @@
 // Local state in ~/.modelchannel (override with MC_HOME):
 //   config.json            joined channels and their derived keys
+//   identities/<agent>     each agent's Ed25519 signing key
 //   cursors/<ch>.<agent>   last sequence number each agent has consumed
+//   cache/<room>.jsonl     decrypted, verified messages (so state folds are fast)
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChannelKeys } from "./crypto.ts";
+import { generateIdentity, type Identity } from "./identity.ts";
+import type { Message } from "./protocol.ts";
 
 /** Public relay used when neither --relay nor MC_RELAY is given. */
 export const DEFAULT_RELAY = "https://modelchannel-relay.modelchannel.workers.dev";
@@ -62,4 +66,58 @@ export function readCursor(channel: string, agent: string): number | null {
 
 export function writeCursor(channel: string, agent: string, seq: number): void {
   writePrivate(cursorPath(channel, agent), `${seq}\n`);
+}
+
+/** Sequence numbers already delivered out of band (e.g. by `ask --wait`), so tail/wait skip them. */
+function seenPath(channel: string, agent: string): string {
+  return `${cursorPath(channel, agent)}.seen`;
+}
+
+export function readSeen(channel: string, agent: string): Set<number> {
+  const path = seenPath(channel, agent);
+  if (!existsSync(path)) return new Set();
+  return new Set(readFileSync(path, "utf8").split(/\s+/).filter(Boolean).map(Number));
+}
+
+export function markSeen(channel: string, agent: string, seqs: number[]): void {
+  if (!seqs.length) return;
+  const cursor = readCursor(channel, agent) ?? 0;
+  const all = [...readSeen(channel, agent), ...seqs].filter((s) => s > cursor);
+  writePrivate(seenPath(channel, agent), [...new Set(all)].sort((a, b) => a - b).join("\n") + "\n");
+}
+
+export async function loadIdentity(name: string): Promise<Identity> {
+  const path = join(home(), "identities", `${safe(name)}.json`);
+  if (existsSync(path)) return JSON.parse(readFileSync(path, "utf8")) as Identity;
+  const id = await generateIdentity(name);
+  writePrivate(path, JSON.stringify(id, null, 2) + "\n");
+  return id;
+}
+
+function cachePath(roomId: string): string {
+  return join(home(), "cache", `${roomId}.jsonl`);
+}
+
+/** Cached messages for a room, oldest first, deduplicated by seq. */
+export function readCache(roomId: string): Message[] {
+  const path = cachePath(roomId);
+  if (!existsSync(path)) return [];
+  const bySeq = new Map<number, Message>();
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (!line) continue;
+    try {
+      const m = JSON.parse(line) as Message;
+      bySeq.set(m.seq, m);
+    } catch {
+      // A torn final line from a concurrent append; the next sync refetches it.
+    }
+  }
+  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+}
+
+export function appendCache(roomId: string, messages: Message[]): void {
+  if (!messages.length) return;
+  const path = cachePath(roomId);
+  mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+  appendFileSync(path, messages.map((m) => JSON.stringify(m)).join("\n") + "\n", { mode: 0o600 });
 }

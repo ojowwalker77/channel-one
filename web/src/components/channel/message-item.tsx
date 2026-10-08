@@ -1,8 +1,22 @@
-import { ArrowRightIcon, CopyIcon, CornerUpLeftIcon } from "lucide-react"
+import {
+  ArrowRightIcon,
+  CheckSquareIcon,
+  CopyIcon,
+  CornerUpLeftIcon,
+  KeyRoundIcon,
+  LockIcon,
+  LockOpenIcon,
+  type LucideIcon,
+  ShieldAlertIcon,
+  ShieldCheckIcon,
+  UserPlusIcon,
+} from "lucide-react"
 import { memo } from "react"
 import { toast } from "sonner"
 
-import type { Message } from "@mc/protocol.ts"
+import { describeEvent } from "@mc/format.ts"
+import type { Event, Message, Trust } from "@mc/protocol.ts"
+import type { ChannelState } from "@mc/state.ts"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { excerpt, formatFull, formatTime, KIND_META } from "@/lib/format"
@@ -11,7 +25,7 @@ import { AgentAvatar } from "./agent-avatar"
 import { Markdown } from "./markdown"
 
 export function KindBadge({ kind, className }: { kind: Message["kind"]; className?: string }) {
-  if (kind === "msg") return null
+  if (kind === "msg" || kind === "event") return null
   const meta = KIND_META[kind]
   return (
     <span
@@ -40,8 +54,71 @@ function Time({ ts, className }: { ts: number; className?: string }) {
   )
 }
 
+const EVENT_ICON: Record<Event["op"], LucideIcon> = {
+  hello: UserPlusIcon,
+  "task.add": CheckSquareIcon,
+  "task.claim": CheckSquareIcon,
+  "task.update": CheckSquareIcon,
+  claim: LockIcon,
+  release: LockOpenIcon,
+  "fact.set": KeyRoundIcon,
+  "fact.del": KeyRoundIcon,
+}
+
+/** Coordination events render as one quiet line, not a chat bubble. */
+function EventRow({ m, trust, state, onOpenTask }: { m: Message; trust?: Trust; state?: ChannelState; onOpenTask: (id: number) => void }) {
+  const Icon = m.ev ? EVENT_ICON[m.ev.op] : CheckSquareIcon
+  const taskRef = m.ev && "task" in m.ev ? m.ev.task : m.ev?.op === "task.add" ? m.seq : null
+  return (
+    <div id={`m${m.seq}`} className="group flex items-center gap-3 px-3 py-1 text-xs text-muted-foreground">
+      <div className="flex w-8 shrink-0 justify-center">
+        <Icon className="size-3.5" />
+      </div>
+      <div className={cn("min-w-0 flex-1 truncate", trust === "forged" && "line-through opacity-60")}>
+        <span className="font-medium text-foreground">{m.from}</span> {describeEvent(m, state)}
+        {taskRef !== null && (
+          <button type="button" onClick={() => onOpenTask(taskRef)} className="ml-2 font-medium text-primary hover:underline">
+            View
+          </button>
+        )}
+      </div>
+      {trust === "forged" && <TrustBadge trust={trust} />}
+      <Time ts={m.ts} className="text-[11px] opacity-0 group-hover:opacity-100" />
+    </div>
+  )
+}
+
+export function TrustBadge({ trust, pk }: { trust?: Trust; pk?: string }) {
+  if (trust === "verified") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <ShieldCheckIcon className="size-3.5 text-emerald-600 dark:text-emerald-400" aria-label="Verified" />
+        </TooltipTrigger>
+        <TooltipContent>Signed by this member’s key{pk ? ` · ${pk.slice(0, 8)}` : ""}</TooltipContent>
+      </Tooltip>
+    )
+  }
+  if (trust === "forged") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex h-5 items-center gap-1 rounded-md bg-destructive/10 px-1.5 text-[11px] font-medium text-destructive">
+            <ShieldAlertIcon className="size-3" />
+            Forged
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>Not signed by the key that owns this name. Agents ignore it.</TooltipContent>
+      </Tooltip>
+    )
+  }
+  return null
+}
+
 interface Props {
   message: Message
+  trust?: Trust
+  state?: ChannelState
   /** Continuation of the previous message from the same sender: no header. */
   compact: boolean
   me: string
@@ -49,9 +126,11 @@ interface Props {
   quoted: (seq: number) => Message | undefined
   onReply: (m: Message) => void
   onJump: (seq: number) => void
+  onOpenTask: (id: number) => void
 }
 
-export const MessageItem = memo(function MessageItem({ message: m, compact, me, highlighted, quoted, onReply, onJump }: Props) {
+export const MessageItem = memo(function MessageItem({ message: m, trust, state, compact, me, highlighted, quoted, onReply, onJump, onOpenTask }: Props) {
+  if (m.kind === "event") return <EventRow m={m} trust={trust} state={state} onOpenTask={onOpenTask} />
   const mine = m.from === me
   const forMe = !mine && !!m.to?.includes(me)
 
@@ -77,6 +156,7 @@ export const MessageItem = memo(function MessageItem({ message: m, compact, me, 
         {!compact && (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="text-sm font-semibold">{m.from}</span>
+            <TrustBadge trust={trust} pk={m.pk} />
             {mine && <span className="text-xs text-muted-foreground">(you)</span>}
             {m.to?.length ? (
               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
@@ -110,7 +190,7 @@ export const MessageItem = memo(function MessageItem({ message: m, compact, me, 
           )
         })}
 
-        <div className={cn(!compact && "mt-0.5")}>
+        <div className={cn(!compact && "mt-0.5", trust === "forged" && "opacity-60")}>
           <Markdown>{m.body}</Markdown>
         </div>
       </div>

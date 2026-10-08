@@ -1,10 +1,11 @@
 import {
+  ActivityIcon,
   AtSignIcon,
+  KanbanSquareIcon,
   ChevronsUpDownIcon,
   CircleHelpIcon,
   LinkIcon,
   LogOutIcon,
-  MessagesSquareIcon,
   MonitorIcon,
   MoonIcon,
   PencilIcon,
@@ -40,15 +41,20 @@ import {
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar"
-import type { Agent, Connection } from "@/lib/channel"
+import type { Connection, Online } from "@/lib/channel"
 import { excerpt, formatAgo } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { AgentAvatar } from "./agent-avatar"
 
-export type View = { kind: "all" } | { kind: "open" } | { kind: "mine" } | { kind: "agent"; name: string }
+export type View = { kind: "all" } | { kind: "board" } | { kind: "open" } | { kind: "mine" } | { kind: "agent"; name: string }
 
-/** Active within this window counts as online. */
-export const ONLINE_MS = 10 * 60_000
+export interface AgentRow {
+  name: string
+  role?: string
+  lastSeen: number
+  status?: string
+  verified: boolean
+}
 
 const CONNECTION: Record<Connection, { label: string; dot: string }> = {
   unlocking: { label: "Unlocking", dot: "bg-muted-foreground/50" },
@@ -63,8 +69,9 @@ interface Props {
   connection: Connection
   view: View
   onView: (v: View) => void
-  counts: { all: number; open: number; mine: number }
-  agents: Agent[]
+  counts: { all: number; board: number; open: number; mine: number }
+  agents: AgentRow[]
+  online: Map<string, Online>
   now: number
   me: string
   onRename: () => void
@@ -72,7 +79,7 @@ interface Props {
   onLeave: () => void
 }
 
-export function AppSidebar({ channelId, connection, view, onView, counts, agents, now, me, onRename, onCopyLink, onLeave }: Props) {
+export function AppSidebar({ channelId, connection, view, onView, counts, agents, online, now, me, onRename, onCopyLink, onLeave }: Props) {
   const { theme, setTheme } = useTheme()
   const { isMobile, setOpenMobile } = useSidebar()
   const select = (v: View) => {
@@ -81,9 +88,11 @@ export function AppSidebar({ channelId, connection, view, onView, counts, agents
   }
   const conn = CONNECTION[connection]
   const others = agents.filter((a) => a.name !== me)
+  const onlineCount = others.filter((a) => online.has(a.name)).length
 
   const views = [
-    { view: { kind: "all" } as const, label: "All messages", icon: MessagesSquareIcon, count: counts.all },
+    { view: { kind: "all" } as const, label: "Activity", icon: ActivityIcon, count: counts.all },
+    { view: { kind: "board" } as const, label: "Task board", icon: KanbanSquareIcon, count: counts.board },
     { view: { kind: "open" } as const, label: "Open questions", icon: CircleHelpIcon, count: counts.open },
     { view: { kind: "mine" } as const, label: `For ${me}`, icon: AtSignIcon, count: counts.mine },
   ]
@@ -131,14 +140,19 @@ export function AppSidebar({ channelId, connection, view, onView, counts, agents
         </SidebarGroup>
 
         <SidebarGroup>
-          <SidebarGroupLabel>Agents</SidebarGroupLabel>
+          <SidebarGroupLabel>
+            Agents
+            <span className="ml-auto font-normal tabular-nums">
+              {onlineCount}/{others.length} online
+            </span>
+          </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {others.length === 0 && (
                 <p className="px-2 py-1.5 text-xs text-muted-foreground">No one else has posted yet.</p>
               )}
               {others.map((a) => {
-                const online = now - a.lastSeen < ONLINE_MS
+                const on = online.get(a.name)
                 return (
                   <SidebarMenuItem key={a.name}>
                     <SidebarMenuButton
@@ -147,15 +161,14 @@ export function AppSidebar({ channelId, connection, view, onView, counts, agents
                       onClick={() => select({ kind: "agent", name: a.name })}
                       className="h-auto py-2"
                     >
-                      <AgentAvatar name={a.name} online={online} className="self-start" />
+                      <AgentAvatar name={a.name} online={!!on} className="self-start" />
                       <div className="grid flex-1 gap-0.5 text-left leading-tight">
                         <span className="flex items-baseline justify-between gap-2">
                           <span className="truncate text-sm font-medium">{a.name}</span>
-                          <span className="shrink-0 text-[11px] text-muted-foreground">{formatAgo(a.lastSeen, now)}</span>
+                          <span className="shrink-0 text-[11px] text-muted-foreground">{on ? "online" : formatAgo(a.lastSeen, now)}</span>
                         </span>
-                        <span className="line-clamp-2 text-xs text-muted-foreground">
-                          {a.status ? excerpt(a.status.body, 80) : `${a.count} message${a.count === 1 ? "" : "s"}`}
-                        </span>
+                        {(a.role || on?.role) && <span className="truncate text-[11px] text-muted-foreground/80">{a.role ?? on?.role}</span>}
+                        {a.status && <span className="line-clamp-2 text-xs text-muted-foreground">{excerpt(a.status, 80)}</span>}
                       </div>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

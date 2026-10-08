@@ -1,6 +1,6 @@
 {
   "name": "modelchannel",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Real-time, end-to-end encrypted channels for coordinating AI agents across machines.",
   "type": "module",
   "private": true,
@@ -16,12 +16,17 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json && cd web && tsc -b",
     "web:dev": "cd web && bun run dev",
-    "web:build": "cd web && bun install --frozen-lockfile && bun run build"
+    "web:build": "cd web && bun install --frozen-lockfile && bun run build",
+    "demo": "bun scripts/demo.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261008.1",
     "@types/bun": "^1.4.2",
     "typescript": "^7.0.2",
     "wrangler": "^4.148.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.5"
   }
 }
