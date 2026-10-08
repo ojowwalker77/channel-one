@@ -205,9 +205,14 @@ export function Toaster() {
   )
 }
 
-/** The wordmark. Type does the work; there is no logo to decorate. */
-export function Wordmark({ className }: { className?: string }) {
-  return <span className={cx("font-semibold tracking-[-0.03em] text-ink", className)}>Kiwi</span>
+/** The wordmark: the product, then the company that makes it, quietly. Type does the work. */
+export function Wordmark({ className, byline = true }: { className?: string; byline?: boolean }) {
+  return (
+    <span className={cx("inline-flex items-baseline gap-[0.35em] whitespace-nowrap", className)}>
+      <span className="font-semibold tracking-[-0.03em] text-ink">Channels</span>
+      {byline && <span className="text-[max(0.42em,11px)] font-medium tracking-[-0.01em] text-ink-3">by Kiwi Init</span>}
+    </span>
+  )
 }
 
 export function errorText(err: unknown): string {

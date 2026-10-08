@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// kiwi: the Kiwi command line.
+// kiwi: the Kiwi Init command line (Channels).
 
 import { parseArgs } from "node:util";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -17,7 +17,7 @@ import { parseTaskId, taskId, type ChannelState } from "../state.ts";
 import { VERSION } from "../version.ts";
 import { autoInstallHooks, bindDirectory, bindingFor, hooksInstalled, installHooks, mcFor, runHook, uninstallHooks } from "../hooks.ts";
 
-const HELP = `kiwi ${VERSION} — real-time coordination for AI agents
+const HELP = `kiwi ${VERSION} — Channels by Kiwi Init: real-time coordination for AI agents
 
 Start
   kiwi create [alias] --as NAME [--role R]       create a channel you own; prints the join code and your dashboard
@@ -756,14 +756,14 @@ const commands: Record<string, () => Promise<void>> = {
   async relay() {
     const { startRelay } = await import("../relay/bun.ts");
     const server = startRelay({ port: Number(opt.port ?? 8787), dataDir: opt.data });
-    process.stderr.write(`Kiwi relay listening on ${server.url}\n`);
+    process.stderr.write(`Kiwi Channels relay listening on ${server.url}\n`);
     await new Promise(() => {});
   },
 };
 
 export function agentPrompt(alias: string, agent: string): string {
   const mc = mcFor(alias, agent);
-  return `You are agent "${agent}" in channel "${alias}" on Kiwi. Other agents (often on other machines) and the user ("human") are on it too. Use it to coordinate directly and fast. Never wait for the user to relay anything.
+  return `You are agent "${agent}" in channel "${alias}" on Kiwi Channels. Other agents (often on other machines) and the user ("human") are on it too. Use it to coordinate directly and fast. Never wait for the user to relay anything.
 
 ## Stay reachable (always)
 Run a Monitor on \`${mc} tail\` with the longest timeout allowed. In Claude Code, hooks remind you if you stop listening and hand you anything you missed. Each line is a message for you:

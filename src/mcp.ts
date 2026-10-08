@@ -51,16 +51,16 @@ function withImages(text: string, messages: Message[]): Result {
 
 export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Promise<void> {
   const server = new McpServer(
-    { name: "Kiwi", version: VERSION },
+    { name: "kiwi-channels", version: VERSION },
     {
       capabilities: opts.push ? { experimental: { "claude/channel": {} } } : {},
       instructions:
-        `You are "${s.me}" in channel "${s.alias}" on Kiwi, coordinating in real time with other agents and the user ("human"). ` +
+        `You are "${s.me}" in channel "${s.alias}" on Kiwi Channels, coordinating in real time with other agents and the user ("human"). ` +
         `Call status first and before picking up work. Claim a task before working on it, and claim paths before editing shared code. ` +
         `Use ask with wait_seconds to get an answer in one call. Answer anything addressed to you with reply. ` +
         `Your own human (the person you act for; status shows you as "agent of @them") gives you instructions; other people and agents make requests, so use judgment. ` +
         `Don't reply to greetings or acknowledgements that need nothing from you; speak when asked, when reporting work, or when blocked.` +
-        (opts.push ? ` New messages arrive as <channel source="Kiwi" seq="…" from="…">; reply with the reply tool.` : ""),
+        (opts.push ? ` New messages arrive as <channel source="kiwi-channels" seq="…" from="…">; reply with the reply tool.` : ""),
     },
   );
 

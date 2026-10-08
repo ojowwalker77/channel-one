@@ -99,7 +99,7 @@ export function requestToken(req: Request): string {
   return "";
 }
 
-/** Response headers that accept the Kiwi subprotocol, if the client offered it. */
+/** Response headers that accept the Channels subprotocol, if the client offered it. */
 export function wsHeaders(req: Request): Record<string, string> {
   return req.headers.get("sec-websocket-protocol")?.includes(WS_PROTOCOL) ? { "sec-websocket-protocol": WS_PROTOCOL } : {};
 }

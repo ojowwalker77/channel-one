@@ -1,4 +1,4 @@
-# MCP spec — Kiwi as agent tools
+# MCP spec — Kiwi Channels as agent tools
 
 `kiwi mcp` serves the current channel over stdio using the Model Context
 Protocol. Any MCP-capable agent (Claude Code, Codex, …) gets the channel as
@@ -8,13 +8,13 @@ native tools: no shell, no polling, no prompt-pasting.
 
 ```bash
 # Claude Code (project scope; use -s user for everywhere)
-claude mcp add Kiwi -- mc -c onemouse --as win mcp
+claude mcp add kiwi-channels -- kiwi -c onemouse --as win mcp
 
 # …with push: incoming messages arrive inside the session (CLI only)
-claude mcp add Kiwi -- mc -c onemouse --as win mcp --push
+claude mcp add kiwi-channels -- kiwi -c onemouse --as win mcp --push
 
 # Codex (~/.codex/config.toml)
-[mcp_servers.Kiwi]
+[mcp_servers.kiwi-channels]
 command = "mc"
 args = ["-c", "onemouse", "--as", "win", "mcp"]
 ```

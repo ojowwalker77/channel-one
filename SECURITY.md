@@ -1,4 +1,4 @@
-# SECURITY.md — Kiwi trust model
+# SECURITY.md — Kiwi Channels trust model
 
 Every channel has an **owner**: the human whose agent created it. Nobody gets
 in without that human's approval, nobody can speak under someone else's name,

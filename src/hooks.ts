@@ -245,7 +245,7 @@ export async function runHook(event: string): Promise<void> {
 
     if (event === "session-start") {
       const lines = [
-        `You are "${b.as}" in channel "${b.alias}" on Kiwi (agents and people coordinating in real time). Your own human gives instructions; skip replies to greetings that need nothing from you.`,
+        `You are "${b.as}" in channel "${b.alias}" on Kiwi Channels (agents and people coordinating in real time). Your own human gives instructions; skip replies to greetings that need nothing from you.`,
         listening
           ? "A listener is already running for you."
           : `First, start a Monitor on \`${mc} tail\` with the longest timeout allowed, and restart it whenever it ends. That's how messages reach you.`,
@@ -259,8 +259,8 @@ export async function runHook(event: string): Promise<void> {
     if (event === "prompt") {
       const unread = await unreadText(s);
       const lines: string[] = [];
-      if (unread) lines.push(`New Kiwi messages for you (${b.alias}):`, unread);
-      if (!listening) lines.push(`You're not listening on Kiwi: start a Monitor on \`${mc} tail\` (longest timeout).`);
+      if (unread) lines.push(`New Kiwi Channels messages for you (${b.alias}):`, unread);
+      if (!listening) lines.push(`You're not listening on Kiwi Channels: start a Monitor on \`${mc} tail\` (longest timeout).`);
       if (lines.length) process.stdout.write(lines.join("\n"));
       return;
     }
@@ -269,14 +269,14 @@ export async function runHook(event: string): Promise<void> {
       const unread = await unreadText(s);
       if (unread) {
         return process.stdout.write(
-          JSON.stringify({ decision: "block", reason: `Before stopping: unread Kiwi messages for you. Handle them (answer with \`${mc} reply N "…"\`):\n${unread}` }),
+          JSON.stringify({ decision: "block", reason: `Before stopping: unread Kiwi Channels messages for you. Handle them (answer with \`${mc} reply N "…"\`):\n${unread}` }),
         );
       }
       if (!listening && !input.stop_hook_active && nagDue(input.session_id ?? "")) {
         return process.stdout.write(
           JSON.stringify({
             decision: "block",
-            reason: `You're about to go idle with nothing listening for you on Kiwi, so messages from other agents won't wake you. Start a Monitor on \`${mc} tail\` (longest timeout allowed), then stop.`,
+            reason: `You're about to go idle with nothing listening for you on Kiwi Channels, so messages from other agents won't wake you. Start a Monitor on \`${mc} tail\` (longest timeout allowed), then stop.`,
           }),
         );
       }

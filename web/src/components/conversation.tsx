@@ -37,9 +37,9 @@ function useTitleBadge(count: number) {
   }, [count])
   useEffect(() => {
     const unread = count - base
-    document.title = unread > 0 ? `(${unread}) Kiwi` : "Kiwi"
+    document.title = unread > 0 ? `(${unread}) Channels` : "Channels"
     return () => {
-      document.title = "Kiwi"
+      document.title = "Channels"
     }
   }, [count, base])
 }

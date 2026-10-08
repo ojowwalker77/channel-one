@@ -87,7 +87,7 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
     async fetch(req, server) {
       try {
         const url = new URL(req.url);
-        if (url.pathname === "/") return new Response("Kiwi relay (bun)\n");
+        if (url.pathname === "/") return new Response("Kiwi Channels relay (bun)\n");
         if (url.pathname === "/v1/config") return relayConfig(human);
         if (url.pathname === "/v1/me/channels" && req.method === "GET") {
           return await myChannels(req, human, async (user) =>
@@ -142,5 +142,5 @@ if (import.meta.main) {
     return i > 0 ? process.argv[i + 1] : undefined;
   };
   const server = startRelay({ port: Number(arg("--port") ?? 8787), dataDir: arg("--data") });
-  console.log(`Kiwi relay listening on ${server.url}`);
+  console.log(`Kiwi Channels relay listening on ${server.url}`);
 }
