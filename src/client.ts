@@ -194,22 +194,48 @@ export class Channel {
    * them. Returns the request id and the verification code both sides see.
    * Asking again with the same key resumes the same request.
    */
-  static async requestJoin(relay: string, code: string, id: Identity, info: MemberInfo): Promise<{ roomId: string; requestId: string; verify: string }> {
+  static async requestJoin(
+    relay: string,
+    code: string,
+    id: Identity,
+    info: MemberInfo,
+    /** A signed-in person joining as themself; agents leave this out. */
+    human?: string | null,
+  ): Promise<{ roomId: string; requestId: string; verify: string }> {
     const { roomId, info: room } = await pinnedInfo(relay, code);
     if (!id.xpk) throw new Error("identity has no exchange key");
     const box = await sealTo(room.ownerXpk, JSON.stringify(info), requestInfo(roomId));
     const body = await sign(id, { room: roomId, xpk: id.xpk, box, ts: Date.now() });
-    const { id: requestId } = await call<{ id: string }>(relay, roomId, "/requests", { method: "POST", body: JSON.stringify(body) });
+    const { id: requestId } = await call<{ id: string }>(relay, roomId, "/requests", { method: "POST", human, body: JSON.stringify(body) });
     return { roomId, requestId, verify: await verificationCode(roomId, id.pk) };
   }
 
   /** Check a join request. Once approved, returns this member's access. */
-  static async joinStatus(relay: string, code: string, id: Identity, requestId: string): Promise<{ status: "pending" | "denied" } | { status: "approved"; access: ChannelAccess }> {
+  static async joinStatus(
+    relay: string,
+    code: string,
+    id: Identity,
+    requestId: string,
+  ): Promise<{ status: "pending" | "denied"; sponsored: boolean } | { status: "approved"; sponsored: boolean; access: ChannelAccess }> {
     const { roomId, info } = await pinnedInfo(relay, code);
-    const r = await call<{ status: string; epoch?: number; keys?: Record<string, string> }>(relay, roomId, `/requests/${requestId}`, { identity: id });
-    if (r.status !== "approved") return { status: r.status === "denied" ? "denied" : "pending" };
+    const r = await call<{ status: string; sponsored?: boolean; epoch?: number; keys?: Record<string, string> }>(relay, roomId, `/requests/${requestId}`, { identity: id });
+    const sponsored = !!r.sponsored;
+    if (r.status !== "approved") return { status: r.status === "denied" ? "denied" : "pending", sponsored };
     const keys = await unwrapKeys(id, roomId, r.keys ?? {});
-    return { status: "approved", access: { roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: r.epoch ?? 0, keys } };
+    return { status: "approved", sponsored, access: { roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: r.epoch ?? 0, keys } };
+  }
+
+  /** What an agent's human sees before vouching for it: its kind, state and verification code. Nothing secret. */
+  static async publicRequest(relay: string, code: string, requestId: string): Promise<{ kind: string; status: string; sponsored: boolean; verify: string }> {
+    const { roomId } = await pinnedInfo(relay, code);
+    const r = await call<{ kind: string; pk: string; status: string; sponsored: boolean }>(relay, roomId, `/requests/${requestId}/public`);
+    return { kind: r.kind, status: r.status, sponsored: r.sponsored, verify: await verificationCode(roomId, r.pk) };
+  }
+
+  /** A signed-in person vouches for their agent's request, optionally with their own request to supervise it. */
+  static async sponsor(relay: string, code: string, requestId: string, human: string, humanRequest?: string): Promise<{ by: string }> {
+    const { roomId } = await pinnedInfo(relay, code);
+    return call<{ by: string }>(relay, roomId, `/requests/${requestId}/sponsor`, { method: "POST", human, body: JSON.stringify(humanRequest ? { humanRequest } : {}) });
   }
 
   /** Fetch this member's wrapped keys (after a rotation) and unwrap them. */
@@ -263,7 +289,20 @@ export class Channel {
   /** Pending join requests, opened (only the owner can read their names). */
   async requests(): Promise<JoinRequest[]> {
     this.ownerOnly();
-    const { requests } = await this.request<{ requests: { id: string; pk: string; xpk: string; box: string; ts: number; sig: string }[] }>("/requests");
+    const { requests } = await this.request<{
+      requests: {
+        id: string;
+        pk: string;
+        xpk: string;
+        box: string;
+        ts: number;
+        sig: string;
+        kind?: string;
+        sponsorUser?: string | null;
+        sponsorName?: string | null;
+        sponsorReq?: string | null;
+      }[];
+    }>("/requests");
     const out: JoinRequest[] = [];
     for (const r of requests) {
       if (!(await verify({ room: this.roomId, pk: r.pk, xpk: r.xpk, box: r.box, ts: r.ts, sig: r.sig }))) continue;
@@ -272,15 +311,61 @@ export class Channel {
       try {
         info = JSON.parse(raw ?? "{}") as MemberInfo;
       } catch {}
-      out.push({ ...info, id: r.id, pk: r.pk, xpk: r.xpk, ts: r.ts, code: await verificationCode(this.roomId, r.pk) });
+      out.push({
+        name: info.name,
+        role: info.role,
+        about: info.about,
+        // The relay knows (from sign-in) whether a person or an agent asked; it's not up to the requester.
+        kind: r.kind === "human" ? "human" : "agent",
+        id: r.id,
+        pk: r.pk,
+        xpk: r.xpk,
+        ts: r.ts,
+        code: await verificationCode(this.roomId, r.pk),
+        sponsoredBy: r.sponsorUser ? { user: r.sponsorUser, name: r.sponsorName ?? r.sponsorUser } : null,
+        sponsorRequest: r.sponsorReq ?? null,
+      });
     }
     return out;
   }
 
-  /** Admit a requester: sign its record, and wrap every epoch key to it. */
-  async approve(req: JoinRequest, as?: MemberInfo): Promise<Member> {
+  /**
+   * Admit an agent together with its sponsor: the person it acts for, who
+   * also joins to supervise it (unless they're already a member). Returns
+   * every member admitted.
+   */
+  async approveWithSponsor(req: JoinRequest, as?: MemberInfo): Promise<Member[]> {
     this.ownerOnly();
-    const info = { name: as?.name ?? req.name, role: as?.role ?? req.role, about: as?.about ?? req.about };
+    const admitted: Member[] = [];
+    let handle: string | undefined;
+    if (req.sponsoredBy) {
+      const roster = await this.members();
+      handle = roster.find((m) => m.active && m.kind === "human" && m.sponsor?.user === req.sponsoredBy!.user)?.name;
+      if (!handle && req.sponsorRequest) {
+        const human = (await this.requests()).find((r) => r.id === req.sponsorRequest);
+        if (human) {
+          admitted.push(await this.approve(human));
+          handle = human.name;
+        }
+      }
+    }
+    admitted.push(await this.approve(req, as, handle));
+    return admitted;
+  }
+
+  /** Admit a requester: sign its record, and wrap every epoch key to it. */
+  async approve(req: JoinRequest, as?: MemberInfo, sponsorHandle?: string): Promise<Member> {
+    this.ownerOnly();
+    const kind = req.kind ?? "agent";
+    const sponsor = req.sponsoredBy ? { ...req.sponsoredBy, ...(kind === "human" ? { handle: as?.name ?? req.name } : sponsorHandle ? { handle: sponsorHandle } : {}) } : undefined;
+    const info: MemberInfo = {
+      name: as?.name ?? req.name,
+      role: as?.role ?? req.role,
+      about: as?.about ?? req.about,
+      kind,
+      ...(kind === "human" && req.sponsoredBy ? { display: req.sponsoredBy.name } : {}),
+      ...(sponsor ? { sponsor } : {}),
+    };
     const current = this.access.keys[String(this.access.epoch)]!;
     const rec = await makeRecord(this.identity, this.roomId, { ...info, pk: req.pk, xpk: req.xpk });
     const keys: Record<string, string> = {};

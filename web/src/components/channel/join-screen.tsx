@@ -24,7 +24,7 @@ export function JoinScreen({ channels, onJoin, onGlobal }: { channels: KnownChan
   const create = async () => {
     setCreating(true)
     try {
-      const m = await createChannel(name.trim() || "untitled", await auth.token())
+      const m = await createChannel(name.trim() || "untitled", await auth.token(), auth.user)
       onJoin(m.code)
     } catch (err) {
       toast.error("Couldn’t create the channel", { description: err instanceof Error ? err.message : String(err) })

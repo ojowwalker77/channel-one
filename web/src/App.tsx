@@ -2,7 +2,8 @@ import { useEffect, useState } from "react"
 
 import { GlobalBoard } from "@/components/channel/global-board"
 import { JoinGate } from "@/components/channel/join-gate"
-import { knownChannels, parseHash } from "@/lib/channel"
+import { SponsorPage } from "@/components/channel/sponsor-page"
+import { knownChannels, parseHash, parseSponsorHash } from "@/lib/channel"
 import { JoinScreen } from "@/components/channel/join-screen"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -17,6 +18,7 @@ function readHash() {
 }
 
 export default function App() {
+  const [sponsor, setSponsor] = useState(() => parseSponsorHash(location.hash))
   const [{ code, identity }, setHash] = useState(readHash)
   const setCode = (c: string) => setHash({ code: c, identity: null })
   const [global, setGlobal] = useState(false)
@@ -24,6 +26,7 @@ export default function App() {
 
   useEffect(() => {
     const onHash = () => {
+      setSponsor(parseSponsorHash(location.hash))
       setHash(readHash())
       setGlobal(false)
       setChannels(knownChannels())
@@ -34,7 +37,9 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
-      {code ? (
+      {sponsor ? (
+        <SponsorPage {...sponsor} onOpen={(c) => (location.hash = encodeURIComponent(c))} />
+      ) : code ? (
         <JoinGate
           key={code}
           code={code}

@@ -7,7 +7,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
-import { workosHumanAuth, type HumanAuth } from "./human.ts";
+import { workosHumanAuth, workosProfiles, type HumanAuth } from "./human.ts";
 import {
   HttpError,
   RoomStore,
@@ -29,6 +29,8 @@ interface Env {
   WORKOS_CLIENT_ID?: string;
   /** The AuthKit domain (https://….authkit.app), whose keys may also sign tokens. */
   WORKOS_AUTHKIT_DOMAIN?: string;
+  /** Secret: lets the relay vouch for people's real names ("agent of @…"). */
+  WORKOS_API_KEY?: string;
 }
 
 let humanAuth: HumanAuth | null | undefined;
@@ -37,7 +39,7 @@ function human(env: Env): HumanAuth | null {
   if (humanAuth === undefined) {
     const id = env.WORKOS_CLIENT_ID;
     const jwks = id ? [`https://api.workos.com/sso/jwks/${id}`, ...(env.WORKOS_AUTHKIT_DOMAIN ? [`${env.WORKOS_AUTHKIT_DOMAIN}/oauth2/jwks`] : [])] : [];
-    humanAuth = id ? workosHumanAuth(id, jwks) : null;
+    humanAuth = id ? { ...workosHumanAuth(id, jwks), ...(env.WORKOS_API_KEY ? { profile: workosProfiles(env.WORKOS_API_KEY) } : {}) } : null;
   }
   return humanAuth;
 }

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Channel, ChannelGone, type HumanSession, type SendOptions } from "@mc/client.ts"
 import { decodeJoinCode, fromB64url, newRoomId, type ChannelAccess } from "@mc/crypto.ts"
 import { generateIdentity, withExchangeKey, type Identity } from "@mc/identity.ts"
-import type { JoinRequest, Member } from "@mc/membership.ts"
+import { handleFor, type JoinRequest, type Member } from "@mc/membership.ts"
 import type { Message, Presence } from "@mc/protocol.ts"
 import { fold, type ChannelState, type Roster } from "@mc/state.ts"
 
@@ -27,8 +27,20 @@ export interface Online {
  * `mc web` on the owner's machine (or `--sign-in`) and carries a member key.
  * Fragments never reach the server.
  */
+/** `#sponsor=<request>&code=<join code>&agent=<name>`: the link an agent prints for its human. */
+export function parseSponsorHash(hash: string): { requestId: string; code: string; agent: string } | null {
+  const raw = hash.replace(/^#/, "")
+  if (!raw.startsWith("sponsor=")) return null
+  const p = new URLSearchParams(raw)
+  const requestId = p.get("sponsor") ?? ""
+  const code = p.get("code") ?? ""
+  if (!/^[0-9a-f-]{36}$/.test(requestId) || !isJoinCode(code)) return null
+  return { requestId, code, agent: (p.get("agent") ?? "agent").slice(0, 32) }
+}
+
 export function parseHash(hash: string): { code: string; identity: Identity | null } {
   const raw = hash.replace(/^#/, "")
+  if (raw.startsWith("sponsor=")) return { code: "", identity: null }
   const [codePart, ...rest] = raw.split("&id=")
   let identity: Identity | null = null
   if (rest.length) {
@@ -150,20 +162,37 @@ export async function memberFromLink(code: string, identity: Identity): Promise<
  * here and never leaves this browser; on relays that require sign-in, `token`
  * proves who the human is.
  */
-export async function createChannel(name: string, token: string | null): Promise<StoredMember> {
+/** A signed-in person, as the browser knows them from AuthKit. */
+export interface Person {
+  id: string
+  email: string
+  firstName?: string | null
+  lastName?: string | null
+}
+
+export function personName(p: Person): string {
+  return [p.firstName, p.lastName].filter(Boolean).join(" ") || p.email
+}
+
+export async function createChannel(name: string, token: string | null, me: Person | null): Promise<StoredMember> {
   const roomId = newRoomId()
-  const owner = await generateIdentity("human")
-  const { code, access } = await Channel.create(location.origin, owner, { name: "human", role: "owner" }, [], roomId, token)
+  // The owner appears under their real name, not as "human".
+  const handle = me ? handleFor(personName(me), me.email) : "human"
+  const owner = await generateIdentity(handle)
+  const info = me
+    ? { name: handle, role: "owner", kind: "human" as const, display: personName(me), sponsor: { user: me.id, name: personName(me), handle } }
+    : { name: "human", role: "owner" }
+  const { code, access } = await Channel.create(location.origin, owner, info, [], roomId, token)
   const m: StoredMember = { code, identity: owner, access, at: Date.now(), name }
   saveMember(m)
   return m
 }
 
-/** Ask to join from this browser; resumes an earlier request for the same code. */
-export async function askToJoin(code: string, name: string, role?: string): Promise<PendingJoin> {
+/** Ask to join from this browser (as a signed-in person); resumes an earlier request for the same code. */
+export async function askToJoin(code: string, name: string, role?: string, token?: string | null): Promise<PendingJoin> {
   const prior = loadPending(code)
   const identity = prior && prior.identity.name === name ? prior.identity : await generateIdentity(name)
-  const r = await Channel.requestJoin(location.origin, code, identity, { name, ...(role ? { role } : {}) })
+  const r = await Channel.requestJoin(location.origin, code, identity, { name, ...(role ? { role } : {}) }, token)
   const p: PendingJoin = { code, identity, requestId: r.requestId, verify: r.verify }
   savePending(p)
   return p
@@ -303,7 +332,22 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
 
   // Presence can only be trusted when it's signed by the key the owner admitted under that name.
   const keyOf = useMemo(() => new Map(roster.filter((r) => r.active).map((r) => [r.name, r.pk])), [roster])
-  const rosterForFold: Roster = useMemo(() => roster.map((m) => ({ name: m.name, pk: m.pk, role: m.role, about: m.about, owner: m.owner, at: m.at, active: m.active })), [roster])
+  const rosterForFold: Roster = useMemo(
+    () =>
+      roster.map((m) => ({
+        name: m.name,
+        pk: m.pk,
+        role: m.role,
+        about: m.about,
+        owner: m.owner,
+        at: m.at,
+        active: m.active,
+        kind: m.kind,
+        display: m.display,
+        sponsor: m.sponsor,
+      })),
+    [roster]
+  )
   const state = useMemo(() => fold(messages, rosterForFold, now), [messages, rosterForFold, now])
   const live = useMemo(() => new Map([...online].filter(([name, o]) => keyOf.has(name) && now - o.at < PRESENCE_TTL)), [online, keyOf, now])
 

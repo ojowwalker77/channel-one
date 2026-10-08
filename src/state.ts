@@ -9,6 +9,9 @@ import type { Message, TaskState, Trust } from "./protocol.ts";
 
 export interface Member {
   name: string;
+  kind?: "human" | "agent";
+  display?: string;
+  sponsor?: { user: string; name: string; handle?: string };
   /** The key the owner admitted under this name. */
   pk: string;
   role?: string;
@@ -23,7 +26,18 @@ export interface Member {
 }
 
 /** The verified member list, as names → admitted keys (see membership.ts). */
-export type Roster = { name: string; pk: string; role?: string; about?: string; owner: boolean; at: number; active: boolean }[];
+export type Roster = {
+  name: string;
+  pk: string;
+  role?: string;
+  about?: string;
+  owner: boolean;
+  at: number;
+  active: boolean;
+  kind?: "human" | "agent";
+  display?: string;
+  sponsor?: { user: string; name: string; handle?: string };
+}[];
 
 export interface TaskNote {
   seq: number;
@@ -104,7 +118,20 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
   const members = new Map<string, Member>();
   // A name can be re-admitted under a new key after its old one left; the active key wins.
   for (const r of [...roster].sort((a, b) => Number(a.active) - Number(b.active))) {
-    members.set(r.name, { name: r.name, pk: r.pk, role: r.role, about: r.about, owner: r.owner, joined: r.at, lastSeen: r.at, messages: 0, active: r.active });
+    members.set(r.name, {
+      name: r.name,
+      pk: r.pk,
+      role: r.role,
+      about: r.about,
+      kind: r.kind,
+      display: r.display,
+      sponsor: r.sponsor,
+      owner: r.owner,
+      joined: r.at,
+      lastSeen: r.at,
+      messages: 0,
+      active: r.active,
+    });
   }
   const formerKeys = new Map(roster.filter((r) => !r.active).map((r) => [r.pk, r.name]));
   const tasks = new Map<number, Task>();

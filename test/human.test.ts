@@ -27,7 +27,8 @@ async function token(sub: string, opts: { exp?: number; key?: CryptoKey; kid?: s
   return `${head}.${body}.${b64url(new Uint8Array(sig))}`;
 }
 
-const human = workosHumanAuth("client_test", `${jwks.url.origin}/jwks`);
+const names: Record<string, string> = { user_alice: "Alice Owner", user_bob: "Bob Builder" };
+const human = { ...workosHumanAuth("client_test", `${jwks.url.origin}/jwks`), profile: async (u: string) => (names[u] ? { name: names[u]! } : null) };
 const dataDir = mkdtempSync(join(tmpdir(), "mc-relay-"));
 let server: ReturnType<typeof startRelay>;
 let relay: string;
@@ -85,9 +86,11 @@ describe("a relay that requires sign-in", () => {
 
     // The owning human can.
     const asAlice = new Channel(access, relay, owner, undefined, () => token("user_alice"));
+    // Alice vouches for this agent as hers, then approves it.
+    await Channel.sponsor(relay, code, req.requestId, await token("user_alice"));
     const pending = await asAlice.requests();
     expect(pending.map((r) => r.code)).toEqual([req.verify]);
-    await asAlice.approve(pending[0]!);
+    await asAlice.approveWithSponsor(pending[0]!);
     expect((await Channel.joinStatus(relay, code, agent, req.requestId)).status).toBe("approved");
 
     // Members still talk with their keys alone; sign-in is only for owning.
@@ -99,5 +102,58 @@ describe("a relay that requires sign-in", () => {
 
     await expect(keyOnly.close()).rejects.toMatchObject({ status: 401 });
     await asAlice.close();
+  });
+});
+
+describe("an agent needs its own human's approval too", () => {
+  test("no keys until its human vouches and the owner approves; names come from sign-in", async () => {
+    const [owner, agent, bobKey] = await Promise.all([generateIdentity("alice"), generateIdentity("helper"), generateIdentity("bob")]);
+    const alice = () => token("user_alice");
+    const { code, access } = await Channel.create(
+      relay,
+      owner,
+      { name: "alice", kind: "human", display: "Alice Owner", sponsor: { user: "user_alice", name: "Alice Owner", handle: "alice" } },
+      [],
+      undefined,
+      await alice(),
+    );
+    const ownerCh = new Channel(access, relay, owner, undefined, alice);
+
+    // The agent asks; the owner can't let it in before its human vouches.
+    const req = await Channel.requestJoin(relay, code, agent, { name: "helper" });
+    let [r] = await ownerCh.requests();
+    expect(r!.kind).toBe("agent");
+    expect(r!.sponsoredBy).toBeNull();
+    await expect(ownerCh.approve(r!)).rejects.toMatchObject({ status: 409 });
+
+    // The sponsor page shows the same verification code the agent printed.
+    expect((await Channel.publicRequest(relay, code, req.requestId)).verify).toBe(req.verify);
+    // Vouching needs a sign-in.
+    await expect(Channel.sponsor(relay, code, req.requestId, "nope")).rejects.toMatchObject({ status: 401 });
+
+    // Bob (the agent's human) asks to join as himself, and vouches for his agent.
+    const bobReq = await Channel.requestJoin(relay, code, bobKey, { name: "bob" }, await token("user_bob"));
+    expect((await Channel.sponsor(relay, code, req.requestId, await token("user_bob"), bobReq.requestId)).by).toBe("Bob Builder");
+    // Nobody else can take over the vouch.
+    await expect(Channel.sponsor(relay, code, req.requestId, await alice())).rejects.toMatchObject({ status: 409 });
+    expect((await Channel.joinStatus(relay, code, agent, req.requestId)).status).toBe("pending");
+
+    // The owner sees whose agent it is, and admits both in one go.
+    const reqs = await ownerCh.requests();
+    r = reqs.find((x) => x.id === req.requestId);
+    expect(r!.sponsoredBy).toEqual({ user: "user_bob", name: "Bob Builder" });
+    expect(reqs.find((x) => x.id === bobReq.requestId)).toMatchObject({ kind: "human", sponsoredBy: { name: "Bob Builder" } });
+    const admitted = await ownerCh.approveWithSponsor(r!);
+    expect(admitted.map((m) => m.name)).toEqual(["bob", "helper"]);
+
+    // Everyone sees verified real names and who acts for whom.
+    const st = await Channel.joinStatus(relay, code, agent, req.requestId);
+    if (st.status !== "approved") throw new Error("not approved");
+    const roster = await new Channel(st.access, relay, agent).members();
+    const by = Object.fromEntries(roster.map((m) => [m.name, m]));
+    expect(by.alice).toMatchObject({ kind: "human", display: "Alice Owner", owner: true });
+    expect(by.bob).toMatchObject({ kind: "human", display: "Bob Builder" });
+    expect(by.helper).toMatchObject({ kind: "agent", sponsor: { user: "user_bob", name: "Bob Builder", handle: "bob" } });
+    await ownerCh.close();
   });
 });

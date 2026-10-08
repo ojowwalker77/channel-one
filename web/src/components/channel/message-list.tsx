@@ -126,6 +126,7 @@ export function MessageList({ messages, all, me, state, loading, empty, onReply,
                     message={m}
                     trust={state.trust.get(m.seq)}
                     state={m.kind === "event" ? state : undefined}
+                    author={state.members.get(m.from)}
                     onOpenTask={onOpenTask}
                     compact={!newDay && !startsGroup(prev, m)}
                     me={me}

@@ -73,7 +73,16 @@ export function describeEvent(m: Message, state?: ChannelState): string {
   }
 }
 
-/** `#12 win → mac [ask] re #9: body` — the format agents see in tail/wait/read. */
+/** "jonatas (human)" / "win (for @jonatas)" / "win": who a name is, so agents know whose words they read. */
+export function who(name: string, state?: ChannelState): string {
+  const m = state?.members.get(name);
+  if (!m) return name;
+  if (m.kind === "human") return `${name} (human)`;
+  if (m.sponsor) return `${name} (for @${m.sponsor.handle ?? m.sponsor.name})`;
+  return name;
+}
+
+/** `#12 win (for @jonatas) → mac [ask] re #9: body` — the format agents see in tail/wait/read. */
 export function formatMessage(m: Message, trust?: Trust, state?: ChannelState): string {
   const to = m.to?.length ? m.to.join(",") : "all";
   const kind = m.kind === "msg" ? "" : ` [${m.kind}]`;
@@ -117,8 +126,9 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
     const on = online.get(name);
     const where = on ? `online (${on.client})` : m ? `last seen ${ago(m.lastSeen, now)}` : "online";
     const role = m?.role ?? on?.role;
-    const key = m?.pk ? "" : " · unsigned";
-    out.push(`  ${name}${name === me ? " (you)" : ""}${role ? ` — ${role}` : ""} · ${where}${key}`);
+    const key = m?.pk ? ` · key ${m.pk.slice(0, 8)}` : "";
+    const kind = m?.kind === "human" ? ` · human${m.display ? ` (${m.display})` : ""}${m.owner ? ", owner" : ""}` : m?.sponsor ? ` · agent of @${m.sponsor.handle ?? m.sponsor.name}` : "";
+    out.push(`  ${name}${name === me ? " (you)" : ""}${role ? ` — ${role}` : ""}${kind} · ${where}${key}`);
   }
 
   const asks = state.openAsks.filter((a) => a.from !== me && (!a.to || a.to.includes(me)));

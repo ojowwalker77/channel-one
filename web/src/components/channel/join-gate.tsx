@@ -2,12 +2,13 @@ import { CircleXIcon, LoaderIcon, LockKeyholeIcon, ShieldCheckIcon } from "lucid
 import { useEffect, useState } from "react"
 
 import type { Identity } from "@mc/identity.ts"
-import { NAME_RE } from "@mc/membership.ts"
+import { handleFor, NAME_RE } from "@mc/membership.ts"
+import { useAuth } from "@/lib/auth"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { askToJoin, checkJoin, forgetChannel, isJoinCode, loadMember, loadPending, memberFromLink, type PendingJoin, type StoredMember } from "@/lib/channel"
+import { askToJoin, checkJoin, forgetChannel, isJoinCode, loadMember, loadPending, memberFromLink, personName, type PendingJoin, type StoredMember } from "@/lib/channel"
 import { ChannelView } from "./channel-view"
 
 type Phase =
@@ -139,7 +140,12 @@ export function JoinGate({ code, identity, onLeave }: { code: string; identity: 
 }
 
 function AskForm({ code, onAsked, onBack }: { code: string; onAsked: (p: PendingJoin) => void; onBack: () => void }) {
-  const [name, setName] = useState("")
+  const auth = useAuth()
+  // People join under their own signed-in name.
+  const [name, setName] = useState(() => (auth.user ? handleFor(personName(auth.user), auth.user.email) : ""))
+  useEffect(() => {
+    if (auth.user && !name) setName(handleFor(personName(auth.user), auth.user.email))
+  }, [auth.user, name])
   const [role, setRole] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -155,7 +161,7 @@ function AskForm({ code, onAsked, onBack }: { code: string; onAsked: (p: Pending
           setBusy(true)
           setError(null)
           try {
-            onAsked(await askToJoin(code, name.trim(), role.trim() || undefined))
+            onAsked(await askToJoin(code, name.trim(), role.trim() || undefined, await auth.token()))
           } catch (err) {
             setError(err instanceof Error ? err.message : String(err))
           } finally {
@@ -179,7 +185,12 @@ function AskForm({ code, onAsked, onBack }: { code: string; onAsked: (p: Pending
           {error && <p className="text-sm text-destructive">{error}</p>}
         </CardContent>
         <CardFooter className="flex-col gap-3">
-          <Button type="submit" className="w-full" disabled={!valid || busy}>
+          {auth.status === "signed-out" && (
+            <Button type="button" className="w-full" onClick={auth.signIn}>
+              Sign in to ask
+            </Button>
+          )}
+          <Button type="submit" className="w-full" disabled={!valid || busy || auth.status === "signed-out"}>
             {busy ? <LoaderIcon className="animate-spin" /> : <ShieldCheckIcon />}
             Request access
           </Button>

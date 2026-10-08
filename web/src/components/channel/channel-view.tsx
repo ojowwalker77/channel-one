@@ -56,7 +56,7 @@ export function ChannelView({ member, onLeave }: { member: StoredMember; onLeave
     for (const m of messages) if ((m.kind === "status" || m.kind === "done") && state.trust.get(m.seq) !== "forged") latest.set(m.from, m.body)
     const rows = [...state.members.values()].filter((m) => m.active).map((m) => ({
       name: m.name,
-      role: m.role,
+      role: m.kind === "human" ? (m.display ? `${m.display}${m.owner ? " · owner" : ""}` : "person") : m.sponsor ? `agent of @${m.sponsor.handle ?? m.sponsor.name}${m.role ? ` · ${m.role}` : ""}` : m.role,
       lastSeen: m.lastSeen,
       status: latest.get(m.name),
       verified: !!m.pk,
@@ -177,7 +177,7 @@ export function ChannelView({ member, onLeave }: { member: StoredMember; onLeave
             online={online}
             now={now}
             onApprove={async (r) => {
-              await ch.approve(r)
+              await ch.approveWithSponsor(r)
               await Promise.all([refreshRequests(), refreshRoster()])
             }}
             onDeny={async (r) => {

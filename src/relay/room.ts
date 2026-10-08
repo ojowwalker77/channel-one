@@ -116,6 +116,24 @@ export class RoomStore {
     this.sql.run(
       "CREATE TABLE requests (id TEXT PRIMARY KEY, pk TEXT NOT NULL UNIQUE, xpk TEXT NOT NULL, box TEXT NOT NULL, sig TEXT NOT NULL, ts INTEGER NOT NULL, status TEXT NOT NULL)",
     );
+    this.migrate();
+  }
+
+  /**
+   * Columns added after rooms already existed. Requests know whether they come
+   * from an agent or a human, and which signed-in human vouches for an agent
+   * (its sponsor) — plus the request that enrolls that human to supervise it.
+   */
+  private migrate(): void {
+    const cols = new Set(this.sql.all<{ name: string }>("PRAGMA table_info(requests)").map((c) => c.name));
+    for (const [col, def] of [
+      ["kind", "TEXT NOT NULL DEFAULT 'agent'"],
+      ["sponsor_user", "TEXT"],
+      ["sponsor_name", "TEXT"],
+      ["sponsor_req", "TEXT"],
+    ] as const) {
+      if (!cols.has(col)) this.sql.run(`ALTER TABLE requests ADD COLUMN ${col} ${def}`);
+    }
   }
 
   private get(k: string): string | undefined {
@@ -215,8 +233,14 @@ export class RoomStore {
 
   // ---------- join requests ----------
 
-  async request(body: RequestBody): Promise<{ id: string; fresh: boolean }> {
+  /**
+   * File a join request. With `human` set, it's a signed-in person joining for
+   * themself (they are their own sponsor); otherwise it's an agent, which on a
+   * sign-in relay must later be vouched for by its own human.
+   */
+  async request(body: RequestBody, human: { user: string; name: string } | null = null): Promise<{ id: string; fresh: boolean }> {
     this.meta();
+    this.migrate();
     const { pk, xpk, box, ts, sig } = body ?? ({} as RequestBody);
     if (![pk, xpk, box, sig].every((x) => typeof x === "string") || typeof ts !== "number") throw new HttpError(400, "bad request");
     if (box.length > 4096) throw new HttpError(413, "request too large");
@@ -231,19 +255,69 @@ export class RoomStore {
     const pending = this.sql.all<{ n: number }>("SELECT COUNT(*) AS n FROM requests WHERE status = 'pending'")[0]!.n;
     if (pending >= MAX_PENDING) throw new HttpError(429, "too many pending join requests");
     const id = crypto.randomUUID();
-    this.sql.run("INSERT INTO requests (id, pk, xpk, box, sig, ts, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')", id, pk, xpk, box, sig, ts);
+    this.sql.run(
+      "INSERT INTO requests (id, pk, xpk, box, sig, ts, status, kind, sponsor_user, sponsor_name) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+      id,
+      pk,
+      xpk,
+      box,
+      sig,
+      ts,
+      human ? "human" : "agent",
+      human?.user ?? null,
+      human?.name ?? null,
+    );
     return { id, fresh: true };
   }
 
-  requestStatus(id: string, pk: string): { status: string; epoch?: number; keys?: Record<string, string> } {
-    const r = this.sql.all<{ pk: string; status: string }>("SELECT pk, status FROM requests WHERE id = ?", id)[0];
-    if (!r || r.pk !== pk) throw new HttpError(404, "no such request");
-    if (r.status !== "approved" || !this.isMember(pk)) return { status: r.status };
-    return { status: "approved", ...this.keysFor(pk) };
+  /** What the sponsor page shows about an agent's request: enough to check it's theirs, nothing secret. */
+  publicRequest(id: string): { kind: string; pk: string; status: string; sponsored: boolean } {
+    this.migrate();
+    const r = this.sql.all<{ kind: string; pk: string; status: string; sponsor_user: string | null }>("SELECT kind, pk, status, sponsor_user FROM requests WHERE id = ?", id)[0];
+    if (!r) throw new HttpError(404, "no such request");
+    return { kind: r.kind, pk: r.pk, status: r.status, sponsored: !!r.sponsor_user };
   }
 
-  pendingRequests(): RequestBody[] {
-    return this.sql.all<RequestBody & { id: string }>("SELECT id, pk, xpk, box, sig, ts FROM requests WHERE status = 'pending' ORDER BY ts");
+  /**
+   * A signed-in human vouches for an agent's request ("this agent acts for me"),
+   * optionally linking their own pending human request so they're admitted
+   * alongside it to supervise.
+   */
+  sponsor(id: string, user: { user: string; name: string }, humanRequest?: string): void {
+    this.migrate();
+    const r = this.sql.all<{ kind: string; status: string; sponsor_user: string | null }>("SELECT kind, status, sponsor_user FROM requests WHERE id = ?", id)[0];
+    if (!r) throw new HttpError(404, "no such request");
+    if (r.kind !== "agent") throw new HttpError(400, "only agents are sponsored; people join as themselves");
+    if (r.status !== "pending") throw new HttpError(409, `request is ${r.status}`);
+    if (r.sponsor_user && r.sponsor_user !== user.user) throw new HttpError(409, "another person already vouched for this agent");
+    if (humanRequest) {
+      const h = this.sql.all<{ kind: string; sponsor_user: string | null }>("SELECT kind, sponsor_user FROM requests WHERE id = ?", humanRequest)[0];
+      if (!h || h.kind !== "human" || h.sponsor_user !== user.user) throw new HttpError(400, "the linked request isn't yours");
+    }
+    this.sql.run("UPDATE requests SET sponsor_user = ?, sponsor_name = ?, sponsor_req = ? WHERE id = ?", user.user, user.name, humanRequest ?? null, id);
+  }
+
+  requestStatus(id: string, pk: string): { status: string; sponsored: boolean; epoch?: number; keys?: Record<string, string> } {
+    this.migrate();
+    const r = this.sql.all<{ pk: string; status: string; sponsor_user: string | null }>("SELECT pk, status, sponsor_user FROM requests WHERE id = ?", id)[0];
+    if (!r || r.pk !== pk) throw new HttpError(404, "no such request");
+    if (r.status !== "approved" || !this.isMember(pk)) return { status: r.status, sponsored: !!r.sponsor_user };
+    return { status: "approved", sponsored: !!r.sponsor_user, ...this.keysFor(pk) };
+  }
+
+  pendingRequests(): (RequestBody & { kind: string; sponsorUser: string | null; sponsorName: string | null; sponsorReq: string | null })[] {
+    this.migrate();
+    return this.sql.all(
+      "SELECT id, pk, xpk, box, sig, ts, kind, sponsor_user AS sponsorUser, sponsor_name AS sponsorName, sponsor_req AS sponsorReq FROM requests WHERE status = 'pending' ORDER BY ts",
+    );
+  }
+
+  /** On a sign-in relay, agents need their human's vouch before the owner can admit them. */
+  requireSponsor(request: string | undefined, pk: string): void {
+    this.migrate();
+    const r = request ? this.sql.all<{ pk: string; sponsor_user: string | null }>("SELECT pk, sponsor_user FROM requests WHERE id = ?", request)[0] : undefined;
+    if (!r || r.pk !== pk) throw new HttpError(400, "approve a pending request");
+    if (!r.sponsor_user) throw new HttpError(409, "this agent's own human hasn't approved it yet (they open the link the agent printed)");
   }
 
   deny(id: string): void {
@@ -405,9 +479,29 @@ export async function onHttp(store: RoomStore, req: Request, path: string, human
     await store.create(signer, json<CreateBody>(), user);
     return ok({ head: 0 });
   }
+  /** The signed-in human behind a request, with their name as WorkOS knows it. */
+  const person = async (): Promise<{ user: string; name: string } | null> => {
+    if (!human) return null;
+    const token = req.headers.get(HUMAN_HEADER);
+    if (!token) return null;
+    const user = await human.verify(token);
+    if (!user) throw new HttpError(401, "sign in again: that session isn't valid");
+    const profile = (await human.profile?.(user).catch(() => null)) ?? null;
+    return { user, name: profile?.name ?? user };
+  };
+
   if (path === "/requests" && method === "POST") {
-    const { id, fresh } = await store.request(json<RequestBody>());
+    const { id, fresh } = await store.request(json<RequestBody>(), await person());
     return ok({ id }, fresh ? { broadcast: [frame({ t: "request" })] } : undefined);
+  }
+  const publicMatch = /^\/requests\/([0-9a-f-]{36})\/public$/.exec(path);
+  if (publicMatch && method === "GET") return ok(store.publicRequest(publicMatch[1]!));
+  const sponsorMatch = /^\/requests\/([0-9a-f-]{36})\/sponsor$/.exec(path);
+  if (sponsorMatch && method === "POST") {
+    const who = await person();
+    if (!who) throw new HttpError(401, "sign in to vouch for your agent");
+    store.sponsor(sponsorMatch[1]!, who, json<{ humanRequest?: string }>().humanRequest);
+    return ok({ sponsored: true, by: who.name }, { broadcast: [frame({ t: "request" })] });
   }
   const reqMatch = /^\/requests\/([0-9a-f-]{36})$/.exec(path);
   if (reqMatch && method === "GET") {
@@ -458,7 +552,9 @@ export async function onHttp(store: RoomStore, req: Request, path: string, human
   }
   if (path === "/members" && method === "POST") {
     await owner();
-    store.approve(json<MemberBody & { request?: string }>());
+    const b = json<MemberBody & { request?: string }>();
+    if (human && store.ownerUser()) store.requireSponsor(b.request, b.pk);
+    store.approve(b);
     return ok({ approved: true }, { broadcast: [frame({ t: "roster" })] });
   }
   const memberMatch = /^\/members\/([A-Za-z0-9_-]{20,})$/.exec(path);

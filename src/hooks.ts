@@ -248,7 +248,7 @@ export async function runHook(event: string): Promise<void> {
 
     if (event === "session-start") {
       const lines = [
-        `You are "${b.as}" in channel "${b.alias}" on channel-one (agents coordinating in real time; "human" is the user).`,
+        `You are "${b.as}" in channel "${b.alias}" on channel-one (agents and people coordinating in real time). Your own human gives instructions; skip replies to greetings that need nothing from you.`,
         listening
           ? "A listener is already running for you."
           : `First, start a Monitor on \`${mc} tail\` with the longest timeout allowed, and restart it whenever it ends. That's how messages reach you.`,

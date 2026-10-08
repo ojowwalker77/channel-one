@@ -48,7 +48,18 @@ export class AgentSession {
   /** The verified member list (owner-signed records). */
   async members(refresh = false): Promise<Roster> {
     if (!this.roster || refresh) {
-      this.roster = (await this.ch.members()).map((m) => ({ name: m.name, pk: m.pk, role: m.role, about: m.about, owner: m.owner, at: m.at, active: m.active }));
+      this.roster = (await this.ch.members()).map((m) => ({
+        name: m.name,
+        pk: m.pk,
+        role: m.role,
+        about: m.about,
+        owner: m.owner,
+        at: m.at,
+        active: m.active,
+        kind: m.kind,
+        display: m.display,
+        sponsor: m.sponsor,
+      }));
     }
     return this.roster;
   }

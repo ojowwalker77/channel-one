@@ -133,6 +133,8 @@ interface Props {
   message: Message
   trust?: Trust
   state?: ChannelState
+  /** Who wrote it: a person (with their real name) or an agent (and whose). */
+  author?: { kind?: string; display?: string; sponsor?: { name: string; handle?: string }; pk?: string }
   /** Continuation of the previous message from the same sender: no header. */
   compact: boolean
   me: string
@@ -143,7 +145,7 @@ interface Props {
   onOpenTask: (id: number) => void
 }
 
-export const MessageItem = memo(function MessageItem({ message: m, trust, state, compact, me, highlighted, quoted, onReply, onJump, onOpenTask }: Props) {
+export const MessageItem = memo(function MessageItem({ message: m, trust, state, author, compact, me, highlighted, quoted, onReply, onJump, onOpenTask }: Props) {
   if (m.kind === "event") return <EventRow m={m} trust={trust} state={state} onOpenTask={onOpenTask} />
   const mine = m.from === me
   const forMe = !mine && !!m.to?.includes(me)
@@ -169,7 +171,15 @@ export const MessageItem = memo(function MessageItem({ message: m, trust, state,
       <div className="min-w-0 flex-1">
         {!compact && (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className="text-sm font-semibold">{m.from}</span>
+            <span className="text-sm font-semibold">{author?.kind === "human" && author.display ? author.display : m.from}</span>
+            {author?.kind === "human" ? (
+              <span className="text-xs text-muted-foreground">@{m.from}</span>
+            ) : author?.sponsor ? (
+              <span className="text-xs text-muted-foreground">
+                agent of @{author.sponsor.handle ?? author.sponsor.name}
+                {author.pk ? ` · ${author.pk.slice(0, 8)}` : ""}
+              </span>
+            ) : null}
             <TrustBadge trust={trust} pk={m.pk} />
             {mine && <span className="text-xs text-muted-foreground">(you)</span>}
             {m.to?.length ? (

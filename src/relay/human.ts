@@ -12,6 +12,30 @@ export interface HumanAuth {
   clientId: string;
   /** The signed-in user's id (`sub`) if the token is valid, else null. */
   verify(token: string): Promise<string | null>;
+  /** The user's real name (or email) from WorkOS, so the relay can vouch for "on behalf of whom". */
+  profile?(userId: string): Promise<HumanProfile | null>;
+}
+
+export interface HumanProfile {
+  name: string;
+  email?: string;
+}
+
+/** Look up a WorkOS user's name with the API key (kept as a Worker secret). */
+export function workosProfiles(apiKey: string): (userId: string) => Promise<HumanProfile | null> {
+  const cache = new Map<string, HumanProfile>();
+  return async (userId) => {
+    if (!/^user_[A-Za-z0-9]+$/.test(userId)) return null;
+    const hit = cache.get(userId);
+    if (hit) return hit;
+    const res = await fetch(`https://api.workos.com/user_management/users/${userId}`, { headers: { authorization: `Bearer ${apiKey}` } });
+    if (!res.ok) return null;
+    const u = (await res.json()) as { first_name?: string | null; last_name?: string | null; email?: string };
+    const name = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email || userId;
+    const p = { name, email: u.email };
+    cache.set(userId, p);
+    return p;
+  };
 }
 
 interface Jwk {

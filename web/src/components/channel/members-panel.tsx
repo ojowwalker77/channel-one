@@ -36,6 +36,10 @@ interface Props {
 export function MembersPanel({ code, me, isOwner, roster, requests, online, now, onApprove, onDeny, onRemove, onClose, onLeave }: Props) {
   const auth = useAuth()
   const [confirm, setConfirm] = useState<Confirm>(null)
+  const signInRelay = auth.status !== "off"
+  // A person who asked to join to supervise their agent is shown inside the agent's row.
+  const linked = new Set(requests.map((r) => r.sponsorRequest).filter(Boolean))
+  const visibleRequests = requests.filter((r) => !linked.has(r.id))
   // On a relay with sign-in, owner actions also need the owner's live session.
   const needsSignIn = isOwner && auth.status === "signed-out"
   const joinCommand = `curl -fsSL ${location.origin}/install.sh | sh && ~/.bun/bin/mc join ${code} --as <name>`
@@ -105,8 +109,12 @@ export function MembersPanel({ code, me, isOwner, roster, requests, online, now,
             <CardDescription>Approve only after the requester shows you the same verification code. A leaked join code is harmless while you say no.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-2">
-            {requests.length === 0 && <p className="text-sm text-muted-foreground">No one is waiting.</p>}
-            {requests.map((r) => (
+            {visibleRequests.length === 0 && <p className="text-sm text-muted-foreground">No one is waiting.</p>}
+            {visibleRequests.map((r) => {
+              // On a sign-in relay, an agent needs its own human's vouch before you can let it in.
+              const awaitingSponsor = signInRelay && r.kind !== "human" && !r.sponsoredBy
+              const supervisor = r.sponsorRequest ? requests.find((x) => x.id === r.sponsorRequest) : undefined
+              return (
               <div key={r.id} className="flex items-center gap-3 rounded-xl border p-3">
                 <AgentAvatar name={r.name} />
                 <div className="min-w-0 flex-1">
@@ -115,11 +123,18 @@ export function MembersPanel({ code, me, isOwner, roster, requests, online, now,
                     {r.role && <span className="font-normal text-muted-foreground"> · {r.role}</span>}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    key {r.pk.slice(0, 8)} · asked {formatAgo(r.ts, now)}
+                    {r.kind === "human"
+                      ? `person · signed in as ${r.sponsoredBy?.name ?? "?"}`
+                      : r.sponsoredBy
+                        ? `agent of ${r.sponsoredBy.name}${supervisor ? ` (joins too, as @${supervisor.name})` : ""}`
+                        : signInRelay
+                          ? "agent · waiting for its own human to approve it"
+                          : "agent"}{" "}
+                    · key {r.pk.slice(0, 8)} · asked {formatAgo(r.ts, now)}
                   </p>
                 </div>
                 <code className="rounded-md bg-muted px-2 py-1 font-mono text-sm font-semibold tracking-wider">{r.code}</code>
-                <Button size="sm" onClick={() => setConfirm({ kind: "approve", req: r })}>
+                <Button size="sm" disabled={awaitingSponsor} title={awaitingSponsor ? "Its human hasn’t approved it yet" : undefined} onClick={() => setConfirm({ kind: "approve", req: r })}>
                   <CheckIcon />
                   Approve
                 </Button>
@@ -127,7 +142,8 @@ export function MembersPanel({ code, me, isOwner, roster, requests, online, now,
                   <XIcon />
                 </Button>
               </div>
-            ))}
+              )
+            })}
           </CardContent>
         </Card>
       )}
@@ -143,12 +159,14 @@ export function MembersPanel({ code, me, isOwner, roster, requests, online, now,
               <AgentAvatar name={m.name} online={online.has(m.name)} />
               <div className="min-w-0 flex-1">
                 <p className="flex items-center gap-1.5 truncate text-sm font-medium">
-                  {m.name}
+                  {m.kind === "human" && m.display ? m.display : m.name}
+                  {m.kind === "human" && m.display && <span className="text-xs font-normal text-muted-foreground">@{m.name}</span>}
                   {m.name === me && <span className="text-xs font-normal text-muted-foreground">(you)</span>}
                   {m.owner && <CrownIcon className="size-3.5 text-amber-500" aria-label="owner" />}
                 </p>
                 <p className="truncate text-xs text-muted-foreground">
-                  {m.owner ? "owner" : (m.role ?? "member")} · key {m.pk.slice(0, 8)} · joined {formatAgo(m.at, now)}
+                  {m.kind === "human" ? (m.owner ? "person · owner" : "person") : m.sponsor ? `agent of @${m.sponsor.handle ?? m.sponsor.name}` : (m.role ?? "agent")}
+                  {m.kind !== "human" && m.role ? ` · ${m.role}` : ""} · key {m.pk.slice(0, 8)} · joined {formatAgo(m.at, now)}
                 </p>
               </div>
               {isOwner && !m.owner && (
@@ -188,7 +206,9 @@ export function MembersPanel({ code, me, isOwner, roster, requests, online, now,
           {confirm?.kind === "approve" && (
             <>
               <DialogHeader>
-                <DialogTitle>Let {confirm.req.name} in?</DialogTitle>
+                <DialogTitle>
+                  Let {confirm.req.name} in{confirm.req.sponsoredBy && confirm.req.kind !== "human" ? `, agent of ${confirm.req.sponsoredBy.name}` : ""}?
+                </DialogTitle>
                 <DialogDescription>Check that the joining agent (or person) shows exactly this code. If it doesn’t, deny: someone else has the join code.</DialogDescription>
               </DialogHeader>
               <div className="py-2 text-center font-mono text-4xl font-semibold tracking-widest">{confirm.req.code}</div>

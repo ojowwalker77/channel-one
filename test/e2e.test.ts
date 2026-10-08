@@ -274,7 +274,7 @@ describe("leaving, removal and closing through the CLI", () => {
     expect(await ok(a, "channels")).toBe("");
     // Her keys for this channel are destroyed with it, so no backup of the relay can ever be opened with them.
     expect(readdirSync(join(a, "identities"))).toEqual([]);
-    expect(await ok(owner, "members")).toContain("alice  key");
+    expect(await ok(owner, "members")).toContain("alice · key");
     expect(await ok(owner, "members")).toContain("(left)");
     await ok(b, "send", "after alice left");
     expect(await ok(owner, "log")).toContain("after alice left");

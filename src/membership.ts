@@ -9,10 +9,34 @@
 import { openWith, sealWith } from "./crypto.ts";
 import { sign, verify, type Identity } from "./identity.ts";
 
+/** The signed-in person an agent acts for, as the relay verified them with WorkOS. */
+export interface Sponsor {
+  /** WorkOS user id. */
+  user: string;
+  /** Their name as WorkOS knows it ("Jonatas Walker"). */
+  name: string;
+  /** Their handle in this channel, when they're a member too ("jonatas"). */
+  handle?: string;
+}
+
 export interface MemberInfo {
+  /** Handle in the channel: what messages show and what --to uses. */
   name: string;
   role?: string;
   about?: string;
+  /** People and agents are different kinds of member. Absent means agent (CLI-run channels). */
+  kind?: "human" | "agent";
+  /** A person's full name from sign-in. */
+  display?: string;
+  /** For an agent: the person it acts for. For a person: themself. */
+  sponsor?: Sponsor;
+}
+
+/** "jonatas" from "Jonatas Walker" or "jonatas@x.com": a channel handle for a signed-in person. */
+export function handleFor(name: string, email?: string): string {
+  const base = (name.split(/\s+/)[0] || email?.split("@")[0] || "person").toLowerCase();
+  const h = base.normalize("NFKD").replace(/[^\p{L}\p{N}_.-]/gu, "").slice(0, 32);
+  return h || "person";
 }
 
 /** What the owner signs when admitting a key. */
@@ -50,6 +74,9 @@ export async function makeRecord(owner: Identity, room: string, m: MemberInfo & 
     ...(m.role ? { role: m.role } : {}),
     ...(m.about ? { about: m.about } : {}),
     ...(m.owner ? { owner: true } : {}),
+    ...(m.kind ? { kind: m.kind } : {}),
+    ...(m.display ? { display: m.display } : {}),
+    ...(m.sponsor ? { sponsor: m.sponsor } : {}),
     at: Date.now(),
   });
 }
@@ -66,7 +93,19 @@ export async function openRecord(key: string, sealed: string, room: string, owne
     const rec = JSON.parse(raw) as MemberRecord;
     if (rec.pk !== ownerPk || rec.room !== room || rec.member !== pk || !NAME_RE.test(rec.name)) return null;
     if (!(await verify(rec))) return null;
-    return { pk: rec.member, xpk: rec.mxpk, name: rec.name, role: rec.role, about: rec.about, owner: !!rec.owner && rec.member === ownerPk, at: rec.at, active: true };
+    return {
+      pk: rec.member,
+      xpk: rec.mxpk,
+      name: rec.name,
+      role: rec.role,
+      about: rec.about,
+      kind: rec.kind,
+      display: rec.display,
+      sponsor: rec.sponsor,
+      owner: !!rec.owner && rec.member === ownerPk,
+      at: rec.at,
+      active: true,
+    };
   } catch {
     return null;
   }
@@ -80,4 +119,16 @@ export interface JoinRequest extends MemberInfo {
   /** The 6-digit code the requester sees too. */
   code: string;
   ts: number;
+  /** Who vouched for it (the relay verified them with WorkOS); null until its human approves. */
+  sponsoredBy: { user: string; name: string } | null;
+  /** The request that admits the sponsor alongside the agent, to supervise it. */
+  sponsorRequest: string | null;
+}
+
+/** How a member reads in lists: "win · key QRskRn4Z · agent of @jonatas" / "Jonatas Walker (@jonatas)". */
+export function describeMember(m: { name: string; pk: string; kind?: string; display?: string; sponsor?: Sponsor; owner?: boolean }): string {
+  const key = `key ${m.pk.slice(0, 8)}`;
+  if (m.kind === "human") return `${m.display ?? m.name} (@${m.name})${m.owner ? " · owner" : ""} · ${key}`;
+  const sponsor = m.sponsor ? ` · agent of @${m.sponsor.handle ?? handleFor(m.sponsor.name)}` : "";
+  return `${m.name} · ${key}${sponsor}`;
 }
