@@ -1,21 +1,19 @@
-import { ArrowDown01Icon, ArrowLeft01Icon, Cancel01Icon, InformationCircleIcon, Search01Icon, UserAdd01Icon } from "@hugeicons/core-free-icons"
+import { ArrowDown01Icon, ArrowLeft01Icon, Cancel01Icon, Search01Icon, SidebarRightIcon } from "@hugeicons/core-free-icons"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { Message } from "@mc/protocol.ts"
 import { useAuth } from "@/lib/auth"
-import { channelTitle, forgetChannel, loadRecent, saveRecent, useChannel, type StoredMember } from "@/lib/channel"
+import { channelTitle, forgetChannel, loadRecent, saveRecent, useChannel, useKnownChannels, type StoredMember } from "@/lib/channel"
 import { excerpt, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
-import { Bubble, EventLine, TimeMark, voiceFor } from "./bubble"
 import { Composer } from "./composer"
 import { Details, type Filter } from "./details"
 import { Icon } from "./icon"
-import { Button, Count, IconButton, Segmented, Spinner, TextField } from "./kit"
+import { Button, IconButton, Spinner, Tabs, TextField } from "./kit"
+import { DayMark, EventRow, MessageRow, isAgent } from "./message"
 import { TaskDetail, Tasks } from "./tasks"
 
-/** A gap this long (or a new day) gets a timestamp, like Messages. */
-const TIME_GAP = 15 * 60_000
-/** Messages this close together from one sender form one run of bubbles. */
+/** Messages this close together from one sender read as one run. */
 const RUN_GAP = 5 * 60_000
 
 function useNow(intervalMs = 30_000): number {
@@ -63,9 +61,12 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const nameOf = useCallback((name: string) => memberName(state.members.get(name), name), [state.members])
   const active = useMemo(() => [...state.members.values()].filter((m) => m.active), [state.members])
   const others = useMemo(() => active.filter((m) => m.name !== me), [active, me])
-  const people = useMemo(() => active.map((m) => ({ name: m.name, label: memberName(m), voice: voiceFor(m.name, m) })), [active])
-  const title = channelTitle(member, others.length ? { from: "", text: "", ts: 0, people: others.map((m) => memberName(m)) } : loadRecent(member.code))
+  const people = useMemo(() => active.map((m) => ({ name: m.name, label: memberName(m), agent: isAgent(m) })), [active])
+  // The channel's name can arrive after this view opens (members decrypt it), so follow the list.
+  const known = useKnownChannels()
+  const title = channelTitle({ name: member.name ?? known.find((c) => c.code === member.code)?.name }, others.length ? { from: "", text: "", ts: 0, people: others.map((m) => memberName(m)) } : loadRecent(member.code))
   const forMe = useMemo(() => messages.filter((m) => m.from !== me && m.to?.includes(me)), [messages, me])
+  const openTasks = useMemo(() => [...state.tasks.values()].filter((t) => t.state !== "done").length, [state.tasks])
   useTitleBadge(messages.filter((m) => m.from !== me).length)
 
   // Remember the latest message and who's here, for the channel list.
@@ -75,7 +76,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
     if (!last && !others.length) return
     saveRecent(member.code, {
       from: last ? (last.from === me ? "You" : nameOf(last.from)) : (prior?.from ?? ""),
-      text: last ? (last.imgs?.length && last.body === last.imgs.map((i) => i.name).join(", ") ? "Photo" : excerpt(last.body, 120)) : (prior?.text ?? ""),
+      text: last ? (last.imgs?.length && last.body === last.imgs.map((i) => i.name).join(", ") ? "Image" : excerpt(last.body, 120)) : (prior?.text ?? ""),
       ts: last?.ts ?? prior?.ts ?? member.at,
       people: others.length ? others.map((m) => memberName(m)) : (prior?.people ?? []),
     })
@@ -121,7 +122,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         if (!el) return
         el.scrollIntoView({ block: "center", behavior: "smooth" })
         setHighlight(seq)
-        setTimeout(() => setHighlight((h) => (h === seq ? null : h)), 1500)
+        setTimeout(() => setHighlight((h) => (h === seq ? null : h)), 1600)
       }
       if (!visible.some((m) => m.seq === seq)) {
         setFilter(null)
@@ -137,40 +138,40 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   if (gone) {
     return (
       <Centered>
-        <p className="text-[20px] font-semibold">{gone === "closed" ? "This channel was closed" : "You’re no longer in this channel"}</p>
-        <p className="max-w-sm text-[13px] text-label-2">
-          {gone === "closed" ? "The owner deleted it, and nothing is left at the relay." : "The owner removed this browser, or it left."} This browser has forgotten it too.
+        <p className="text-[15px] font-semibold">{gone === "closed" ? "This channel was closed" : "You’re no longer in this channel"}</p>
+        <p className="mt-1 max-w-sm text-[13px] leading-normal text-ink-2">
+          {gone === "closed" ? "Its owner deleted it, and nothing is left on the relay." : "The owner removed this browser, or it left."} This browser has forgotten it too.
         </p>
-        <Button className="mt-3" onClick={onGone}>
-          OK
+        <Button className="mt-4" onClick={onGone}>
+          Back to channels
         </Button>
       </Centered>
     )
   }
 
-  // Build the transcript: timestamps between bursts, runs of bubbles per sender.
+  // The transcript: day marks, and runs of messages from one sender under one name.
   const rows: ReactNode[] = []
   for (let i = 0; i < visible.length; i++) {
     const m = visible[i]!
     const prev = visible[i - 1]
-    const next = visible[i + 1]
-    const breakBefore = !prev || m.ts - prev.ts > TIME_GAP || !sameDay(prev.ts, m.ts)
-    if (breakBefore) rows.push(<TimeMark key={`t${m.seq}`} ts={m.ts} />)
+    const newDay = !prev || !sameDay(prev.ts, m.ts)
+    if (newDay) rows.push(<DayMark key={`d${m.seq}`} ts={m.ts} />)
     if (m.kind === "event") {
-      rows.push(<EventLine key={m.seq} m={m} state={state} onOpenTask={setOpenTask} />)
+      rows.push(<EventRow key={m.seq} m={m} state={state} onOpenTask={setOpenTask} />)
       continue
     }
-    const joins = (a: Message | undefined, b: Message) => !!a && a.kind !== "event" && a.from === b.from && Math.abs(b.ts - a.ts) < RUN_GAP && sameDay(a.ts, b.ts)
-    const nextBreaks = !next || next.ts - m.ts > TIME_GAP || !sameDay(m.ts, next.ts)
+    const adjacentReply = m.re?.length === 1 && prev?.seq === m.re[0]
+    const head = newDay || !prev || prev.kind === "event" || prev.from !== m.from || m.ts - prev.ts > RUN_GAP || (!!m.re?.length && !adjacentReply)
     rows.push(
-      <Bubble
+      <MessageRow
         key={m.seq}
         m={m}
         me={me}
         author={state.members.get(m.from)}
         trust={state.trust.get(m.seq)}
-        first={breakBefore || !joins(prev, m)}
-        last={nextBreaks || !next || !joins(m, next)}
+        online={online.has(m.from)}
+        head={head}
+        adjacentReply={adjacentReply}
         highlighted={highlight === m.seq}
         quoted={quoted}
         nameOf={nameOf}
@@ -181,62 +182,61 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   }
 
   const filterLabel =
-    filter?.kind === "from" ? `Only ${nameOf(filter.name)}` : filter?.kind === "open" ? "Open questions" : filter?.kind === "mine" ? "Messages to you" : null
-  const openTasks = [...state.tasks.values()].filter((t) => t.state !== "done").length
+    filter?.kind === "from" ? `Only ${nameOf(filter.name)}` : filter?.kind === "open" ? "Unanswered questions" : filter?.kind === "mine" ? "Messages to you" : null
   const subtitle =
-    connection !== "live"
-      ? connection === "connecting"
-        ? "Connecting…"
-        : "Reconnecting…"
-      : online.size
-        ? `${online.size} of ${active.length} online`
-        : `${active.length} ${active.length === 1 ? "member" : "members"}`
-  const tabs = [
-    { value: "chat" as const, label: "Chat" },
-    { value: "tasks" as const, label: <>Tasks<Count n={openTasks} className={tab === "tasks" ? "bg-blue/12 text-blue" : ""} /></> },
-  ]
+    connection === "connecting"
+      ? "Connecting…"
+      : connection === "reconnecting"
+        ? "Reconnecting…"
+        : online.size
+          ? `${active.length} members, ${online.size} online`
+          : `${active.length} ${active.length === 1 ? "member" : "members"}`
+  const asking = isOwner ? requests.filter((r) => !requests.some((x) => x.sponsorRequest === r.id)) : []
 
   return (
     <div className="flex h-full min-w-0 flex-1">
       <div className={cx("relative flex min-w-0 flex-1 flex-col", details && "hidden md:flex")}>
-        <header className="z-10 flex h-[56px] shrink-0 items-center gap-1.5 bg-bg/80 px-2 shadow-[inset_0_-0.5px_0_var(--separator)] backdrop-blur-2xl backdrop-saturate-150 md:px-4">
-          <IconButton label="Channels" tone="blue" className="md:hidden" onClick={onBack}>
-            <Icon icon={ArrowLeft01Icon} size={22} />
+        <header className="flex h-[56px] shrink-0 items-center gap-2 px-3 shadow-[inset_0_-0.5px_0_var(--line)] md:px-5">
+          <IconButton label="Channels" className="md:hidden" onClick={onBack}>
+            <Icon icon={ArrowLeft01Icon} size={20} />
           </IconButton>
-          <button type="button" className="min-w-0 flex-1 rounded-lg px-1 text-left" onClick={() => setDetails((d) => !d)}>
-            <span className="block truncate text-[15px] leading-tight font-semibold tracking-[-0.015em]">{title}</span>
-            <span className={cx("mt-0.5 flex items-center gap-1.5 truncate text-[12px] leading-tight", connection === "live" ? "text-label-2" : "text-orange")}>
-              {connection === "live" && online.size > 0 && <span className="size-1.5 rounded-full bg-green" />}
-              {subtitle}
-            </span>
-          </button>
-          <div className="mr-1 hidden sm:block">
-            <Segmented value={tab} onChange={setTab} options={tabs} />
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-[14px] leading-tight font-semibold tracking-[-0.01em]">{title}</h1>
+            <p className={cx("truncate text-[12px] leading-tight", connection === "live" ? "text-ink-2" : "text-ink-3")}>{subtitle}</p>
           </div>
-          {tab === "chat" && (
-            <IconButton label="Search" tone={search !== null ? "blue" : "gray"} onClick={() => setSearch((s) => (s === null ? "" : null))}>
-              <Icon icon={Search01Icon} size={19} />
-            </IconButton>
-          )}
-          <IconButton label="Details" tone={details ? "blue" : "gray"} onClick={() => setDetails((d) => !d)}>
-            <Icon icon={InformationCircleIcon} size={20} />
-            {isOwner && requests.length > 0 && <span className="absolute top-1 right-1 size-2 rounded-full bg-red ring-2 ring-[var(--bg)]" />}
+          <Tabs
+            value={tab}
+            onChange={setTab}
+            options={[
+              { value: "chat", label: "Chat" },
+              { value: "tasks", label: <>Tasks{openTasks > 0 && <span className="text-ink-3 tabular-nums">{openTasks}</span>}</> },
+            ]}
+          />
+          <span className="mx-1 h-4 w-px bg-line" />
+          <IconButton label="Search" active={search !== null} onClick={() => setSearch((s) => (s === null ? "" : null))} disabled={tab !== "chat"}>
+            <Icon icon={Search01Icon} size={17} />
+          </IconButton>
+          <IconButton label="Details" active={details} onClick={() => setDetails((d) => !d)}>
+            <Icon icon={SidebarRightIcon} size={17} />
+            {asking.length > 0 && <span className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-accent" />}
           </IconButton>
         </header>
 
-        <div className="flex justify-center py-2 shadow-[inset_0_-0.5px_0_var(--separator)] sm:hidden">
-          <Segmented value={tab} onChange={setTab} options={tabs} />
-        </div>
-
-        {isOwner && requests.length > 0 && !details && tab === "chat" && (
-          <button
-            type="button"
-            onClick={() => setDetails(true)}
-            className="animate-rise absolute top-[68px] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-elevated/90 py-1.5 pr-3.5 pl-3 text-[13px] font-medium whitespace-nowrap text-blue shadow-[0_8px_30px_-8px_rgba(0,0,0,0.22),0_0_0_0.5px_rgba(0,0,0,0.08)] backdrop-blur-xl transition-colors hover:bg-elevated"
-          >
-            <Icon icon={UserAdd01Icon} size={15} strokeWidth={1.8} />
-            {requests.length === 1 ? `${requests[0]!.name} is asking to join` : `${requests.length} people are asking to join`}
-          </button>
+        {asking.length > 0 && !details && (
+          <div className="flex shrink-0 items-center gap-3 bg-accent-wash px-5 py-2 text-[13px]">
+            <span className="min-w-0 flex-1 truncate">
+              {asking.length === 1 ? (
+                <>
+                  <span className="font-medium">{asking[0]!.name}</span> wants to join this channel.
+                </>
+              ) : (
+                `${asking.length} people and agents want to join this channel.`
+              )}
+            </span>
+            <button type="button" onClick={() => setDetails(true)} className="shrink-0 font-medium text-accent hover:underline">
+              Review
+            </button>
+          </div>
         )}
 
         {tab === "tasks" ? (
@@ -244,25 +244,19 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         ) : (
           <>
             {(search !== null || filterLabel) && (
-              <div className="mx-auto flex w-full max-w-[800px] shrink-0 items-center gap-2 px-3 pt-3 md:px-6">
+              <div className="mx-auto flex w-full max-w-[760px] shrink-0 items-center gap-2 px-4 pt-3 md:px-8">
                 {search !== null && (
-                  <TextField
-                    autoFocus
-                    value={search}
-                    placeholder="Search messages"
-                    className="h-9"
-                    onChange={(e) => setSearch(e.target.value)}
-                    onKeyDown={(e) => e.key === "Escape" && setSearch(null)}
-                  />
+                  <TextField autoFocus value={search} placeholder="Search messages" onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setSearch(null)} />
                 )}
                 {filterLabel && (
                   <button
                     type="button"
                     onClick={() => setFilter(null)}
-                    className="flex h-8 shrink-0 items-center gap-1 rounded-full bg-blue/10 pr-2.5 pl-3 text-[13px] font-medium text-blue transition-colors hover:bg-blue/15"
+                    className="flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] bg-wash-2 pr-2 pl-3 text-[13px] font-medium transition-colors hover:bg-wash"
+                    title="Show everything"
                   >
                     {filterLabel}
-                    <Icon icon={Cancel01Icon} size={14} strokeWidth={2} />
+                    <Icon icon={Cancel01Icon} size={13} />
                   </button>
                 )}
               </div>
@@ -283,13 +277,13 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
                 </Centered>
               ) : visible.length === 0 ? (
                 <Centered>
-                  <p className="text-[15px] font-semibold">{search ? "No results" : filter ? "Nothing here yet" : "No messages yet"}</p>
-                  <p className="max-w-xs text-[13px] text-label-2">
-                    {search ? `No message mentions “${search}”.` : filter ? "Clear the filter to see everything." : "Invite an agent from Details. Its messages land here the moment they’re sent."}
+                  <p className="text-[14px] font-semibold">{search ? "No results" : filter ? "Nothing here" : "No messages yet"}</p>
+                  <p className="mt-1 max-w-xs text-[13px] leading-normal text-ink-2">
+                    {search ? `No message mentions “${search}”.` : filter ? "Clear the filter to see the whole conversation." : "Invite an agent from Details. What it says shows up here the moment it’s sent."}
                   </p>
                 </Centered>
               ) : (
-                <div className="mx-auto w-full max-w-[800px] px-3 pb-4 md:px-6">{rows}</div>
+                <div className="mx-auto w-full max-w-[760px] px-4 pb-6 md:px-8">{rows}</div>
               )}
             </div>
 
@@ -297,10 +291,10 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
               <button
                 type="button"
                 onClick={toBottom}
-                className="animate-rise absolute bottom-24 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-elevated py-1.5 pr-3.5 pl-2.5 text-[13px] font-medium text-blue shadow-[0_8px_30px_-6px_rgba(0,0,0,0.25),0_0_0_0.5px_rgba(0,0,0,0.08)]"
+                className="animate-rise absolute bottom-[132px] left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-raised py-1.5 pr-3.5 pl-2.5 text-[12.5px] font-medium shadow-pop"
               >
-                <Icon icon={ArrowDown01Icon} size={16} strokeWidth={2} />
-                {behind} new {behind === 1 ? "message" : "messages"}
+                <Icon icon={ArrowDown01Icon} size={15} />
+                {behind === 1 ? "1 new message" : `${behind} new messages`}
               </button>
             )}
 
@@ -323,7 +317,6 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       {details && (
         <Details
           code={member.code}
-          title={title}
           me={me}
           isOwner={isOwner}
           roster={roster}
@@ -369,5 +362,5 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
 }
 
 function Centered({ children }: { children: ReactNode }) {
-  return <div className="flex h-full min-h-60 flex-1 flex-col items-center justify-center gap-1 p-8 text-center">{children}</div>
+  return <div className="flex h-full min-h-60 flex-1 flex-col items-center justify-center p-8 text-center">{children}</div>
 }

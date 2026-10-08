@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Channel, relayConfig } from "../src/client.ts";
+import { Channel, myChannels, relayConfig } from "../src/client.ts";
 import { b64url } from "../src/crypto.ts";
 import { generateIdentity } from "../src/identity.ts";
 import { startRelay } from "../src/relay/bun.ts";
@@ -155,5 +155,40 @@ describe("an agent needs its own human's approval too", () => {
     expect(by.bob).toMatchObject({ kind: "human", display: "Bob Builder" });
     expect(by.helper).toMatchObject({ kind: "agent", sponsor: { user: "user_bob", name: "Bob Builder", handle: "bob" } });
     await ownerCh.close();
+  });
+});
+
+describe("each person's channel list", () => {
+  test("lists channels you own, are in, or have agents in, and forgets closed ones", async () => {
+    const [owner, agent, bobKey] = await Promise.all([generateIdentity("alice"), generateIdentity("scout"), generateIdentity("bob")]);
+    const alice = () => token("user_alice");
+    const bob = () => token("user_bob");
+    const { code, access } = await Channel.create(relay, owner, { name: "alice", kind: "human" }, [], undefined, await alice(), "launch-plan");
+    const room = access.roomId;
+    const ownerCh = new Channel(access, relay, owner, undefined, alice);
+    expect(await ownerCh.title()).toBe("launch-plan");
+    expect((await myChannels(relay, await alice())).find((c) => c.room === room)).toMatchObject({ code, owner: true, member: true, agents: 0 });
+    expect((await myChannels(relay, await bob())).some((c) => c.room === room)).toBe(false);
+
+    // Bob's agent asks, Bob vouches and asks to join himself; the owner admits both.
+    const req = await Channel.requestJoin(relay, code, agent, { name: "scout" });
+    const bobReq = await Channel.requestJoin(relay, code, bobKey, { name: "bob" }, await bob());
+    await Channel.sponsor(relay, code, req.requestId, await bob(), bobReq.requestId);
+    const r = (await ownerCh.requests()).find((x) => x.id === req.requestId)!;
+    await ownerCh.approveWithSponsor(r);
+    expect((await myChannels(relay, await bob())).find((c) => c.room === room)).toMatchObject({ owner: false, member: true, agents: 1 });
+
+    // Members (not the relay) can read the channel's name.
+    const st = await Channel.joinStatus(relay, code, agent, req.requestId);
+    if (st.status !== "approved") throw new Error("not approved");
+    expect(await new Channel(st.access, relay, agent).title()).toBe("launch-plan");
+
+    // Without sign-in there's no list.
+    await expect(myChannels(relay, "nope")).rejects.toMatchObject({ status: 401 });
+
+    // Closing removes it from everyone's list.
+    await ownerCh.close();
+    expect((await myChannels(relay, await alice())).some((c) => c.room === room)).toBe(false);
+    expect((await myChannels(relay, await bob())).some((c) => c.room === room)).toBe(false);
   });
 });

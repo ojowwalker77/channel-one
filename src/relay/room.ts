@@ -17,6 +17,7 @@
 // names, roles and every message stay end-to-end encrypted.
 
 import { verifyRequest } from "../auth.ts";
+import { encodeJoinCode, ownerFingerprint } from "../crypto.ts";
 import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
 import { verify } from "../identity.ts";
 import {
@@ -58,6 +59,28 @@ export interface Effects {
   disconnect?: string;
   /** Delete the room's storage, then disconnect everyone. */
   wipe?: boolean;
+  /** Update signed-in people's channel lists (a null entry drops this channel from theirs). */
+  directory?: DirectoryUpdate[];
+}
+
+/**
+ * One signed-in person's tie to a channel, for their channel list: they own
+ * it, they're in it, and/or agents they vouched for are. The relay already
+ * knows these links; names and messages stay sealed.
+ */
+export interface DirectoryEntry {
+  room: string;
+  code: string;
+  owner: boolean;
+  member: boolean;
+  agents: number;
+  at: number;
+}
+
+export interface DirectoryUpdate {
+  user: string;
+  room: string;
+  entry: DirectoryEntry | null;
 }
 
 /** Most join requests a room holds at once; stops request spam. */
@@ -212,8 +235,59 @@ export class RoomStore {
     this.set("owner_xpk", owner.xpk);
     this.set("owner_sig", owner.sig);
     this.set("epoch", 0);
+    this.set("created", Date.now());
     if (ownerUser) this.set("owner_user", ownerUser);
+    // The channel's name, sealed with its key: members can read it, the relay can't.
+    if (body.title && typeof body.title.iv === "string" && typeof body.title.ct === "string" && body.title.ct.length < 2048) this.set("title", JSON.stringify(body.title));
     for (const m of members) this.putMember(m, 0);
+  }
+
+  /** The channel's sealed name, if its creator gave one. */
+  title(): { iv: string; ct: string } | null {
+    const t = this.get("title");
+    return t ? (JSON.parse(t) as { iv: string; ct: string }) : null;
+  }
+
+  // ---------- who this channel is listed for ----------
+
+  /** Signed-in people tied to this channel now: its owner, people in it, and people whose agents are in it. */
+  private links(): Map<string, { owner: boolean; member: boolean; agents: number }> {
+    this.migrate();
+    const links = new Map<string, { owner: boolean; member: boolean; agents: number }>();
+    const owner = this.ownerUser();
+    if (owner) links.set(owner, { owner: true, member: true, agents: 0 });
+    const rows = this.sql.all<{ kind: string; user: string }>(
+      "SELECT r.kind AS kind, r.sponsor_user AS user FROM requests r JOIN members m ON m.pk = r.pk WHERE r.status = 'approved' AND m.active = 1 AND r.sponsor_user IS NOT NULL",
+    );
+    for (const r of rows) {
+      const l = links.get(r.user) ?? { owner: false, member: false, agents: 0 };
+      if (r.kind === "human") l.member = true;
+      else l.agents++;
+      links.set(r.user, l);
+    }
+    return links;
+  }
+
+  private linked(): string[] {
+    return JSON.parse(this.get("linked") ?? "[]") as string[];
+  }
+
+  /** Bring everyone's channel list in line with who's tied to this channel now. */
+  async directory(): Promise<DirectoryUpdate[]> {
+    const meta = this.meta();
+    const code = encodeJoinCode({ roomId: this.roomId, ownerFp: await ownerFingerprint(meta.ownerPk) });
+    const at = Number(this.get("created") ?? Date.now());
+    const links = this.links();
+    const updates: DirectoryUpdate[] = [...links].map(([user, l]) => ({ user, room: this.roomId, entry: { room: this.roomId, code, ...l, at } }));
+    for (const user of this.linked()) if (!links.has(user)) updates.push({ user, room: this.roomId, entry: null });
+    this.set("linked", JSON.stringify([...links.keys()]));
+    return updates;
+  }
+
+  /** Before closing: drop this channel from every list it was on. */
+  unlinkAll(): DirectoryUpdate[] {
+    const users = new Set([...this.linked(), ...(this.ownerUser() ? [this.ownerUser()!] : [])]);
+    return [...users].map((user) => ({ user, room: this.roomId, entry: null }));
   }
 
   private putMember(m: MemberBody, epoch: number): void {
@@ -376,6 +450,8 @@ export interface MemberBody {
 }
 
 export interface CreateBody {
+  /** The channel's name, sealed with the epoch-0 key. */
+  title?: { iv: string; ct: string };
   owner: { pk: string; xpk: string; sig: string };
   members: MemberBody[];
 }
@@ -471,13 +547,13 @@ export async function onHttp(store: RoomStore, req: Request, path: string, human
 
   if (path === "/info" && method === "GET") {
     const m = store.meta();
-    return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, epoch: m.epoch, rotate: m.rotate });
+    return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, epoch: m.epoch, rotate: m.rotate, title: store.title() });
   }
   if (path === "/create" && method === "POST") {
     const signer = await verifyRequest(requestToken(req), store.roomId, method, path, body);
     const user = await signedIn();
     await store.create(signer, json<CreateBody>(), user);
-    return ok({ head: 0 });
+    return ok({ head: 0 }, user ? { directory: await store.directory() } : undefined);
   }
   /** The signed-in human behind a request, with their name as WorkOS knows it. */
   const person = async (): Promise<{ user: string; name: string } | null> => {
@@ -538,7 +614,7 @@ export async function onHttp(store: RoomStore, req: Request, path: string, human
   if (path === "/members" && method === "GET") return ok({ members: store.members() });
   if (path === "/members/me" && method === "DELETE") {
     store.remove(me);
-    return ok({ left: true }, { disconnect: me, broadcast: [frame({ t: "roster" })] });
+    return ok({ left: true }, { disconnect: me, broadcast: [frame({ t: "roster" })], directory: await store.directory() });
   }
   if (path === "/requests" && method === "GET") {
     await owner();
@@ -555,13 +631,13 @@ export async function onHttp(store: RoomStore, req: Request, path: string, human
     const b = json<MemberBody & { request?: string }>();
     if (human && store.ownerUser()) store.requireSponsor(b.request, b.pk);
     store.approve(b);
-    return ok({ approved: true }, { broadcast: [frame({ t: "roster" })] });
+    return ok({ approved: true }, { broadcast: [frame({ t: "roster" })], directory: await store.directory() });
   }
   const memberMatch = /^\/members\/([A-Za-z0-9_-]{20,})$/.exec(path);
   if (memberMatch && method === "DELETE") {
     await owner();
     store.remove(memberMatch[1]!);
-    return ok({ removed: true }, { disconnect: memberMatch[1]!, broadcast: [frame({ t: "roster" })] });
+    return ok({ removed: true }, { disconnect: memberMatch[1]!, broadcast: [frame({ t: "roster" })], directory: await store.directory() });
   }
   if (path === "/epochs" && method === "POST") {
     await owner();
@@ -571,7 +647,7 @@ export async function onHttp(store: RoomStore, req: Request, path: string, human
   }
   if (path === "/" && method === "DELETE") {
     await owner();
-    return ok({ closed: true }, { wipe: true });
+    return ok({ closed: true }, { directory: store.unlinkAll(), wipe: true });
   }
   throw new HttpError(404, "not found");
 }
@@ -595,6 +671,15 @@ export function parseRoomPath(pathname: string): { roomId: string; rest: string 
 }
 
 export { CLOSE_CLOSED, CLOSE_REMOVED };
+
+/** GET /v1/me/channels: the signed-in person's channel list, from whatever index the adapter keeps. */
+export async function myChannels(req: Request, human: HumanAuth | null, list: (user: string) => Promise<DirectoryEntry[]>): Promise<Response> {
+  if (!human) throw new HttpError(404, "this relay has no sign-in");
+  const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
+  if (!user) throw new HttpError(401, "sign in to see your channels");
+  const channels = (await list(user)).sort((a, b) => b.at - a.at);
+  return Response.json({ channels });
+}
 
 /** Relay-wide settings the web app needs: which WorkOS client to sign in with, if any. */
 export function relayConfig(human: HumanAuth | null): Response {

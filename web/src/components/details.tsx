@@ -1,13 +1,12 @@
-import { ArrowRight01Icon, Cancel01Icon, Copy01Icon, SquareLock02Icon } from "@hugeicons/core-free-icons"
-import { useState } from "react"
+import { Cancel01Icon, Copy01Icon } from "@hugeicons/core-free-icons"
+import { useState, type ReactNode } from "react"
 
 import type { JoinRequest, Member as RosterMember } from "@mc/membership.ts"
 import type { ChannelState } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
 import { formatAgo, memberLine, memberName } from "@/lib/format"
-import { voiceFor } from "./bubble"
 import { Icon } from "./icon"
-import { Alert, Avatar, Button, IconButton, Row, Section, errorText, toast } from "./kit"
+import { Alert, Button, IconButton, Monogram, errorText, toast } from "./kit"
 
 export type Filter = { kind: "from"; name: string } | { kind: "open" } | { kind: "mine" }
 
@@ -15,7 +14,6 @@ type Confirm = { kind: "approve"; req: JoinRequest } | { kind: "remove"; member:
 
 interface Props {
   code: string
-  title: string
   me: string
   isOwner: boolean
   roster: RosterMember[]
@@ -33,12 +31,24 @@ interface Props {
   onDismiss: () => void
 }
 
-function minutesLeft(expires: number, now: number) {
-  const m = Math.max(0, Math.round((expires - now) / 60_000))
-  return m < 60 ? `${m}m left` : `${Math.floor(m / 60)}h ${m % 60}m left`
+function Part({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="border-t border-line px-5 py-4 first:border-t-0">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-[12px] font-semibold text-ink-2">{title}</h3>
+        {aside}
+      </div>
+      {children}
+    </section>
+  )
 }
 
-/** Everything about a channel behind the ⓘ button: people, requests, invites, claims, facts, and leaving. */
+function minutesLeft(expires: number, now: number) {
+  const m = Math.max(0, Math.round((expires - now) / 60_000))
+  return m < 60 ? `${m} min left` : `${Math.floor(m / 60)} h ${m % 60} min left`
+}
+
+/** Everything about a channel that isn't the conversation: who's in it, who wants in, and how to leave. */
 export function Details(p: Props) {
   const auth = useAuth()
   const [confirm, setConfirm] = useState<Confirm>(null)
@@ -52,6 +62,7 @@ export function Details(p: Props) {
   const former = p.roster.filter((m) => !m.active)
   const facts = [...p.state.facts.values()].sort((a, b) => a.key.localeCompare(b.key))
   const joinCommand = `curl -fsSL ${location.origin}/install.sh | sh && ~/.bun/bin/mc join ${p.code} --as <name>`
+  const taken = confirm?.kind === "approve" && active.some((m) => m.name === confirm.req.name)
 
   const run = async (fn: () => Promise<void>, done: string) => {
     setBusy(true)
@@ -61,174 +72,167 @@ export function Details(p: Props) {
       setConfirm(null)
     } catch (err) {
       const message = errorText(err)
-      toast(/sign in required/.test(message) ? "Sign in to do that: owner actions need your session" : message, "error")
+      toast(/sign in required/.test(message) ? "Sign in first. Owner actions need your session." : message, "error")
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <aside className="animate-slide-in flex h-full w-full flex-col overflow-hidden border-l border-separator bg-grouped md:w-[360px]">
-      <header className="flex h-[56px] shrink-0 items-center justify-between px-3">
-        <span className="w-8" />
-        <span className="text-[14px] font-semibold">Details</span>
-        <IconButton label="Close" onClick={p.onDismiss}>
-          <Icon icon={Cancel01Icon} size={18} />
+    <aside className="animate-slide-in flex h-full w-full flex-col bg-canvas shadow-[inset_0.5px_0_0_var(--line)] md:w-[340px]">
+      <header className="flex h-[56px] shrink-0 items-center justify-between pr-3 pl-5">
+        <span className="text-[13px] font-semibold">Details</span>
+        <IconButton label="Close details" onClick={p.onDismiss}>
+          <Icon icon={Cancel01Icon} size={17} />
         </IconButton>
       </header>
 
-      <div className="flex-1 space-y-6 overflow-y-auto px-4 pb-8">
-        <div className="flex flex-col items-center gap-2 pt-2 text-center">
-          <Avatar name={p.title} size={72} />
-          <h2 className="mt-1 text-[20px] leading-tight font-semibold tracking-[-0.02em]">{p.title}</h2>
-          <p className="flex items-center gap-1 text-[12px] text-label-2">
-            <Icon icon={SquareLock02Icon} size={13} />
-            End-to-end encrypted
-          </p>
-        </div>
-
+      <div className="flex-1 overflow-y-auto pb-6">
         {needsSignIn && (
-          <Section footer="Your owner key alone can’t approve, remove or close. That’s by design.">
-            <Row>
-              <span className="flex-1 text-[14px]">Sign in to manage this channel</span>
-              <Button size="sm" onClick={auth.signIn}>
-                Sign in
-              </Button>
-            </Row>
-          </Section>
+          <div className="mx-5 mb-2 rounded-[10px] bg-wash p-3 text-[13px] leading-normal">
+            Sign in to approve, remove or close. The owner key alone isn’t enough.
+            <Button size="sm" className="mt-2" onClick={auth.signIn}>
+              Sign in
+            </Button>
+          </div>
         )}
 
         {p.isOwner && requests.length > 0 && (
-          <Section title="Waiting to join" footer="Approve only when the requester shows the same code. A leaked join code is harmless while you say no.">
-            {requests.map((r) => {
-              // On a sign-in relay, an agent needs its own human's vouch before you can let it in.
-              const awaitingSponsor = signInRelay && r.kind !== "human" && !r.sponsoredBy
-              const supervisor = r.sponsorRequest ? p.requests.find((x) => x.id === r.sponsorRequest) : undefined
-              return (
-                <div key={r.id} className="grid gap-2 px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <Avatar name={r.name} voice={r.kind === "human" ? null : voiceFor(r.name, undefined)} size={36} />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-[14px] font-medium">
-                        {r.name}
-                        {r.role && <span className="font-normal text-label-2">, {r.role}</span>}
-                      </p>
-                      <p className="text-[12px] leading-snug text-label-2">
-                        {r.kind === "human"
-                          ? `Signed in as ${r.sponsoredBy?.name ?? "someone"}`
-                          : r.sponsoredBy
-                            ? `Agent for ${r.sponsoredBy.name}${supervisor ? `, who joins with it as @${supervisor.name}` : ""}`
-                            : signInRelay
-                              ? "Agent, waiting for its own person to vouch for it"
-                              : "Agent"}
-                        , {formatAgo(r.ts, p.now)}
-                      </p>
+          <Part title={requests.length === 1 ? "Wants to join" : `${requests.length} want to join`}>
+            <div className="grid gap-4">
+              {requests.map((r) => {
+                // On a sign-in relay, an agent needs its own person's vouch before you can let it in.
+                const awaitingSponsor = signInRelay && r.kind !== "human" && !r.sponsoredBy
+                const supervisor = r.sponsorRequest ? p.requests.find((x) => x.id === r.sponsorRequest) : undefined
+                return (
+                  <div key={r.id}>
+                    <div className="flex items-start gap-3">
+                      <Monogram name={r.name} agent={r.kind !== "human"} size={28} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[13.5px] font-medium">
+                          {r.name}
+                          {r.role && <span className="font-normal text-ink-2">, {r.role}</span>}
+                        </p>
+                        <p className="text-[12px] leading-snug text-ink-2">
+                          {r.kind === "human"
+                            ? `Signed in as ${r.sponsoredBy?.name ?? "someone"}`
+                            : r.sponsoredBy
+                              ? `Agent for ${r.sponsoredBy.name}${supervisor ? `, who joins with it` : ""}`
+                              : signInRelay
+                                ? "Agent. Its person hasn’t vouched for it yet."
+                                : "Agent"}
+                        </p>
+                        <p className="text-[12px] text-ink-3">Asked {formatAgo(r.ts, p.now)}</p>
+                      </div>
                     </div>
-                    <span className="rounded-md bg-fill-2 px-2 py-0.5 text-[13px] font-semibold tracking-[0.06em] tabular-nums">{r.code}</span>
+                    <div className="mt-2.5 flex gap-2 pl-10">
+                      <Button size="sm" variant="secondary" onClick={() => run(() => p.onDeny(r), `Declined ${r.name}`)}>
+                        Decline
+                      </Button>
+                      <Button size="sm" disabled={awaitingSponsor} title={awaitingSponsor ? "Its person hasn’t vouched for it yet" : undefined} onClick={() => setConfirm({ kind: "approve", req: r })}>
+                        Review and approve
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex gap-2 pl-12">
-                    <Button size="sm" variant="secondary" className="flex-1" onClick={() => run(() => p.onDeny(r), `Declined ${r.name}`)}>
-                      Decline
-                    </Button>
-                    <Button size="sm" className="flex-1" disabled={awaitingSponsor} title={awaitingSponsor ? "Its human hasn’t approved it yet" : undefined} onClick={() => setConfirm({ kind: "approve", req: r })}>
-                      Approve
-                    </Button>
-                  </div>
-                </div>
-              )
-            })}
-          </Section>
+                )
+              })}
+            </div>
+          </Part>
         )}
 
-        <Section title="Members">
-          {active.map((m) => (
-            <div key={m.pk} className="group flex min-h-12 items-center gap-3 px-4 py-2">
-              <Avatar name={memberName(m)} voice={voiceFor(m.name, m)} size={34} online={p.online.has(m.name)} />
-              <button type="button" className="min-w-0 flex-1 text-left" onClick={() => p.onFilter({ kind: "from", name: m.name })} title="Show only their messages">
-                <p className="truncate text-[14px] font-medium">
-                  {memberName(m)}
-                  {m.name === p.me && <span className="font-normal text-label-2"> (you)</span>}
-                </p>
-                <p className="truncate text-[12px] text-label-2" title={`Key ${m.pk.slice(0, 16)}`}>
-                  {memberLine(m)}
-                </p>
-              </button>
-              {p.isOwner && !m.owner && (
-                <Button size="sm" variant="danger" className="opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={() => setConfirm({ kind: "remove", member: m })}>
-                  Remove
-                </Button>
-              )}
-            </div>
-          ))}
-          {former.length > 0 && <div className="px-4 py-2 text-[12px] text-label-2">Former: {former.map((m) => m.name).join(", ")}</div>}
-        </Section>
+        <Part title={`${active.length} ${active.length === 1 ? "member" : "members"}`}>
+          <div className="-mx-2 grid">
+            {active.map((m) => (
+              <div key={m.pk} className="group flex items-center gap-3 rounded-[8px] px-2 py-1.5 hover:bg-wash">
+                <Monogram name={memberName(m)} agent={m.kind !== "human"} size={26} online={p.online.has(m.name)} />
+                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => p.onFilter({ kind: "from", name: m.name })} title="Show only their messages">
+                  <p className="truncate text-[13px] font-medium">
+                    {memberName(m)}
+                    {m.name === p.me && <span className="font-normal text-ink-3"> (you)</span>}
+                  </p>
+                  <p className="truncate text-[12px] text-ink-2" title={`Key ${m.pk.slice(0, 16)}`}>
+                    {memberLine(m)}
+                  </p>
+                </button>
+                {p.isOwner && !m.owner && (
+                  <Button size="sm" variant="danger" className="opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={() => setConfirm({ kind: "remove", member: m })}>
+                    Remove
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+          {former.length > 0 && <p className="mt-2 text-[12px] text-ink-3">Left: {former.map((m) => m.name).join(", ")}</p>}
+        </Part>
 
-        <Section>
-          <Row onClick={() => p.onFilter({ kind: "open" })}>
-            <span className="flex-1 text-[14px]">Open questions</span>
-            <span className="text-[14px] text-label-2 tabular-nums">{p.state.openAsks.length}</span>
-            <Icon icon={ArrowRight01Icon} size={16} className="text-label-3" />
-          </Row>
-          <Row onClick={() => p.onFilter({ kind: "mine" })}>
-            <span className="flex-1 text-[14px]">Messages to you</span>
-            <span className="text-[14px] text-label-2 tabular-nums">{p.mentions}</span>
-            <Icon icon={ArrowRight01Icon} size={16} className="text-label-3" />
-          </Row>
-        </Section>
+        <Part title="Show">
+          <div className="-mx-2 grid text-[13px]">
+            <button type="button" className="flex items-center justify-between rounded-[8px] px-2 py-1.5 text-left hover:bg-wash" onClick={() => p.onFilter({ kind: "open" })}>
+              Unanswered questions <span className="text-ink-3 tabular-nums">{p.state.openAsks.length}</span>
+            </button>
+            <button type="button" className="flex items-center justify-between rounded-[8px] px-2 py-1.5 text-left hover:bg-wash" onClick={() => p.onFilter({ kind: "mine" })}>
+              Messages to you <span className="text-ink-3 tabular-nums">{p.mentions}</span>
+            </button>
+          </div>
+        </Part>
 
         {p.isOwner && (
-          <Section title="Invite an agent" footer="It installs channel-one and asks to join. Its request shows up here with a code to check.">
-            <div className="flex items-start gap-2 px-4 py-3">
-              <code className="min-w-0 flex-1 font-mono text-[11.5px] leading-relaxed break-all text-label-2">{joinCommand}</code>
-              <IconButton label="Copy" tone="blue" onClick={() => navigator.clipboard.writeText(joinCommand).then(() => toast("Copied. Replace <name> with the agent’s name"))}>
-                <Icon icon={Copy01Icon} size={17} />
+          <Part title="Invite an agent">
+            <p className="mb-2 text-[12px] leading-snug text-ink-2">Paste this into the agent’s terminal. Its request shows up here with a code to check.</p>
+            <div className="flex items-start gap-1 rounded-[8px] bg-wash p-2.5">
+              <code className="min-w-0 flex-1 font-mono text-[11.5px] leading-relaxed break-all text-ink-2">{joinCommand}</code>
+              <IconButton label="Copy command" className="size-7" onClick={() => navigator.clipboard.writeText(joinCommand).then(() => toast("Copied. Replace <name> with the agent’s name."))}>
+                <Icon icon={Copy01Icon} size={15} />
               </IconButton>
             </div>
-          </Section>
+          </Part>
         )}
 
         {p.state.claims.length > 0 && (
-          <Section title="Claimed paths">
-            {p.state.claims.map((c) => (
-              <div key={`${c.owner}:${c.path}`} className="px-4 py-2">
-                <div className="flex items-center gap-2">
-                  <code className="min-w-0 flex-1 truncate font-mono text-[13px]">{c.path}</code>
-                  <span className="shrink-0 text-[12px] text-label-2">{minutesLeft(c.expires, p.now)}</span>
+          <Part title="Claimed paths">
+            <div className="grid gap-2">
+              {p.state.claims.map((c) => (
+                <div key={`${c.owner}:${c.path}`}>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <code className="truncate font-mono text-[12px]">{c.path}</code>
+                    <span className="shrink-0 text-[11.5px] text-ink-3">{minutesLeft(c.expires, p.now)}</span>
+                  </div>
+                  <p className="truncate text-[12px] text-ink-2">{c.note ? `${c.owner}: ${c.note}` : c.owner}</p>
                 </div>
-                <p className="truncate text-[12px] text-label-2">{c.note ? `${c.owner}: ${c.note}` : c.owner}</p>
-              </div>
-            ))}
-          </Section>
+              ))}
+            </div>
+          </Part>
         )}
 
         {facts.length > 0 && (
-          <Section title="Facts">
-            {facts.map((f) => (
-              <button
-                key={f.key}
-                type="button"
-                className="block w-full px-4 py-2 text-left hover:bg-fill-2"
-                title="Copy value"
-                onClick={() => navigator.clipboard.writeText(f.value).then(() => toast(`Copied ${f.key}`))}
-              >
-                <p className="font-mono text-[13px] font-medium">{f.key}</p>
-                <p className="font-mono text-[12px] break-all text-label-2">{f.value}</p>
-              </button>
-            ))}
-          </Section>
+          <Part title="Facts">
+            <div className="-mx-2 grid">
+              {facts.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  className="rounded-[8px] px-2 py-1.5 text-left hover:bg-wash"
+                  title="Copy value"
+                  onClick={() => navigator.clipboard.writeText(f.value).then(() => toast(`Copied ${f.key}`))}
+                >
+                  <p className="text-[12.5px] font-medium">{f.key}</p>
+                  <p className="font-mono text-[11.5px] break-all text-ink-2">{f.value}</p>
+                </button>
+              ))}
+            </div>
+          </Part>
         )}
 
-        <Section
-          footer={
-            p.isOwner
+        <Part title={p.isOwner ? "Close channel" : "Leave channel"}>
+          <p className="mb-2.5 text-[12px] leading-snug text-ink-2">
+            {p.isOwner
               ? "Deletes every message, member and key on the relay. Everyone’s copy is wiped the next time they connect."
-              : "You lose access at once. The owner rotates the key so you can’t read anything newer."
-          }
-        >
-          <Row onClick={() => setConfirm({ kind: p.isOwner ? "close" : "leave" })}>
-            <span className="flex-1 text-[14px] text-red">{p.isOwner ? "Close Channel" : "Leave Channel"}</span>
-          </Row>
-        </Section>
+              : "You lose access at once, and the key rotates so you can’t read anything newer."}
+          </p>
+          <Button size="sm" variant="danger" className="-ml-2.5" onClick={() => setConfirm({ kind: p.isOwner ? "close" : "leave" })}>
+            {p.isOwner ? "Close channel" : "Leave channel"}
+          </Button>
+        </Part>
       </div>
 
       <Alert
@@ -238,9 +242,8 @@ export function Details(p: Props) {
         message={
           confirm?.kind === "approve" && (
             <>
-              {confirm.req.sponsoredBy && confirm.req.kind !== "human" ? <>Agent of {confirm.req.sponsoredBy.name}. </> : null}
-              Check that it shows exactly this code.
-              <span className="mt-3 block text-[30px] font-semibold tracking-[0.06em] text-label tabular-nums">{confirm.req.code}</span>
+              Approve only if {confirm.req.kind === "human" ? "they show" : "its terminal shows"} this exact code.
+              <span className="mt-4 mb-1 block text-[34px] leading-none font-semibold tracking-[0.04em] text-ink tabular-nums">{confirm.req.code}</span>
             </>
           )
         }
@@ -249,11 +252,8 @@ export function Details(p: Props) {
           Cancel
         </Button>
         {confirm?.kind === "approve" && (
-          <Button
-            disabled={busy || active.some((m) => m.name === confirm.req.name)}
-            onClick={() => run(() => p.onApprove(confirm.req), `${confirm.req.name} joined`)}
-          >
-            {active.some((m) => m.name === confirm.req.name) ? "Name taken" : "Approve"}
+          <Button disabled={busy || taken} onClick={() => run(() => p.onApprove(confirm.req), `${confirm.req.name} joined`)}>
+            {taken ? "That name is taken" : "Approve"}
           </Button>
         )}
       </Alert>
@@ -268,7 +268,7 @@ export function Details(p: Props) {
           Cancel
         </Button>
         {confirm?.kind === "remove" && (
-          <Button variant="destructive" disabled={busy} onClick={() => run(() => p.onRemove(confirm.member), `Removed ${confirm.member.name}`)}>
+          <Button className="bg-alert" disabled={busy} onClick={() => run(() => p.onRemove(confirm.member), `Removed ${confirm.member.name}`)}>
             Remove
           </Button>
         )}
@@ -278,17 +278,17 @@ export function Details(p: Props) {
         open={confirm?.kind === "close" || confirm?.kind === "leave"}
         onClose={() => setConfirm(null)}
         title={confirm?.kind === "close" ? "Close this channel for everyone?" : "Leave this channel?"}
-        message={confirm?.kind === "close" ? "Everything is deleted. This can’t be undone." : "You’ll need the owner’s approval to come back."}
+        message={confirm?.kind === "close" ? "Everything is deleted and can’t be recovered." : "You’ll need the owner’s approval to come back."}
       >
         <Button variant="secondary" onClick={() => setConfirm(null)}>
           Cancel
         </Button>
         <Button
-          variant="destructive"
+          className="bg-alert"
           disabled={busy}
           onClick={() => run(confirm?.kind === "close" ? p.onCloseChannel : p.onLeaveChannel, confirm?.kind === "close" ? "Channel closed" : "You left the channel")}
         >
-          {confirm?.kind === "close" ? "Close" : "Leave"}
+          {confirm?.kind === "close" ? "Close channel" : "Leave channel"}
         </Button>
       </Alert>
     </aside>

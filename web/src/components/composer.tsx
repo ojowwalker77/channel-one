@@ -1,21 +1,28 @@
-import { Add01Icon, ArrowUp02Icon, Cancel01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
+import { ArrowDown01Icon, ArrowUp02Icon, Attachment01Icon, Cancel01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import type { SendOptions } from "@mc/client.ts"
 import { MAX_IMAGE_BYTES, type Kind, type Message } from "@mc/protocol.ts"
-import { excerpt, KIND_LABEL } from "@/lib/format"
+import { excerpt } from "@/lib/format"
 import { cx } from "@/lib/utils"
 import { Icon } from "./icon"
-import { Avatar, IconButton, errorText, toast } from "./kit"
+import { IconButton, Monogram, errorText, toast } from "./kit"
 
-const KINDS: Kind[] = ["ask", "blocking", "status", "done"]
+/** What a message is, in the words the menu uses. */
+const KINDS: { kind: Kind; label: string; hint: string }[] = [
+  { kind: "msg", label: "Message", hint: "Say something to the channel" },
+  { kind: "ask", label: "Question", hint: "Ask, and expect an answer" },
+  { kind: "blocking", label: "Blocker", hint: "You can’t go on without it" },
+  { kind: "status", label: "Update", hint: "Where things stand" },
+  { kind: "done", label: "Done", hint: "Something is finished" },
+]
 const MENTION = /(^|\s)@([\p{L}\p{N}_.-]*)$/u
 const LEADING = /^(?:\s*@([\p{L}\p{N}_.-]+)[\s,]*)+/u
 
-interface Person {
+export interface Person {
   name: string
   label: string
-  voice: string | null
+  agent: boolean
 }
 
 interface Props {
@@ -34,7 +41,6 @@ function recipients(body: string, names: Set<string>): string[] {
   return [...lead.matchAll(/@([\p{L}\p{N}_.-]+)/gu)].map((m) => m[1]!).filter((n) => names.has(n))
 }
 
-/** The message bar: a rounded field, a "+" for photos and message types, a blue send arrow. */
 export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, send }: Props) {
   const [body, setBody] = useState("")
   const [kind, setKind] = useState<Kind>("msg")
@@ -52,13 +58,14 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
     const q = mention.query.toLowerCase()
     return others.filter((p) => p.name.toLowerCase().startsWith(q) || p.label.toLowerCase().startsWith(q)).slice(0, 6)
   }, [mention, others])
+  const current = KINDS.find((k) => k.kind === kind)!
 
   // Grow with the text, up to a point.
   useLayoutEffect(() => {
     const el = area.current
     if (!el) return
     el.style.height = "auto"
-    el.style.height = `${Math.min(el.scrollHeight, 180)}px`
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`
   }, [body])
 
   useEffect(() => {
@@ -71,11 +78,11 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
     if (!list) return
     for (const f of [...list].slice(0, 8 - files.length)) {
       if (!f.type.startsWith("image/")) {
-        toast(`Only images can be attached: ${f.name}`, "error")
+        toast(`${f.name} isn’t an image. Only images can be attached.`, "error")
         continue
       }
       if (f.size > MAX_IMAGE_BYTES) {
-        toast(`${f.name} is over ${Math.round(MAX_IMAGE_BYTES / 1024)} KB`, "error")
+        toast(`${f.name} is over ${Math.round(MAX_IMAGE_BYTES / 1024)} KB. Attach a smaller image.`, "error")
         continue
       }
       const reader = new FileReader()
@@ -96,8 +103,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
     const el = area.current
     const caret = el?.selectionStart ?? body.length
     const before = body.slice(0, caret).replace(MENTION, (_all, pre: string) => `${pre}@${p.name} `)
-    const next = before + body.slice(caret)
-    setBody(next)
+    setBody(before + body.slice(caret))
     setMention(null)
     requestAnimationFrame(() => {
       el?.focus()
@@ -122,7 +128,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
       setKind("msg")
       onClearReply()
     } catch (err) {
-      toast(`Not delivered: ${errorText(err)}`, "error")
+      toast(`Not sent: ${errorText(err)}`, "error")
     } finally {
       setSending(false)
       area.current?.focus()
@@ -130,142 +136,140 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
   }
 
   return (
-    <div className="relative mx-auto w-full max-w-[800px] shrink-0 px-3 pt-2 pb-4 md:px-6">
+    <div className="relative mx-auto w-full max-w-[760px] shrink-0 px-4 pt-2 pb-4 md:px-8">
       <input ref={picker} type="file" accept="image/*" multiple className="hidden" onChange={(e) => (pick(e.target.files), (e.target.value = ""))} />
 
       {matches.length > 0 && (
-        <div className="animate-rise absolute bottom-full left-14 z-20 mb-1 w-64 overflow-hidden rounded-xl bg-elevated py-1 shadow-[0_10px_40px_rgba(0,0,0,0.18)] ring-1 ring-separator">
+        <div className="animate-rise absolute bottom-full left-4 z-20 mb-1 w-64 overflow-hidden rounded-[10px] bg-raised p-1 shadow-pop md:left-8">
           {matches.map((p, i) => (
             <button
               key={p.name}
               type="button"
               onMouseDown={(e) => (e.preventDefault(), complete(p))}
-              className={cx("flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[14px]", i === mention!.index ? "bg-blue text-white" : "hover:bg-fill-2")}
+              className={cx("flex w-full items-center gap-2.5 rounded-[7px] px-2 py-1.5 text-left text-[13px]", i === mention!.index ? "bg-wash-2" : "hover:bg-wash")}
             >
-              <Avatar name={p.label} voice={i === mention!.index ? null : p.voice} size={22} />
+              <Monogram name={p.label} agent={p.agent} size={20} />
               <span className="truncate font-medium">{p.label}</span>
-              {p.label !== p.name && <span className={cx("truncate text-[12px]", i === mention!.index ? "text-white/75" : "text-label-2")}>@{p.name}</span>}
+              {p.label !== p.name && <span className="truncate text-ink-3">@{p.name}</span>}
             </button>
           ))}
         </div>
       )}
 
-      {menu && (
-        <>
-          <div className="fixed inset-0 z-10" onMouseDown={() => setMenu(false)} />
-          <div className="animate-rise absolute bottom-full left-3 z-20 mb-1 w-52 overflow-hidden rounded-xl bg-elevated py-1 text-[14px] shadow-[0_10px_40px_rgba(0,0,0,0.18)] ring-1 ring-separator md:left-5">
-            <button type="button" className="flex w-full items-center px-3 py-1.5 hover:bg-fill-2" onClick={() => (setMenu(false), picker.current?.click())}>
-              Photos…
-            </button>
-            <div className="my-1 h-px bg-separator" />
-            <p className="px-3 py-1 text-[11px] text-label-2">Send as</p>
-            {KINDS.map((k) => (
-              <button
-                key={k}
-                type="button"
-                className="flex w-full items-center justify-between px-3 py-1.5 hover:bg-fill-2"
-                onClick={() => (setKind(kind === k ? "msg" : k), setMenu(false), area.current?.focus())}
-              >
-                {KIND_LABEL[k]!.label}
-                {kind === k && <Icon icon={Tick02Icon} size={16} className="text-blue" />}
-              </button>
+      <div className="rounded-[12px] bg-canvas shadow-[inset_0_0_0_1px_var(--line),0_1px_2px_rgba(0,0,0,0.03)] transition-shadow focus-within:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--ink)_22%,transparent),0_0_0_3px_var(--wash)]">
+        {replyTo && (
+          <div className="flex items-center gap-2 px-3.5 pt-2.5 text-[12.5px] text-ink-2">
+            <span className="min-w-0 truncate">
+              Replying to <span className="font-medium text-ink">{nameOf(replyTo.from)}</span> <span className="text-ink-3">{excerpt(replyTo.body, 80)}</span>
+            </span>
+            <IconButton label="Cancel reply" className="ml-auto size-6" onClick={onClearReply}>
+              <Icon icon={Cancel01Icon} size={13} />
+            </IconButton>
+          </div>
+        )}
+
+        {files.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto px-3 pt-3">
+            {files.map((f, i) => (
+              <span key={i} className="group relative shrink-0">
+                <img src={`data:${f.mime};base64,${f.data}`} alt={f.name} title={f.name} className="size-16 rounded-[8px] object-cover shadow-[0_0_0_0.5px_var(--line)]" />
+                <button
+                  type="button"
+                  aria-label={`Remove ${f.name}`}
+                  onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+                  className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-ink text-canvas"
+                >
+                  <Icon icon={Cancel01Icon} size={11} strokeWidth={2.2} />
+                </button>
+              </span>
             ))}
           </div>
-        </>
-      )}
+        )}
 
-      {replyTo && (
-        <div className="mb-1.5 ml-11 flex items-center gap-2 text-[12px] text-label-2">
-          <span className="min-w-0 truncate">
-            Replying to <span className="font-medium text-label">{nameOf(replyTo.from)}</span> · {excerpt(replyTo.body, 80)}
-          </span>
-          <IconButton label="Cancel reply" className="size-5" onClick={onClearReply}>
-            <Icon icon={Cancel01Icon} size={13} />
+        <textarea
+          ref={area}
+          rows={1}
+          value={body}
+          disabled={disabled}
+          placeholder={disabled ? "Connecting…" : replyTo ? `Reply to ${nameOf(replyTo.from)}` : "Write to the channel. Type @ to address someone."}
+          onChange={(e) => {
+            setBody(e.target.value)
+            trackMention(e.target.value, e.target.selectionStart)
+          }}
+          onKeyDown={(e) => {
+            if (matches.length && mention) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault()
+                const d = e.key === "ArrowDown" ? 1 : -1
+                setMention({ ...mention, index: (mention.index + d + matches.length) % matches.length })
+                return
+              }
+              if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault()
+                complete(matches[mention.index]!)
+                return
+              }
+              if (e.key === "Escape") return setMention(null)
+            }
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault()
+              void submit()
+            }
+            if (e.key === "Escape" && replyTo) onClearReply()
+          }}
+          className="block max-h-[220px] min-h-[46px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-[14px] leading-[1.5] outline-none placeholder:text-ink-3 focus-visible:outline-none"
+        />
+
+        <div className="flex items-center gap-1 px-2 pb-2">
+          <IconButton label="Attach images" className="size-7" onClick={() => picker.current?.click()} disabled={disabled || files.length >= 8}>
+            <Icon icon={Attachment01Icon} size={16} />
           </IconButton>
-        </div>
-      )}
-
-      <div className="flex items-end gap-2">
-        <IconButton label="Photos and message types" className="mb-[3px] bg-fill-2" onClick={() => setMenu((v) => !v)} disabled={disabled}>
-          <Icon icon={Add01Icon} size={18} strokeWidth={2} />
-        </IconButton>
-
-        <div className="flex min-w-0 flex-1 flex-col rounded-[18px] bg-bg shadow-[inset_0_0_0_1px_var(--separator)] transition-shadow focus-within:shadow-[inset_0_0_0_1px_var(--label-3)]">
-          {files.length > 0 && (
-            <div className="flex gap-2 overflow-x-auto px-2 pt-2">
-              {files.map((f, i) => (
-                <span key={i} className="relative shrink-0">
-                  <img src={`data:${f.mime};base64,${f.data}`} alt={f.name} title={f.name} className="size-16 rounded-xl object-cover" />
-                  <button
-                    type="button"
-                    aria-label={`Remove ${f.name}`}
-                    onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
-                    className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full bg-label-2 text-bg"
-                  >
-                    <Icon icon={Cancel01Icon} size={11} strokeWidth={2.2} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          <div className="flex items-end gap-1.5 pl-3">
-            {kind !== "msg" && (
-              <button
-                type="button"
-                onClick={() => setKind("msg")}
-                title="Send as a plain message"
-                className={cx("mb-[7px] flex shrink-0 items-center gap-0.5 rounded-full bg-fill-2 px-2 py-0.5 text-[12px] font-medium", KIND_LABEL[kind]?.tone)}
-              >
-                {KIND_LABEL[kind]?.label}
-                <Icon icon={Cancel01Icon} size={11} strokeWidth={2.2} />
-              </button>
-            )}
-            <textarea
-              ref={area}
-              rows={1}
-              value={body}
-              disabled={disabled}
-              placeholder={disabled ? "Connecting…" : "Message"}
-              onChange={(e) => {
-                setBody(e.target.value)
-                trackMention(e.target.value, e.target.selectionStart)
-              }}
-              onKeyDown={(e) => {
-                if (matches.length && mention) {
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                    e.preventDefault()
-                    const d = e.key === "ArrowDown" ? 1 : -1
-                    setMention({ ...mention, index: (mention.index + d + matches.length) % matches.length })
-                    return
-                  }
-                  if (e.key === "Enter" || e.key === "Tab") {
-                    e.preventDefault()
-                    complete(matches[mention.index]!)
-                    return
-                  }
-                  if (e.key === "Escape") return setMention(null)
-                }
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault()
-                  void submit()
-                }
-                if (e.key === "Escape" && replyTo) onClearReply()
-              }}
-              className="max-h-[180px] min-h-[34px] flex-1 resize-none bg-transparent py-[7px] text-[14.5px] leading-5 outline-none placeholder:text-label-3 focus-visible:outline-none"
-            />
+          <div className="relative">
             <button
               type="button"
-              aria-label="Send"
-              disabled={!canSend}
-              onClick={() => void submit()}
-              className={cx(
-                "m-[4px] flex size-[26px] shrink-0 items-center justify-center rounded-full bg-blue text-white transition-[opacity,transform] duration-150 hover:brightness-[1.08]",
-                canSend ? "scale-100 opacity-100" : "pointer-events-none scale-75 opacity-0"
-              )}
+              onClick={() => setMenu((v) => !v)}
+              disabled={disabled}
+              aria-haspopup="menu"
+              aria-expanded={menu}
+              className={cx("flex h-7 items-center gap-1 rounded-[7px] px-2 text-[12.5px] font-medium transition-colors", kind === "msg" ? "text-ink-2 hover:bg-wash hover:text-ink" : "bg-wash-2 text-ink")}
             >
-              <Icon icon={ArrowUp02Icon} size={16} strokeWidth={2.4} />
+              {current.label}
+              <Icon icon={ArrowDown01Icon} size={13} />
             </button>
+            {menu && (
+              <>
+                <div className="fixed inset-0 z-10" onMouseDown={() => setMenu(false)} />
+                <div role="menu" className="animate-rise absolute bottom-full left-0 z-20 mb-1.5 w-60 rounded-[10px] bg-raised p-1 shadow-pop">
+                  {KINDS.map((k) => (
+                    <button
+                      key={k.kind}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={kind === k.kind}
+                      onClick={() => (setKind(k.kind), setMenu(false), area.current?.focus())}
+                      className="flex w-full items-start gap-2 rounded-[7px] px-2 py-1.5 text-left hover:bg-wash"
+                    >
+                      <span className="w-4 pt-0.5 text-accent">{kind === k.kind && <Icon icon={Tick02Icon} size={14} strokeWidth={2} />}</span>
+                      <span>
+                        <span className="block text-[13px] font-medium">{k.label}</span>
+                        <span className="block text-[12px] text-ink-3">{k.hint}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
+          <span className="ml-auto hidden pr-1 text-[11.5px] text-ink-3 sm:block">Return to send</span>
+          <button
+            type="button"
+            aria-label="Send"
+            disabled={!canSend}
+            onClick={() => void submit()}
+            className={cx("ml-auto flex size-7 shrink-0 items-center justify-center rounded-[7px] transition-colors sm:ml-1", canSend ? "bg-accent text-white hover:brightness-110" : "bg-wash-2 text-ink-3")}
+          >
+            <Icon icon={ArrowUp02Icon} size={15} strokeWidth={2.2} />
+          </button>
         </div>
       </div>
     </div>

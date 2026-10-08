@@ -10,45 +10,45 @@ import { Icon } from "./icon"
 import { IconButton, Modal } from "./kit"
 import { Markdown } from "./markdown"
 
-const STATES: Record<TaskState, { label: string; color: string }> = {
-  doing: { label: "In progress", color: "var(--blue)" },
-  blocked: { label: "Blocked", color: "var(--red)" },
-  review: { label: "In review", color: "var(--orange)" },
-  todo: { label: "To do", color: "var(--label-3)" },
-  done: { label: "Done", color: "var(--green)" },
-}
-const ORDER: TaskState[] = ["doing", "blocked", "review", "todo", "done"]
+const LABEL: Record<TaskState, string> = { doing: "In progress", blocked: "Blocked", review: "In review", todo: "To do", done: "Done" }
+const ORDER: TaskState[] = ["blocked", "doing", "review", "todo", "done"]
 
-/** The Reminders-style ring: hollow while open, filled with a check when done. */
-function Ring({ state }: { state: TaskState }) {
-  const color = STATES[state].color
+/** A task's state as a small circle: empty, half full, dashed, red, or checked. Ink only, except blocked. */
+function StateMark({ state }: { state: TaskState }) {
   if (state === "done") {
     return (
-      <span className="flex size-[22px] shrink-0 items-center justify-center rounded-full" style={{ background: color }}>
-        <Icon icon={Tick02Icon} size={14} strokeWidth={2.6} className="text-white" />
+      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-ink text-canvas">
+        <Icon icon={Tick02Icon} size={11} strokeWidth={2.6} />
       </span>
     )
   }
   return (
-    <span className="flex size-[22px] shrink-0 items-center justify-center rounded-full border-[1.5px]" style={{ borderColor: color }}>
-      {state !== "todo" && <span className="size-2.5 rounded-full" style={{ background: color }} />}
-    </span>
+    <span
+      title={LABEL[state]}
+      className={cx(
+        "block size-4 shrink-0 rounded-full border-[1.5px]",
+        state === "todo" && "border-ink-3",
+        state === "doing" && "border-ink-2 bg-[conic-gradient(var(--ink-2)_0_50%,transparent_50%_100%)]",
+        state === "review" && "border-dashed border-ink-2",
+        state === "blocked" && "border-alert bg-[radial-gradient(var(--alert)_0_38%,transparent_40%)]"
+      )}
+    />
   )
 }
 
 function TaskRow({ task, state, now, onOpen }: { task: Task; state: ChannelState; now: number; onOpen: () => void }) {
   const waits = waitingOn(state, task)
   return (
-    <button type="button" onClick={onOpen} className="group flex w-full items-start gap-3 rounded-[12px] pl-3 text-left transition-colors hover:bg-fill-2">
-      <span className="pt-[12px]">
-        <Ring state={task.state} />
+    <button type="button" onClick={onOpen} className="-mx-3 flex w-[calc(100%+24px)] items-start gap-3 rounded-[8px] px-3 py-2 text-left transition-colors hover:bg-wash">
+      <span className="flex pt-[3px]">
+        <StateMark state={task.state} />
       </span>
-      <span className="min-w-0 flex-1 py-2.5 pr-3 shadow-[inset_0_-0.5px_0_var(--separator)] group-last:shadow-none">
-        <span className={cx("block text-[14.5px] leading-snug", task.state === "done" && "text-label-2")}>{task.title}</span>
-        <span className="mt-1 flex items-center gap-3 text-[12px] text-label-2">
+      <span className="min-w-0 flex-1">
+        <span className={cx("block text-[14px] leading-snug", task.state === "done" && "text-ink-2")}>{task.title}</span>
+        <span className="mt-0.5 flex items-center gap-3 text-[12px] text-ink-3">
           <span className="tabular-nums">{taskId(task.id)}</span>
           <span className="truncate">{task.owner ?? "Unassigned"}</span>
-          {waits.length > 0 && <span className="shrink-0 text-orange">Waits on {waits.map(taskId).join(", ")}</span>}
+          {waits.length > 0 && <span className="shrink-0">Waits on {waits.map(taskId).join(", ")}</span>}
           {task.notes.length > 0 && <span className="shrink-0">{task.notes.length === 1 ? "1 note" : `${task.notes.length} notes`}</span>}
           <span className="ml-auto shrink-0">{formatAgo(task.updatedAt, now)}</span>
         </span>
@@ -63,32 +63,31 @@ export function Tasks({ state, now, onOpen }: { state: ChannelState; now: number
 
   if (!all.length) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-1 p-8 text-center">
-        <p className="text-[15px] font-semibold">No tasks yet</p>
-        <p className="max-w-xs text-[13px] text-label-2">When agents split up work with `mc task add`, it shows up here.</p>
+      <div className="flex flex-1 items-center justify-center p-8">
+        <div className="max-w-xs">
+          <p className="text-[14px] font-semibold">No tasks yet</p>
+          <p className="mt-1 text-[13px] leading-normal text-ink-2">When agents split up work with mc task add, each task and who holds it shows up here.</p>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-2xl px-2 py-4 md:px-6">
+      <div className="mx-auto max-w-[760px] px-4 py-6 md:px-8">
         {ORDER.map((s) => {
           const list = all.filter((t) => t.state === s)
           if (!list.length) return null
           const done = s === "done"
           return (
-            <section key={s} className="mb-6">
-              <div className="flex items-baseline justify-between px-4 pb-1">
-                <h3 className="text-[19px] font-bold tracking-[-0.02em]" style={{ color: STATES[s].color === "var(--label-3)" ? "var(--label)" : STATES[s].color }}>
-                  {STATES[s].label}
-                </h3>
-                {done ? (
-                  <button type="button" className="text-[13px] text-blue" onClick={() => setShowDone((v) => !v)}>
-                    {showDone ? "Hide" : `Show ${list.length}`}
+            <section key={s} className="mb-7">
+              <div className="mb-1 flex items-baseline gap-2">
+                <h3 className={cx("text-[13px] font-semibold", s === "blocked" ? "text-alert" : "text-ink")}>{LABEL[s]}</h3>
+                <span className="text-[12px] text-ink-3 tabular-nums">{list.length}</span>
+                {done && (
+                  <button type="button" className="ml-auto text-[12px] font-medium text-accent hover:underline" onClick={() => setShowDone((v) => !v)}>
+                    {showDone ? "Hide" : "Show"}
                   </button>
-                ) : (
-                  <span className="text-[13px] text-label-2">{list.length}</span>
                 )}
               </div>
               {(!done || showDone) && list.map((t) => <TaskRow key={t.id} task={t} state={state} now={now} onOpen={() => onOpen(t.id)} />)}
@@ -113,39 +112,39 @@ export function TaskDetail({ id, state, messages, now, onClose, onOpen }: { id: 
   return (
     <Modal open={id !== null} onClose={onClose} wide>
       {task ? (
-        <div className="flex flex-col">
-          <header className="flex items-start gap-3 px-5 pt-5">
-            <span className="pt-0.5">
-              <Ring state={task.state} />
+        <div>
+          <header className="flex items-start gap-3 px-6 pt-5">
+            <span className="flex pt-1">
+              <StateMark state={task.state} />
             </span>
             <div className="min-w-0 flex-1">
-              <h2 className="text-[17px] leading-snug font-semibold">{task.title}</h2>
-              <p className="mt-0.5 text-[12px] text-label-2">
-                <span className="tabular-nums">{taskId(task.id)}</span>{"  "}<span style={{ color: STATES[task.state].color === "var(--label-3)" ? undefined : STATES[task.state].color }}>{STATES[task.state].label}</span>
+              <h2 className="text-[16px] leading-snug font-semibold tracking-[-0.01em]">{task.title}</h2>
+              <p className="mt-0.5 text-[12px] text-ink-2">
+                <span className="tabular-nums">{taskId(task.id)}</span>, {LABEL[task.state].toLowerCase()}
               </p>
             </div>
             <IconButton label="Close" onClick={onClose}>
-              <Icon icon={Cancel01Icon} size={18} />
+              <Icon icon={Cancel01Icon} size={17} />
             </IconButton>
           </header>
 
-          <dl className="mx-5 mt-4 grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 rounded-xl bg-fill-2 px-4 py-3 text-[13px]">
-            <dt className="text-label-2">Owner</dt>
-            <dd>{task.owner ?? <span className="text-label-2">Unassigned</span>}</dd>
-            <dt className="text-label-2">Created</dt>
+          <dl className="mx-6 mt-4 grid grid-cols-[88px_1fr] gap-y-1.5 border-y border-line py-3 text-[13px]">
+            <dt className="text-ink-2">Owner</dt>
+            <dd>{task.owner ?? <span className="text-ink-3">Unassigned</span>}</dd>
+            <dt className="text-ink-2">Created</dt>
             <dd title={formatFull(task.createdAt)}>
               by {task.createdBy}, {formatAgo(task.createdAt, now)}
             </dd>
             {task.after.length > 0 && (
               <>
-                <dt className="text-label-2">After</dt>
-                <dd className="flex flex-wrap gap-1.5">
+                <dt className="text-ink-2">Waits on</dt>
+                <dd className="flex flex-wrap gap-x-3">
                   {task.after.map((d) => {
                     const dep = state.tasks.get(d)
                     return (
-                      <button key={d} type="button" onClick={() => onOpen(d)} className="text-blue hover:underline">
+                      <button key={d} type="button" onClick={() => onOpen(d)} className="text-accent hover:underline">
                         {taskId(d)}
-                        {dep ? ` (${STATES[dep.state].label.toLowerCase()})` : ""}
+                        {dep ? `, ${LABEL[dep.state].toLowerCase()}` : ""}
                       </button>
                     )
                   })}
@@ -155,20 +154,20 @@ export function TaskDetail({ id, state, messages, now, onClose, onOpen }: { id: 
           </dl>
 
           {task.detail && (
-            <div className="px-5 pt-4 text-[14px]">
+            <div className="px-6 pt-4 text-[14px] leading-[1.6]">
               <Markdown>{task.detail}</Markdown>
             </div>
           )}
 
-          <div className="px-5 pt-5 pb-5">
-            <h3 className="mb-2 text-[13px] text-label-2">History</h3>
-            <ol className="grid gap-2">
+          <div className="px-6 pt-5 pb-6">
+            <h3 className="mb-2 text-[12px] font-semibold text-ink-2">History</h3>
+            <ol className="grid gap-1.5">
               {history.map((m) => (
-                <li key={m.seq} className="flex items-baseline justify-between gap-3 text-[13px]">
+                <li key={m.seq} className="flex items-baseline justify-between gap-4 text-[13px]">
                   <span>
-                    <span className="font-medium">{m.from}</span> <span className="text-label-2">{describeEvent(m)}</span>
+                    <span className="font-medium">{m.from}</span> <span className="text-ink-2">{describeEvent(m)}</span>
                   </span>
-                  <time className="shrink-0 text-[12px] text-label-3" title={formatFull(m.ts)}>
+                  <time className="shrink-0 text-[12px] text-ink-3" title={formatFull(m.ts)}>
                     {formatAgo(m.rts ?? m.ts, now)}
                   </time>
                 </li>
@@ -177,9 +176,9 @@ export function TaskDetail({ id, state, messages, now, onClose, onOpen }: { id: 
           </div>
         </div>
       ) : (
-        <div className="p-6 text-center">
-          <p className="text-[15px] font-semibold">This task is gone</p>
-          <p className="mt-1 text-[13px] text-label-2">It may have been pruned from the channel history.</p>
+        <div className="p-6">
+          <p className="text-[14px] font-semibold">This task is gone</p>
+          <p className="mt-1 text-[13px] text-ink-2">It was pruned from the channel’s history.</p>
         </div>
       )}
     </Modal>

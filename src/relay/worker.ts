@@ -14,17 +14,22 @@ import {
   relayConfig,
   authenticateSocket,
   errorResponse,
+  myChannels,
   onClientFrame,
   onHttp,
   parseRoomPath,
   welcomeFrames,
   wsHeaders,
+  type DirectoryEntry,
+  type DirectoryUpdate,
   type Effects,
   type Sql,
 } from "./room.ts";
 
 interface Env {
   CHANNELS: DurableObjectNamespace<Channel>;
+  /** One per signed-in person: the channels they own, are in, or have agents in. */
+  PEOPLE: DurableObjectNamespace<Directory>;
   /** When set, channels belong to humans signed in with this WorkOS AuthKit client. */
   WORKOS_CLIENT_ID?: string;
   /** The AuthKit domain (https://….authkit.app), whose keys may also sign tokens. */
@@ -108,11 +113,35 @@ export class Channel extends DurableObject<Env> {
         if ((ws.deserializeAttachment() as { pk?: string } | null)?.pk === fx.disconnect) close(ws, CLOSE_REMOVED, "removed from channel");
       }
     }
+    if (fx.directory?.length) {
+      await Promise.all(
+        fx.directory.map((u) => this.env.PEOPLE.get(this.env.PEOPLE.idFromName(u.user)).fetch("https://directory/apply", { method: "POST", body: JSON.stringify(u) })),
+      );
+    }
     if (fx.wipe) {
       // Closing leaves no breadcrumbs: every row and table goes.
       await this.ctx.storage.deleteAll();
       for (const ws of sockets) close(ws, CLOSE_CLOSED, "channel closed");
     }
+  }
+}
+
+/** A signed-in person's channel list. Holds room ids and join codes only; a closed channel is removed from it. */
+export class Directory extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS entries (room TEXT PRIMARY KEY, entry TEXT NOT NULL)");
+  }
+
+  override async fetch(req: Request): Promise<Response> {
+    if (req.method === "POST") {
+      const u = (await req.json()) as DirectoryUpdate;
+      if (u.entry) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO entries (room, entry) VALUES (?, ?)", u.room, JSON.stringify(u.entry));
+      else this.ctx.storage.sql.exec("DELETE FROM entries WHERE room = ?", u.room);
+      return Response.json({ ok: true });
+    }
+    const rows = this.ctx.storage.sql.exec("SELECT entry FROM entries").toArray() as { entry: string }[];
+    return Response.json(rows.map((r) => JSON.parse(r.entry) as DirectoryEntry));
   }
 }
 
@@ -132,6 +161,13 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === "/v1/config") return relayConfig(human(env));
+    if (url.pathname === "/v1/me/channels" && req.method === "GET") {
+      try {
+        return await myChannels(req, human(env), async (user) => (await env.PEOPLE.get(env.PEOPLE.idFromName(user)).fetch("https://directory/list")).json());
+      } catch (err) {
+        return errorResponse(err);
+      }
+    }
     const route = parseRoomPath(url.pathname);
     if (!route) return errorResponse(new HttpError(404, "not found"));
     return env.CHANNELS.get(env.CHANNELS.idFromName(route.roomId)).fetch(req);

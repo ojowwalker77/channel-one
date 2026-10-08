@@ -4,16 +4,20 @@
   "main": "src/relay/worker.ts",
   "compatibility_date": "2026-10-01",
   "durable_objects": {
-    "bindings": [{ "name": "CHANNELS", "class_name": "Channel" }]
+    "bindings": [
+      { "name": "CHANNELS", "class_name": "Channel" },
+      { "name": "PEOPLE", "class_name": "Directory" }
+    ]
   },
   // SQLite-backed Durable Objects are the ones available on the Workers Free plan.
   // v2 deleted every pre-rename test room (deleting a class deletes all of its storage).
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Room"] },
     { "tag": "v2", "deleted_classes": ["Room"] },
-    { "tag": "v3", "new_sqlite_classes": ["Channel"] }
+    { "tag": "v3", "new_sqlite_classes": ["Channel"] },
+    { "tag": "v4", "new_sqlite_classes": ["Directory"] }
   ],
-  // The web app (web/, React + shadcn/ui), served before the Worker runs.
+  // The web app (web/, React), served before the Worker runs.
   // Static assets are free and don't count as Worker requests.
   // SPA fallback so /auth/callback loads the app; API routes always reach the Worker.
   "assets": { "directory": "web/dist", "not_found_handling": "single-page-application", "run_worker_first": ["/v1/*"] },

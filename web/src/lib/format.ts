@@ -1,31 +1,9 @@
-import type { Kind } from "@mc/protocol.ts"
 import type { Member } from "@mc/state.ts"
-
-/**
- * Every agent speaks in its own voice colour, drawn from Apple's system
- * palette and stable for its name. People stay neutral (null).
- */
-const VOICES = ["#5856d6", "#30b0c7", "#ff9500", "#ff2d55", "#af52de", "#00c7be", "#a2845e", "#34c759", "#ff6482", "#5e5ce6"]
-
-export function voiceOf(name: string): string {
-  let h = 0
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0
-  return VOICES[h % VOICES.length]!
-}
 
 /** One or two letters for a monogram: "Jonatas Filho" → "JF", "claude" → "C". */
 export function initials(name: string): string {
   const parts = name.split(/[\s._-]+/).filter(Boolean)
   return (parts.length > 1 ? parts[0]![0]! + parts[1]![0]! : name.slice(0, 1)).toUpperCase()
-}
-
-/** How non-chat message kinds are labelled above a bubble. */
-export const KIND_LABEL: Partial<Record<Kind, { label: string; tone: string }>> = {
-  ask: { label: "Question", tone: "text-blue" },
-  blocking: { label: "Blocking", tone: "text-red" },
-  status: { label: "Status", tone: "text-label-2" },
-  done: { label: "Done", tone: "text-green" },
-  ack: { label: "Ack", tone: "text-label-2" },
 }
 
 /** The name to show for a member: a person's real name, an agent's own name. */

@@ -105,6 +105,8 @@ interface Info {
   ownerSig: string;
   epoch: number;
   rotate: boolean;
+  /** The channel's name, sealed with the epoch-0 key. */
+  title?: { iv: string; ct: string } | null;
 }
 
 /** Fetch a room's public info and check it against the owner pinned in the join code. */
@@ -173,6 +175,8 @@ export class Channel {
     agents: (Identity & { info: MemberInfo })[] = [],
     roomId = newRoomId(),
     human?: string | null,
+    /** A name for the channel; sealed, so only members can read it. */
+    title?: string,
   ): Promise<{ code: string; access: ChannelAccess }> {
     if (!owner.xpk) throw new Error("owner identity has no exchange key");
     const key = newChannelKey();
@@ -184,7 +188,13 @@ export class Channel {
       keys: { "0": await sealTo(id.xpk!, key, keyInfo(roomId, 0)) },
     });
     const members = [await enroll(owner, ownerInfo, true), ...(await Promise.all(agents.map((a) => enroll(a, a.info, false))))];
-    await call(relay, roomId, "/create", { method: "POST", identity: owner, human, body: JSON.stringify({ owner: { pk: owner.pk, xpk: owner.xpk, sig: ownerSig.sig }, members }) });
+    const sealedTitle = title ? await seal(key, roomId, { name: title }) : undefined;
+    await call(relay, roomId, "/create", {
+      method: "POST",
+      identity: owner,
+      human,
+      body: JSON.stringify({ owner: { pk: owner.pk, xpk: owner.xpk, sig: ownerSig.sig }, members, ...(sealedTitle ? { title: sealedTitle } : {}) }),
+    });
     const access: ChannelAccess = { roomId, ownerPk: owner.pk, ownerXpk: owner.xpk, epoch: 0, keys: { "0": key } };
     return { code: encodeJoinCode({ roomId, ownerFp: await ownerFingerprint(owner.pk) }), access };
   }
@@ -257,6 +267,15 @@ export class Channel {
 
   async info(): Promise<Info> {
     return call<Info>(this.relay, this.roomId, "/info");
+  }
+
+  /** The channel's name, if its creator gave one (only members can read it). */
+  async title(): Promise<string | null> {
+    const t = (await this.info()).title;
+    const key = this.access.keys["0"];
+    if (!t || !key) return null;
+    const opened = (await open(key, this.roomId, t.iv, t.ct).catch(() => null)) as { name?: unknown } | null;
+    return typeof opened?.name === "string" ? opened.name.slice(0, 80) : null;
   }
 
   /** The verified member list. Records that fail verification are dropped. */
@@ -607,6 +626,24 @@ export function isDirectedAt(m: Message, agent: string): boolean {
 }
 
 export { encodeJoinCode };
+
+/** A signed-in person's tie to a channel: they own it, are in it, and/or have agents in it. */
+export interface MyChannel {
+  room: string;
+  code: string;
+  owner: boolean;
+  member: boolean;
+  agents: number;
+  at: number;
+}
+
+/** Every channel the signed-in person owns, is in, or has agents in, across all their devices. */
+export async function myChannels(relay: string, human: string): Promise<MyChannel[]> {
+  const res = await fetch(new URL("/v1/me/channels", relay), { headers: { "x-human-token": human } });
+  const json = (await res.json().catch(() => ({}))) as { channels?: MyChannel[]; error?: string };
+  if (!res.ok) throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`);
+  return json.channels ?? [];
+}
 
 /** Whether a relay requires a signed-in human to create and run channels, and with which WorkOS client. */
 export async function relayConfig(relay: string): Promise<{ workosClientId: string | null }> {

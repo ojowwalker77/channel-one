@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import { Channel, ChannelGone, type HumanSession, type SendOptions } from "@mc/client.ts"
+import { Channel, ChannelGone, myChannels, type HumanSession, type MyChannel, type SendOptions } from "@mc/client.ts"
 import { decodeJoinCode, fromB64url, newRoomId, type ChannelAccess } from "@mc/crypto.ts"
 import { generateIdentity, withExchangeKey, type Identity } from "@mc/identity.ts"
 import { handleFor, type JoinRequest, type Member } from "@mc/membership.ts"
@@ -111,6 +111,19 @@ export function loadPending(code: string): PendingJoin | null {
 
 export function savePending(p: PendingJoin): void {
   localStorage.setItem(PENDING_KEY(p.code), JSON.stringify(p))
+  changed()
+}
+
+/** Join requests this browser is waiting on. */
+export function pendingChannels(): PendingJoin[] {
+  const out: PendingJoin[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)
+    if (!k?.startsWith("mc.pending.")) continue
+    const p = read<PendingJoin>(k)
+    if (p?.code && p.identity) out.push(p)
+  }
+  return out
 }
 
 /** Forget a channel in this browser: identity, keys, pending request, registry entry. */
@@ -163,6 +176,116 @@ export function channelTitle(c: { name?: string }, recent: Recent | null): strin
   if (p.length === 1) return p[0]!
   if (p.length <= 3) return `${p.slice(0, -1).join(", ")} & ${p[p.length - 1]}`
   return `${p.slice(0, 2).join(", ")} & ${p.length - 2} more`
+}
+
+/** How this browser relates to a channel in the list. */
+export type ListState = "member" | "pending" | "elsewhere" | "agents"
+
+export interface ChannelRow {
+  code: string
+  room: string
+  title: string
+  recent: Recent | null
+  ts: number
+  state: ListState
+  owner: boolean
+  /** Agents the signed-in person vouched for that are in it. */
+  agents: number
+}
+
+const untitled = (room: string) => `Channel ${room.slice(0, 4).toUpperCase()}`
+
+/**
+ * Every channel to show in the list: the ones this browser is in or waiting
+ * on, plus (when signed in) every channel the person owns, is in, or has
+ * agents in, from any device.
+ */
+export function useChannelList(signedIn: boolean, token: () => Promise<string | null>): ChannelRow[] {
+  const local = useKnownChannels()
+  const [pending, setPending] = useState(pendingChannels)
+  const [remote, setRemote] = useState<MyChannel[]>([])
+  const tokenRef = useRef(token)
+  tokenRef.current = token
+
+  useEffect(() => {
+    const update = () => setPending(pendingChannels())
+    window.addEventListener(CHANGED, update)
+    return () => window.removeEventListener(CHANGED, update)
+  }, [])
+
+  useEffect(() => {
+    if (!signedIn) {
+      setRemote([])
+      return
+    }
+    let timer: number | undefined
+    const load = async () => {
+      const t = await tokenRef.current()
+      if (!t) return
+      try {
+        setRemote(await myChannels(location.origin, t))
+      } catch {}
+    }
+    const soon = () => {
+      clearTimeout(timer)
+      timer = window.setTimeout(load, 600)
+    }
+    void load()
+    const every = window.setInterval(load, 60_000)
+    window.addEventListener("focus", soon)
+    window.addEventListener(CHANGED, soon)
+    return () => {
+      clearTimeout(timer)
+      clearInterval(every)
+      window.removeEventListener("focus", soon)
+      window.removeEventListener(CHANGED, soon)
+    }
+  }, [signedIn])
+
+  return useMemo(() => {
+    const rows = new Map<string, ChannelRow>()
+    const theirs = new Map(remote.map((r) => [r.room, r]))
+    for (const c of local) {
+      const m = loadMember(c.code)
+      if (!m) continue
+      const recent = loadRecent(c.code)
+      const room = m.access.roomId
+      rows.set(room, {
+        code: c.code,
+        room,
+        title: channelTitle({ name: m.name ?? c.name }, recent),
+        recent,
+        ts: recent?.ts ?? c.at,
+        state: "member",
+        owner: m.identity.pk === m.access.ownerPk,
+        agents: theirs.get(room)?.agents ?? 0,
+      })
+    }
+    for (const p of pending) {
+      let room: string
+      try {
+        room = decodeJoinCode(p.code).roomId
+      } catch {
+        continue
+      }
+      if (rows.has(room)) continue
+      rows.set(room, { code: p.code, room, title: untitled(room), recent: null, ts: Date.now(), state: "pending", owner: false, agents: 0 })
+    }
+    for (const r of remote) {
+      if (rows.has(r.room)) continue
+      rows.set(r.room, {
+        code: r.code,
+        room: r.room,
+        title: untitled(r.room),
+        recent: null,
+        ts: r.at,
+        state: r.owner || r.member ? "elsewhere" : "agents",
+        owner: r.owner,
+        agents: r.agents,
+      })
+    }
+    return [...rows.values()].sort((a, b) => b.ts - a.ts)
+  }, [local, pending, remote])
 }
 
 /** The channels this browser is in, kept current as they change. */
@@ -241,7 +364,7 @@ export async function createChannel(name: string, token: string | null, me: Pers
   const info = me
     ? { name: handle, role: "owner", kind: "human" as const, display: personName(me), sponsor: { user: me.id, name: personName(me), handle } }
     : { name: "human", role: "owner" }
-  const { code, access } = await Channel.create(location.origin, owner, info, [], roomId, token)
+  const { code, access } = await Channel.create(location.origin, owner, info, [], roomId, token, name)
   const m: StoredMember = { code, identity: owner, access, at: Date.now(), name }
   saveMember(m)
   return m
@@ -293,7 +416,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
         member.access,
         location.origin,
         member.identity,
-        (access) => saveMember({ ...member, access }),
+        (access) => saveMember({ ...(loadMember(member.code) ?? member), access }),
         async () => (humanRef.current ? humanRef.current() : null)
       ),
     [member]
@@ -311,6 +434,18 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
     const t = setInterval(() => setNow(Date.now()), 15_000)
     return () => clearInterval(t)
   }, [])
+
+  // Members can read the channel's sealed name; remember it for the channel list.
+  useEffect(() => {
+    if (member.name) return
+    void ch
+      .title()
+      .then((name) => {
+        const stored = loadMember(member.code)
+        if (name && stored && !stored.name) saveMember({ ...stored, name })
+      })
+      .catch(() => {})
+  }, [ch, member])
 
   const onGone = useCallback(
     (err: unknown) => {

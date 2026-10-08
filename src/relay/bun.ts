@@ -14,11 +14,13 @@ import {
   relayConfig,
   authenticateSocket,
   errorResponse,
+  myChannels,
   onClientFrame,
   onHttp,
   parseRoomPath,
   welcomeFrames,
   wsHeaders,
+  type DirectoryEntry,
   type Effects,
 } from "./room.ts";
 
@@ -35,6 +37,9 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
   const dbs = new Map<string, Database>();
   const sockets = new Map<string, Set<ServerWebSocket<SocketData>>>();
   const file = (roomId: string) => join(dataDir, `${roomId}.sqlite`);
+  // Signed-in people's channel lists (room ids and join codes only).
+  const people = new Database(join(dataDir, "people.sqlite"), { create: true });
+  people.run("CREATE TABLE IF NOT EXISTS entries (user TEXT NOT NULL, room TEXT NOT NULL, entry TEXT NOT NULL, PRIMARY KEY (user, room))");
 
   /** A store for the room; rooms that don't exist get a throwaway in-memory DB (so no file appears). */
   const storeFor = (roomId: string, creating: boolean): RoomStore => {
@@ -62,6 +67,10 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
     for (const f of fx.broadcast ?? []) for (const ws of room) ws.send(f);
     if (fx.others) for (const ws of room) if (ws !== sender) ws.send(fx.others);
     if (fx.disconnect) for (const ws of room) if (ws.data.pk === fx.disconnect) ws.close(CLOSE_REMOVED, "removed from channel");
+    for (const u of fx.directory ?? []) {
+      if (u.entry) people.query("INSERT OR REPLACE INTO entries (user, room, entry) VALUES (?, ?, ?)").run(u.user, u.room, JSON.stringify(u.entry));
+      else people.query("DELETE FROM entries WHERE user = ? AND room = ?").run(u.user, u.room);
+    }
     if (fx.wipe) {
       dbs.get(roomId)?.close();
       dbs.delete(roomId);
@@ -80,6 +89,11 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
         const url = new URL(req.url);
         if (url.pathname === "/") return new Response("channel-one relay (bun)\n");
         if (url.pathname === "/v1/config") return relayConfig(human);
+        if (url.pathname === "/v1/me/channels" && req.method === "GET") {
+          return await myChannels(req, human, async (user) =>
+            (people.query("SELECT entry FROM entries WHERE user = ?").all(user) as { entry: string }[]).map((r) => JSON.parse(r.entry) as DirectoryEntry),
+          );
+        }
         const route = parseRoomPath(url.pathname);
         if (!route) throw new HttpError(404, "not found");
         const store = storeFor(route.roomId, route.rest === "/create");

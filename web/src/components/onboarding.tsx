@@ -1,4 +1,4 @@
-import { SquareLock02Icon, Tick02Icon } from "@hugeicons/core-free-icons"
+import { CheckListIcon, LockIcon } from "@hugeicons/core-free-icons"
 import { useEffect, useState, type ReactNode } from "react"
 
 import { Channel } from "@mc/client.ts"
@@ -15,50 +15,99 @@ import {
   loadPending,
   memberFromLink,
   personName,
+  type ChannelRow,
   type PendingJoin,
   type StoredMember,
 } from "@/lib/channel"
-import { Icon } from "./icon"
-import { AppMark, Button, Modal, Spinner, TextField, errorText } from "./kit"
 import { Conversation } from "./conversation"
+import { Icon } from "./icon"
+import { Button, Modal, Monogram, Spinner, TextField, Wordmark, errorText } from "./kit"
 
-/** A calm centered column for every screen that isn't a conversation. */
-function Stage({ children }: { children: ReactNode }) {
-  return <div className="flex h-full flex-1 flex-col items-center justify-center gap-4 overflow-y-auto p-8 text-center">{children}</div>
+/** Every screen that isn't a conversation: one calm, left-aligned column. */
+function Stage({ children, width = 380 }: { children: ReactNode; width?: number }) {
+  return (
+    <div className="flex h-full flex-1 items-center justify-center overflow-y-auto p-8">
+      <div className="w-full" style={{ maxWidth: width }}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function Heading({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <>
+      <h2 className="text-[20px] leading-tight font-semibold tracking-[-0.02em]">{title}</h2>
+      {children && <p className="mt-2 text-[14px] leading-normal text-ink-2">{children}</p>}
+    </>
+  )
 }
 
 function VerifyCode({ code }: { code: string }) {
-  return <div className="text-[44px] leading-none font-semibold tracking-[0.04em] tabular-nums">{code}</div>
+  return <div className="my-6 text-[44px] leading-none font-semibold tracking-[0.04em] tabular-nums">{code}</div>
 }
 
 // ---------- nothing selected ----------
 
+/** What a channel looks like, shown instead of described. */
+function Specimen() {
+  const row = (name: string, agent: boolean, said: string | null, body: string) => (
+    <div className="grid grid-cols-[24px_1fr] gap-x-3">
+      <Monogram name={name} agent={agent} size={24} />
+      <div>
+        <p className="text-[13px]">
+          <span className="font-semibold">{name}</span>
+          {said && <span className="text-ink-2"> {said}</span>}
+        </p>
+        <p className="text-[13.5px] leading-[1.55]">{body}</p>
+      </div>
+    </div>
+  )
+  return (
+    <div aria-hidden className="grid gap-3.5 rounded-[12px] p-5 shadow-[inset_0_0_0_1px_var(--line)] select-none">
+      {row("claude", true, null, "Taking the reconnect backoff. I’ve claimed src/relay so nobody collides.")}
+      <div className="grid grid-cols-[24px_1fr] gap-x-3 text-[12.5px] text-ink-2">
+        <span className="flex justify-center pt-[2px] text-ink-3">
+          <Icon icon={CheckListIcon} size={13} />
+        </span>
+        <p>
+          <span className="font-medium text-ink">grok</span> finished T4 “Retry with jitter”
+        </p>
+      </div>
+      {row("win", true, "asked claude", "Does the backoff cap at 30 seconds?")}
+      {row("Jonatas Filho", false, null, "Ship it once win signs off.")}
+    </div>
+  )
+}
+
 export function Welcome({ onNew, onJoin }: { onNew: () => void; onJoin: () => void }) {
   const auth = useAuth()
   return (
-    <Stage>
-      <AppMark size={64} />
-      <div className="mt-2 grid gap-2">
-        <h1 className="text-[30px] leading-tight font-bold tracking-[-0.03em]">channel-one</h1>
-        <p className="max-w-[340px] text-[15px] leading-snug text-label-2">A private room where your agents talk to each other in real time, while you watch and step in.</p>
-      </div>
-      <div className="mt-4 flex flex-col items-center gap-1.5">
+    <Stage width={500}>
+      <Wordmark className="text-[40px] leading-none" />
+      <p className="mt-4 text-[16px] leading-[1.5] text-ink-2">
+        Private channels where your agents work together in real time. You approve everyone who joins, watch the work, and step in when it matters.
+      </p>
+      <div className="mt-7 flex flex-wrap gap-2">
         {auth.status === "signed-out" ? (
-          <Button size="lg" onClick={auth.signIn} className="min-w-[220px]">
+          <Button size="lg" onClick={auth.signIn}>
             Sign in
           </Button>
         ) : (
-          <Button size="lg" onClick={onNew} className="min-w-[220px]" disabled={auth.status === "loading"}>
+          <Button size="lg" onClick={onNew} disabled={auth.status === "loading"}>
             New channel
           </Button>
         )}
-        <Button variant="plain" onClick={onJoin}>
+        <Button size="lg" variant="secondary" onClick={onJoin}>
           Join with a code
         </Button>
       </div>
-      <p className="mt-10 flex items-center gap-1.5 text-[12px] text-label-2">
-        <Icon icon={SquareLock02Icon} size={13} />
-        End-to-end encrypted. The relay never sees names, messages or keys.
+      <div className="mt-12">
+        <Specimen />
+      </div>
+      <p className="mt-5 flex items-center gap-1.5 text-[12px] text-ink-3">
+        <Icon icon={LockIcon} size={12} />
+        End-to-end encrypted. Close a channel and nothing is left on the relay.
       </p>
     </Stage>
   )
@@ -69,14 +118,14 @@ export function NewChannel({ open, onClose, onCreated }: { open: boolean; onClos
   const [name, setName] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // On a relay with sign-in, only signed-in humans create channels.
+  // On a relay with sign-in, only signed-in people create channels.
   const canCreate = auth.status === "signed-in" || auth.status === "off"
 
   const create = async () => {
     setBusy(true)
     setError(null)
     try {
-      const m = await createChannel(name.trim() || "Untitled", await auth.token(), auth.user)
+      const m = await createChannel(name.trim() || "Untitled channel", await auth.token(), auth.user)
       setName("")
       onCreated(m.code)
     } catch (err) {
@@ -89,29 +138,27 @@ export function NewChannel({ open, onClose, onCreated }: { open: boolean; onClos
   return (
     <Modal open={open} onClose={onClose}>
       <form
-        className="grid gap-4 p-5"
+        className="p-5"
         onSubmit={(e) => {
           e.preventDefault()
           if (canCreate) void create()
         }}
       >
-        <div className="text-center">
-          <h2 className="text-[15px] font-semibold">New channel</h2>
-          <p className="mt-1 text-[13px] text-label-2">You own it and approve everyone who joins. Its key is made in this browser.</p>
-        </div>
+        <h2 className="text-[15px] font-semibold">New channel</h2>
+        <p className="mt-1 text-[13px] leading-normal text-ink-2">You own it and approve everyone who joins. Only members can read its name.</p>
         {canCreate ? (
-          <TextField autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Name, e.g. payments-refactor" autoComplete="off" />
+          <TextField className="mt-4" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="payments-refactor" maxLength={60} autoComplete="off" />
         ) : (
-          <p className="text-center text-[13px] text-label-2">Sign in first: channels here belong to a signed-in person.</p>
+          <p className="mt-4 text-[13px] text-ink-2">Sign in first. Channels here belong to a signed-in person.</p>
         )}
-        {error && <p className="text-center text-[13px] text-red">{error}</p>}
-        <div className="flex gap-2 [&>*]:flex-1">
+        {error && <p className="mt-2 text-[13px] text-alert">{error}</p>}
+        <div className="mt-5 flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
           {canCreate ? (
             <Button type="submit" disabled={busy}>
-              {busy ? <Spinner className="size-4 border-white/40 border-t-white" /> : "Create"}
+              {busy ? <Spinner className="border-white/30 border-t-white" /> : "Create channel"}
             </Button>
           ) : (
             <Button onClick={auth.signIn}>Sign in</Button>
@@ -128,7 +175,7 @@ export function JoinWithCode({ open, onClose, onJoin }: { open: boolean; onClose
   return (
     <Modal open={open} onClose={onClose}>
       <form
-        className="grid gap-4 p-5"
+        className="p-5"
         onSubmit={(e) => {
           e.preventDefault()
           if (!valid) return
@@ -136,12 +183,11 @@ export function JoinWithCode({ open, onClose, onJoin }: { open: boolean; onClose
           setCode("")
         }}
       >
-        <div className="text-center">
-          <h2 className="text-[15px] font-semibold">Join a channel</h2>
-          <p className="mt-1 text-[13px] text-label-2">A join code only lets you ask. The owner approves you after checking a short code.</p>
-        </div>
-        <TextField autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder="mc2-…" autoComplete="off" spellCheck={false} className="font-mono text-[13px]" />
-        <div className="flex gap-2 [&>*]:flex-1">
+        <h2 className="text-[15px] font-semibold">Join with a code</h2>
+        <p className="mt-1 text-[13px] leading-normal text-ink-2">A code only lets you ask. The owner lets you in after checking a short number with you.</p>
+        <TextField className="mt-4 font-mono text-[12.5px]" autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder="mc2-…" autoComplete="off" spellCheck={false} />
+        {code.trim() && !valid && <p className="mt-2 text-[12.5px] text-ink-2">Join codes start with mc2- and have two more parts.</p>}
+        <div className="mt-5 flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
@@ -165,13 +211,13 @@ type Phase =
   | { kind: "error"; message: string }
 
 /** Decide what this browser is in a channel: a member, waiting for approval, or a visitor who may ask. */
-export function ChannelGate({ code, identity, onBack, onGone }: { code: string; identity: Identity | null; onBack: () => void; onGone: () => void }) {
+export function ChannelGate({ code, identity, listed, onBack, onGone }: { code: string; identity: Identity | null; listed?: ChannelRow; onBack: () => void; onGone: () => void }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" })
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      if (!isJoinCode(code)) return setPhase({ kind: "error", message: "That isn’t a join code. They look like mc2-…-…" })
+      if (!isJoinCode(code)) return setPhase({ kind: "error", message: "That isn’t a join code. Join codes start with mc2-." })
       try {
         if (identity) {
           const m = await memberFromLink(code, identity)
@@ -220,35 +266,55 @@ export function ChannelGate({ code, identity, onBack, onGone }: { code: string; 
     onGone()
   }
 
+  // The owner's key never leaves the browser that made it, so another device can only point back there.
+  if (phase.kind === "ask" && listed?.state === "elsewhere" && listed.owner) {
+    return (
+      <Stage>
+        <Heading title="Open this on the device you created it on">
+          You own this channel, and its owner key lives only in the browser that created it. That key is what lets you approve people and close the channel, so it
+          never leaves that device.
+        </Heading>
+        <Button variant="secondary" className="mt-6" onClick={onBack}>
+          Back to channels
+        </Button>
+      </Stage>
+    )
+  }
+
   return (
     <Stage>
       {phase.kind === "loading" && <Spinner />}
-      {phase.kind === "ask" && <AskToJoin code={code} onAsked={(pending) => setPhase({ kind: "waiting", pending })} onCancel={onGone} />}
+      {phase.kind === "ask" && <AskToJoin code={code} listed={listed} onAsked={(pending) => setPhase({ kind: "waiting", pending })} onCancel={onGone} />}
       {phase.kind === "waiting" && (
         <>
-          <Spinner />
-          <h2 className="text-[20px] font-semibold tracking-[-0.02em]">Waiting for the owner</h2>
-          <p className="max-w-xs text-[13px] text-label-2">
-            The owner will see your request as <span className="font-medium text-label">{phase.pending.identity.name}</span> with this code. Make sure it matches.
-          </p>
+          <Heading title="Waiting for the owner">
+            They’ll see your request as <span className="font-medium text-ink">{phase.pending.identity.name}</span>, next to this number. If they ask, make sure it matches.
+          </Heading>
           <VerifyCode code={phase.pending.verify} />
-          <Button variant="plain" onClick={giveUp}>
+          <div className="flex items-center gap-3">
+            <Spinner />
+            <span className="text-[13px] text-ink-2">This page updates the moment you’re in.</span>
+          </div>
+          <Button variant="ghost" className="mt-6 -ml-3.5" onClick={giveUp}>
             Cancel request
           </Button>
         </>
       )}
       {(phase.kind === "denied" || phase.kind === "error") && (
         <>
-          <h2 className="text-[20px] font-semibold">{phase.kind === "denied" ? "The owner said no" : "This channel won’t open"}</h2>
-          <p className="max-w-xs text-[13px] text-label-2">{phase.kind === "denied" ? "The owner didn’t let this browser in." : phase.message}</p>
-          <Button onClick={giveUp}>OK</Button>
+          <Heading title={phase.kind === "denied" ? "The owner didn’t let you in" : "This channel won’t open"}>
+            {phase.kind === "denied" ? "Your request was declined. Ask the owner for a new code if that was a mistake." : phase.message}
+          </Heading>
+          <Button variant="secondary" className="mt-6" onClick={giveUp}>
+            Back to channels
+          </Button>
         </>
       )}
     </Stage>
   )
 }
 
-function AskToJoin({ code, onAsked, onCancel }: { code: string; onAsked: (p: PendingJoin) => void; onCancel: () => void }) {
+function AskToJoin({ code, listed, onAsked, onCancel }: { code: string; listed?: ChannelRow; onAsked: (p: PendingJoin) => void; onCancel: () => void }) {
   const auth = useAuth()
   // People join under their own signed-in name.
   const [name, setName] = useState(() => (auth.user ? handleFor(personName(auth.user), auth.user.email) : ""))
@@ -260,9 +326,15 @@ function AskToJoin({ code, onAsked, onCancel }: { code: string; onAsked: (p: Pen
   const [error, setError] = useState<string | null>(null)
   const valid = NAME_RE.test(name.trim()) && name.trim() !== "human"
 
+  const intro =
+    listed?.state === "elsewhere"
+      ? { title: "You’re in this channel on another device", text: "Keys never leave the browser that holds them. Ask the owner to let this browser in too." }
+      : listed?.state === "agents"
+        ? { title: "Your agents are in this channel", text: "Ask the owner to let you in as well, so you can watch what they do." }
+        : { title: "Ask to join", text: "A join code only lets you ask. The owner approves every member, person or agent." }
+
   return (
     <form
-      className="grid w-full max-w-xs gap-3"
       onSubmit={async (e) => {
         e.preventDefault()
         if (!valid) return
@@ -277,33 +349,36 @@ function AskToJoin({ code, onAsked, onCancel }: { code: string; onAsked: (p: Pen
         }
       }}
     >
-      <AppMark size={56} className="mx-auto" />
-      <h2 className="text-[22px] font-bold tracking-[-0.02em]">Ask to join</h2>
-      <p className="text-[13px] text-label-2">The channel’s owner approves every member, person or agent.</p>
-      <TextField value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name in the channel" autoFocus aria-invalid={!!name && !valid} />
-      <TextField value={role} onChange={(e) => setRole(e.target.value)} placeholder="Role (optional)" />
-      {error && <p className="text-[13px] text-red">{error}</p>}
-      {auth.status === "signed-out" ? (
-        <Button size="lg" onClick={auth.signIn}>
-          Sign in to ask
+      <Heading title={intro.title}>{intro.text}</Heading>
+      <label className="mt-6 block text-[12px] font-medium text-ink-2" htmlFor="ask-name">
+        Your name in the channel
+      </label>
+      <TextField id="ask-name" className="mt-1.5" value={name} onChange={(e) => setName(e.target.value)} autoFocus aria-invalid={!!name && !valid} />
+      <label className="mt-4 block text-[12px] font-medium text-ink-2" htmlFor="ask-role">
+        Role <span className="font-normal text-ink-3">(optional)</span>
+      </label>
+      <TextField id="ask-role" className="mt-1.5" value={role} onChange={(e) => setRole(e.target.value)} placeholder="reviewer" />
+      {error && <p className="mt-3 text-[13px] text-alert">{error}</p>}
+      <div className="mt-6 flex gap-2">
+        {auth.status === "signed-out" ? (
+          <Button size="lg" onClick={auth.signIn}>
+            Sign in to ask
+          </Button>
+        ) : (
+          <Button size="lg" type="submit" disabled={!valid || busy}>
+            {busy ? <Spinner className="border-white/30 border-t-white" /> : "Ask to join"}
+          </Button>
+        )}
+        <Button size="lg" variant="secondary" onClick={onCancel}>
+          Cancel
         </Button>
-      ) : (
-        <Button size="lg" type="submit" disabled={!valid || busy}>
-          {busy ? <Spinner className="size-4 border-white/40 border-t-white" /> : "Ask to join"}
-        </Button>
-      )}
-      <Button variant="plain" onClick={onCancel}>
-        Cancel
-      </Button>
-      <p className="flex items-start gap-1.5 text-left text-[12px] text-label-2">
-        <Icon icon={SquareLock02Icon} size={13} className="mt-px shrink-0" />
-        Your key is made in this browser. Once you’re in, messages are decrypted here and nowhere else.
-      </p>
+      </div>
+      <p className="mt-6 text-[12px] leading-normal text-ink-3">Your key is made in this browser. Once you’re in, messages are decrypted here and nowhere else.</p>
     </form>
   )
 }
 
-// ---------- an agent's human vouches for it ----------
+// ---------- an agent's person vouches for it ----------
 
 type SponsorStep =
   | { kind: "loading" }
@@ -314,10 +389,10 @@ type SponsorStep =
   | { kind: "error"; message: string }
 
 /**
- * An agent asked to join a channel and printed this page's link for its human.
- * The human signs in and vouches for it ("this agent acts for me"); they're
- * enrolled alongside it so they can supervise it. The agent gets nothing until
- * the channel owner approves too.
+ * An agent asked to join a channel and printed this page's link for its person.
+ * They sign in and vouch for it ("this agent acts for me"), and are enrolled
+ * alongside it so they can watch it. The agent gets nothing until the channel
+ * owner approves too.
  */
 export function SponsorPage({ requestId, code, agent, onOpen }: { requestId: string; code: string; agent: string; onOpen: (code: string) => void }) {
   const auth = useAuth()
@@ -327,7 +402,7 @@ export function SponsorPage({ requestId, code, agent, onOpen }: { requestId: str
     if (auth.status !== "signed-in") return
     void Channel.publicRequest(location.origin, code, requestId)
       .then((r) => {
-        if (r.kind !== "agent") return setStep({ kind: "error", message: "This link isn’t for an agent’s request." })
+        if (r.kind !== "agent") return setStep({ kind: "error", message: "This link is for a person’s request, not an agent’s." })
         if (r.status === "approved") return setStep({ kind: "done" })
         if (r.status === "denied") return setStep({ kind: "error", message: "The channel owner declined this agent." })
         setStep({ kind: "review", verify: r.verify, sponsored: r.sponsored })
@@ -358,7 +433,7 @@ export function SponsorPage({ requestId, code, agent, onOpen }: { requestId: str
     setStep({ kind: "working" })
     try {
       const token = await auth.token()
-      if (!token || !auth.user) throw new Error("sign in first")
+      if (!token || !auth.user) throw new Error("Sign in first.")
       const mine = loadMember(code)
       if (mine) {
         // Already in the channel (maybe its owner): just vouch for the agent.
@@ -372,7 +447,7 @@ export function SponsorPage({ requestId, code, agent, onOpen }: { requestId: str
         }
         return setStep({ kind: "waiting", pending: null })
       }
-      // Not a member yet: ask to join as yourself (to supervise), and link that to the agent.
+      // Not a member yet: ask to join as yourself (to watch), and link that to the agent.
       const handle = handleFor(personName(auth.user), auth.user.email)
       const pending = loadPending(code) ?? (await askToJoin(code, handle, `supervises ${agent}`, token))
       await Channel.sponsor(location.origin, code, requestId, token, pending.requestId)
@@ -383,56 +458,56 @@ export function SponsorPage({ requestId, code, agent, onOpen }: { requestId: str
   }
 
   return (
-    <div className="flex h-svh">
+    <div className="flex h-svh flex-col">
+      <header className="flex h-[56px] shrink-0 items-center px-5">
+        <Wordmark className="text-[15px]" />
+      </header>
       <Stage>
-        <AppMark size={56} />
-        <h1 className="text-[24px] font-bold tracking-[-0.02em]">Is this your agent?</h1>
-        <p className="max-w-sm text-[15px] text-label-2">
-          <span className="font-medium text-label">{agent}</span> asked to join a channel. Approve it only if it’s really yours: it will act there on your behalf, and you’ll join
-          too so you can watch what it does.
-        </p>
+        <Heading title={`Is ${agent} your agent?`}>
+          It asked to join a channel and needs you to vouch for it. Say yes only if it’s really yours: it will act there on your behalf, and you’ll join too so you
+          can watch.
+        </Heading>
 
-        {auth.status === "loading" && <Spinner />}
-        {auth.status === "off" && <p className="text-[13px] text-label-2">This relay doesn’t use sign-in, so there’s nothing to approve here.</p>}
+        {auth.status === "loading" && <Spinner className="mt-6" />}
+        {auth.status === "off" && <p className="mt-6 text-[13px] text-ink-2">This relay doesn’t use sign-in, so there’s nothing to vouch for.</p>}
         {auth.status === "signed-out" && (
-          <Button size="lg" className="min-w-[220px]" onClick={auth.signIn}>
-            Sign in
+          <Button size="lg" className="mt-6" onClick={auth.signIn}>
+            Sign in to continue
           </Button>
         )}
         {auth.status === "signed-in" && (
           <>
-            {(step.kind === "loading" || step.kind === "working") && <Spinner />}
+            {(step.kind === "loading" || step.kind === "working") && <Spinner className="mt-6" />}
             {step.kind === "review" && (
               <>
-                <p className="mt-2 text-[13px] text-label-2">Check that your agent’s terminal shows this exact code:</p>
+                <p className="mt-6 text-[13px] text-ink-2">Check that your agent’s terminal shows this number:</p>
                 <VerifyCode code={step.verify} />
-                {step.sponsored && <p className="text-[12px] text-label-2">Someone already vouched for this agent.</p>}
-                <Button size="lg" className="mt-2 min-w-[220px]" onClick={() => void vouch()}>
-                  Yes, it’s mine
-                </Button>
+                {step.sponsored && <p className="-mt-3 mb-4 text-[12.5px] text-ink-2">Someone has already vouched for this agent.</p>}
+                <div className="flex gap-2">
+                  <Button size="lg" onClick={() => void vouch()}>
+                    Yes, it’s my agent
+                  </Button>
+                </div>
               </>
             )}
             {step.kind === "waiting" && (
-              <>
+              <div className="mt-6 flex items-center gap-3">
                 <Spinner />
-                <p className="text-[15px]">You approved {agent}. Waiting for the channel owner to let you both in…</p>
-              </>
+                <span className="text-[13px] text-ink-2">You vouched for {agent}. Waiting for the channel owner to let you both in.</span>
+              </div>
             )}
             {step.kind === "done" && (
               <>
-                <span className="flex size-12 items-center justify-center rounded-full bg-green text-white">
-                  <Icon icon={Tick02Icon} size={24} strokeWidth={2.6} />
-                </span>
-                <p className="text-[15px]">{agent} is in, acting on your behalf.</p>
+                <p className="mt-6 text-[14px]">{agent} is in, acting for you.</p>
                 {loadMember(code) && (
-                  <Button size="lg" className="min-w-[220px]" onClick={() => onOpen(code)}>
-                    Open channel
+                  <Button size="lg" className="mt-4" onClick={() => onOpen(code)}>
+                    Open the channel
                   </Button>
                 )}
               </>
             )}
-            {step.kind === "error" && <p className="text-[15px] text-red">{step.message}</p>}
-            <p className="mt-4 text-[12px] text-label-2">Signed in as {displayName(auth.user)}</p>
+            {step.kind === "error" && <p className="mt-6 text-[13px] text-alert">{step.message}</p>}
+            <p className="mt-8 text-[12px] text-ink-3">Signed in as {displayName(auth.user)}</p>
           </>
         )}
       </Stage>

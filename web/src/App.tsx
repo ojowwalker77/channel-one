@@ -3,7 +3,8 @@ import { useEffect, useState } from "react"
 import { Toaster } from "@/components/kit"
 import { ChannelGate, JoinWithCode, NewChannel, SponsorPage, Welcome } from "@/components/onboarding"
 import { Sidebar } from "@/components/sidebar"
-import { parseHash, parseSponsorHash } from "@/lib/channel"
+import { useAuth } from "@/lib/auth"
+import { parseHash, parseSponsorHash, useChannelList } from "@/lib/channel"
 import { cx } from "@/lib/utils"
 
 // The join code (and optionally a signing identity) live in the URL
@@ -18,9 +19,11 @@ function readHash() {
 const open = (code: string) => (location.hash = encodeURIComponent(code))
 
 export default function App() {
+  const auth = useAuth()
   const [sponsor, setSponsor] = useState(() => parseSponsorHash(location.hash))
   const [{ code, identity }, setHash] = useState(readHash)
   const [sheet, setSheet] = useState<"new" | "join" | null>(null)
+  const rows = useChannelList(auth.status === "signed-in", auth.token)
 
   useEffect(() => {
     const onHash = () => {
@@ -42,10 +45,10 @@ export default function App() {
         <SponsorPage {...sponsor} onOpen={open} />
       ) : (
         <div className="flex h-svh overflow-hidden">
-          <Sidebar active={code} onSelect={open} onNew={() => setSheet("new")} className={code ? "hidden md:flex" : "flex"} />
+          <Sidebar rows={rows} active={code} onSelect={open} onNew={() => setSheet("new")} onJoin={() => setSheet("join")} className={code ? "hidden md:flex" : "flex"} />
           <main className={cx("min-w-0 flex-1", code ? "flex" : "hidden md:flex")}>
             {code ? (
-              <ChannelGate key={code} code={code} identity={identity} onBack={close} onGone={close} />
+              <ChannelGate key={code} code={code} identity={identity} listed={rows.find((r) => r.code === code)} onBack={close} onGone={close} />
             ) : (
               <Welcome onNew={() => setSheet("new")} onJoin={() => setSheet("join")} />
             )}

@@ -2,55 +2,45 @@
 @import "@fontsource-variable/inter/opsz.css";
 
 /*
- * channel-one: Apple's restraint, set in Inter, kept quiet so the agents carry the colour.
- * Chrome is greys and one blue; every agent speaks in its own voice colour
- * (see voiceOf in lib/format.ts), tinted into its bubbles, name and avatar.
+ * channel-one is a room you watch more than you talk in. So the page is
+ * paper and ink: one neutral family, one blue for the few things you act on,
+ * red and green only when they mean something. Agents and people are told
+ * apart by shape (agents are squares, people are circles), never by colour.
  */
 :root {
-  --bg: #ffffff;
-  --bg-grouped: #f2f2f7;
-  --bg-elevated: #ffffff;
-  --sidebar: #f5f5f7;
-  --label: #1d1d1f;
-  --label-2: #6e6e73;
-  --label-3: #aeaeb2;
-  --separator: rgba(60, 60, 67, 0.14);
-  --fill: #e9e9eb;
-  --fill-2: rgba(118, 118, 128, 0.1);
-  --blue: #007aff;
-  --green: #34c759;
-  --red: #ff3b30;
-  --orange: #ff9500;
-  --selection: rgba(0, 122, 255, 0.14);
-  --segment: #ffffff;
-  /* How strongly a voice colour tints its bubble, and how much ink its name keeps. */
-  --tint: 13%;
-  --tint-base: #ffffff;
-  --ink: 78%;
+  --canvas: #ffffff;
+  --rail: #f7f7f8;
+  --raised: #ffffff;
+  --ink: #1d1d1f;
+  --ink-2: #6e6e73;
+  --ink-3: #a1a1a6;
+  --line: rgba(0, 0, 0, 0.08);
+  --wash: rgba(0, 0, 0, 0.04);
+  --wash-2: rgba(0, 0, 0, 0.07);
+  --accent: #0071e3;
+  --accent-wash: rgba(0, 113, 227, 0.09);
+  --alert: #d70015;
+  --live: #28a745;
+  --shadow-pop: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 12px 32px -8px rgba(0, 0, 0, 0.18);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #000000;
-    --bg-grouped: #000000;
-    --bg-elevated: #1c1c1e;
-    --sidebar: #1c1c1e;
-    --label: #f5f5f7;
-    --label-2: #98989d;
-    --label-3: #5a5a5e;
-    --separator: rgba(84, 84, 88, 0.6);
-    --fill: #26252a;
-    --fill-2: rgba(118, 118, 128, 0.24);
-    --blue: #0a84ff;
-    --green: #30d158;
-    --red: #ff453a;
-    --orange: #ff9f0a;
-    --selection: rgba(10, 132, 255, 0.24);
-    --segment: #636366;
-    --tint: 19%;
-    --tint-base: #2a2a2d;
-    --ink: 100%;
+    --canvas: #1c1c1e;
+    --rail: #232325;
+    --raised: #2c2c2e;
+    --ink: #f5f5f7;
+    --ink-2: #98989d;
+    --ink-3: #636366;
+    --line: rgba(255, 255, 255, 0.09);
+    --wash: rgba(255, 255, 255, 0.05);
+    --wash-2: rgba(255, 255, 255, 0.09);
+    --accent: #2997ff;
+    --accent-wash: rgba(41, 151, 255, 0.14);
+    --alert: #ff6961;
+    --live: #32d74b;
+    --shadow-pop: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 16px 40px -8px rgba(0, 0, 0, 0.6);
     color-scheme: dark;
   }
 }
@@ -58,22 +48,20 @@
 @theme inline {
   --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
-  --color-bg: var(--bg);
-  --color-grouped: var(--bg-grouped);
-  --color-elevated: var(--bg-elevated);
-  --color-sidebar: var(--sidebar);
-  --color-label: var(--label);
-  --color-label-2: var(--label-2);
-  --color-label-3: var(--label-3);
-  --color-separator: var(--separator);
-  --color-fill: var(--fill);
-  --color-fill-2: var(--fill-2);
-  --color-blue: var(--blue);
-  --color-green: var(--green);
-  --color-red: var(--red);
-  --color-orange: var(--orange);
-  --color-selection: var(--selection);
-  --color-segment: var(--segment);
+  --color-canvas: var(--canvas);
+  --color-rail: var(--rail);
+  --color-raised: var(--raised);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-wash: var(--wash);
+  --color-wash-2: var(--wash-2);
+  --color-accent: var(--accent);
+  --color-accent-wash: var(--accent-wash);
+  --color-alert: var(--alert);
+  --color-live: var(--live);
+  --shadow-pop: var(--shadow-pop);
 }
 
 html,
@@ -84,21 +72,19 @@ body,
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--label);
+  background: var(--canvas);
+  color: var(--ink);
   font-family: var(--font-sans);
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.5;
+  font-feature-settings: "ss01", "cv05", "calt";
+  letter-spacing: -0.008em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
-  /* Inter's open digits and straight-sided glyphs read calmer at small sizes. */
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "calt";
-  letter-spacing: -0.006em;
 }
 
 ::selection {
-  background: var(--selection);
+  background: var(--accent-wash);
 }
 
 button {
@@ -106,91 +92,44 @@ button {
 }
 
 :focus-visible {
-  outline: 2px solid var(--blue);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 6px;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--label-3) transparent;
-}
-
-/* Voice colours: set --voice on an element, then tint or ink with it. */
-.voice-tint {
-  background: color-mix(in srgb, var(--voice) var(--tint), var(--tint-base));
-}
-.voice-ink {
-  color: color-mix(in srgb, var(--voice) var(--ink), var(--label));
-}
-
-/*
- * Bubble tails, the Messages way: a curve in the bubble's colour, then a
- * small mask in the page colour that carves its inside edge.
- */
-.tail-me::before,
-.tail-me::after,
-.tail-them::before,
-.tail-them::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  height: 17px;
-}
-.tail-me::before {
-  right: -6px;
-  width: 18px;
-  background: var(--bubble);
-  border-bottom-left-radius: 15px 13px;
-}
-.tail-me::after {
-  right: -10px;
-  width: 10px;
-  height: 19px;
-  background: var(--bg);
-  border-bottom-left-radius: 9px;
-}
-.tail-them::before {
-  left: -6px;
-  width: 18px;
-  background: var(--bubble);
-  border-bottom-right-radius: 15px 13px;
-}
-.tail-them::after {
-  left: -10px;
-  width: 10px;
-  height: 19px;
-  background: var(--bg);
-  border-bottom-right-radius: 9px;
+  scrollbar-color: var(--wash-2) transparent;
 }
 
 /* Motion only answers an action: a dialog opening, a panel sliding in, a jump landing. */
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(4px) scale(0.985);
+    transform: translateY(3px) scale(0.99);
   }
 }
 .animate-rise {
-  animation: rise 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: rise 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @keyframes slide-in {
   from {
-    transform: translateX(12px);
+    transform: translateX(10px);
     opacity: 0;
   }
 }
 .animate-slide-in {
-  animation: slide-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: slide-in 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @keyframes flash {
   from {
-    background: var(--selection);
+    background: var(--accent-wash);
   }
 }
 .animate-flash {
-  animation: flash 1.4s ease-out;
+  animation: flash 1.6s ease-out;
 }
 
 @media (prefers-reduced-motion: reduce) {
