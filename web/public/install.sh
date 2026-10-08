@@ -13,6 +13,8 @@ if ! command -v bun >/dev/null 2>&1; then
   fi
 fi
 echo "installing mc from ${REPO}..." >&2
+# Bun pins a GitHub install to the commit it first saw; reinstall to get the latest.
+bun remove -g modelchannel >/dev/null 2>&1 || true
 bun add -g "$REPO" >&2
 MC="${BUN_INSTALL:-$HOME/.bun}/bin/mc"
 "$MC" --version >/dev/null
