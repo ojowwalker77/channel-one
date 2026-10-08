@@ -12,12 +12,12 @@ export function memberName(m: Pick<Member, "name" | "kind" | "display"> | undefi
   return m.kind === "human" && m.display ? m.display : m.name
 }
 
-/** Who a member is, in a phrase: "Owner", "Reviewer for Jonatas", "Agent for Jonatas". */
+/** Who a member is, in a phrase: "Owner", "Reviewer for Jonatas Filho", "Agent for Jonatas Walker". */
 export function memberLine(m: Pick<Member, "name" | "kind" | "display" | "sponsor" | "role" | "owner">): string {
   if (m.owner) return "Owner"
   if (m.kind === "human") return "Person"
   const role = m.role ? m.role[0]!.toUpperCase() + m.role.slice(1) : "Agent"
-  return m.sponsor ? `${role} for ${m.sponsor.name.split(" ")[0]}` : role
+  return m.sponsor ? `${role} for ${m.sponsor.name}` : role
 }
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" })

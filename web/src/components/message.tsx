@@ -13,6 +13,9 @@ import { Markdown } from "./markdown"
 /** Anyone who isn't a signed-in person is an agent. */
 export const isAgent = (m: Pick<Member, "kind"> | undefined) => m?.kind !== "human"
 
+/** Who wrote a message, as far as the transcript needs to know. */
+export type Author = Pick<Member, "name" | "kind" | "display" | "sponsor">
+
 /** A day boundary in the transcript. */
 export function DayMark({ ts }: { ts: number }) {
   return (
@@ -84,7 +87,8 @@ function phrase(m: Message, me: string, nameOf: (n: string) => string, repliedTo
 interface RowProps {
   m: Message
   me: string
-  author?: Member
+  /** Found by the key that signed the message, so two members sharing a name still read right. */
+  author?: Author
   trust?: Trust
   online: boolean
   /** The first message in a run from one sender shows who sent it. */
@@ -102,7 +106,8 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
   const forged = trust === "forged"
   const repliedTo = new Set((m.re ?? []).map((seq) => quoted(seq)?.from).filter((f): f is string => !!f))
   const said = phrase(m, me, nameOf, repliedTo)
-  const sponsor = author?.sponsor ? `Agent for ${author.sponsor.name}` : isAgent(author) ? "Agent" : "Person"
+  const sponsor = author?.sponsor && isAgent(author) ? `Agent for ${author.sponsor.name}` : isAgent(author) ? "Agent" : "Person"
+  const who = memberName(author, m.from)
   // Image-only messages carry the file names as their body; don't print them.
   const imageOnly = !!m.imgs?.length && m.body === m.imgs.map((i) => i.name).join(", ")
 
@@ -113,7 +118,7 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
     >
       <div>
         {head ? (
-          <Monogram name={nameOf(m.from)} agent={isAgent(author)} online={online} className="mt-0.5" />
+          <Monogram name={who} agent={isAgent(author)} online={online} className="mt-0.5" />
         ) : (
           <time className="invisible block pt-[3px] text-right text-[10.5px] text-ink-3 tabular-nums group-hover:visible" title={formatFull(m.ts)}>
             {formatTime(m.ts).replace(/\s?[AP]M$/i, "")}
@@ -125,7 +130,7 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
         {head && (
           <div className="flex items-baseline gap-2">
             <span className="truncate text-[13.5px] font-semibold tracking-[-0.01em]" title={sponsor}>
-              {nameOf(m.from)}
+              {who}
             </span>
             {said && <span className={cx("truncate text-[13px]", said.alert ? "font-medium text-alert" : "text-ink-2")}>{said.text}</span>}
             <time className="ml-auto shrink-0 pl-2 text-[11.5px] text-ink-3 tabular-nums" title={formatFull(m.ts)}>

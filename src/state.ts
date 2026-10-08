@@ -133,7 +133,14 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
       active: r.active,
     });
   }
-  const formerKeys = new Map(roster.filter((r) => !r.active).map((r) => [r.pk, r.name]));
+  // Every key the owner ever admitted under each name. Normally one per name; a name can have
+  // had an earlier holder who left, and the owner may (wrongly) have admitted two keys under one.
+  const keysByName = new Map<string, Set<string>>();
+  for (const r of roster) {
+    let set = keysByName.get(r.name);
+    if (!set) keysByName.set(r.name, (set = new Set()));
+    set.add(r.pk);
+  }
   const tasks = new Map<number, Task>();
   let claims: Claim[] = [];
   const facts = new Map<string, Fact>();
@@ -146,10 +153,9 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
     head = Math.max(head, m.seq);
     const at = m.rts ?? m.ts;
 
-    // Identity: only the key the owner admitted under this name may speak for it.
-    // (Members who have since left aren't in the roster, so their history reads as forged.)
+    // Identity: only a key the owner admitted under this name may speak for it.
     const member = members.get(m.from);
-    const t: Trust = m.sigOk && ((member && m.pk === member.pk) || (m.pk && formerKeys.get(m.pk) === m.from)) ? "verified" : "forged";
+    const t: Trust = m.sigOk && !!m.pk && !!keysByName.get(m.from)?.has(m.pk) ? "verified" : "forged";
     trust.set(m.seq, t);
     if (t === "forged" || !member) {
       rejected.set(m.seq, member ? `not signed by ${m.from}'s key` : `${m.from} isn't a member`);

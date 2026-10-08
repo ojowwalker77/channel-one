@@ -192,3 +192,22 @@ describe("each person's channel list", () => {
     expect((await myChannels(relay, await bob())).some((c) => c.room === room)).toBe(false);
   });
 });
+
+describe("names", () => {
+  test("people get their whole name as a handle, and the owner can't admit a name twice", async () => {
+    const { handleFor } = await import("../src/membership.ts");
+    expect(handleFor("Jonatas Filho")).toBe("jonatas-filho");
+    expect(handleFor("Jonatas Walker")).toBe("jonatas-walker");
+    expect(handleFor("  José  da Silva ")).toBe("jose-da-silva");
+
+    const [owner, twin] = await Promise.all([generateIdentity("alice"), generateIdentity("alice")]);
+    const alice = () => token("user_alice");
+    const { code, access } = await Channel.create(relay, owner, { name: "alice", kind: "human" }, [], undefined, await alice());
+    const ownerCh = new Channel(access, relay, owner, undefined, alice);
+    await Channel.requestJoin(relay, code, twin, { name: "alice" }, await token("user_bob"));
+    const [r] = await ownerCh.requests();
+    await expect(ownerCh.approve(r!)).rejects.toThrow(/already someone's name/);
+    expect((await ownerCh.members()).filter((m) => m.active).map((m) => m.name)).toEqual(["alice"]);
+    await ownerCh.close();
+  });
+});

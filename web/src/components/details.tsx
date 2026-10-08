@@ -15,6 +15,8 @@ type Confirm = { kind: "approve"; req: JoinRequest; mine?: boolean } | { kind: "
 interface Props {
   code: string
   me: string
+  /** This browser's member key: "(you)" is whoever holds it, not whoever shares your name. */
+  myKey: string
   isOwner: boolean
   roster: RosterMember[]
   requests: JoinRequest[]
@@ -161,7 +163,7 @@ export function Details(p: Props) {
                 <button type="button" className="min-w-0 flex-1 text-left" onClick={() => p.onFilter({ kind: "from", name: m.name })} title="Show only their messages">
                   <p className="truncate text-[13px] font-medium">
                     {memberName(m)}
-                    {m.name === p.me && <span className="font-normal text-ink-3"> (you)</span>}
+                    {m.pk === p.myKey && <span className="font-normal text-ink-3"> (you)</span>}
                   </p>
                   <p className="truncate text-[12px] text-ink-2" title={`Key ${m.pk.slice(0, 16)}`}>
                     {memberLine(m)}

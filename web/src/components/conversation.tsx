@@ -60,6 +60,9 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const [highlight, setHighlight] = useState<number | null>(null)
 
   const nameOf = useCallback((name: string) => memberName(state.members.get(name), name), [state.members])
+  // Members by key: names are what people type, keys are who they are.
+  const byKey = useMemo(() => new Map(roster.map((r) => [r.pk, r])), [roster])
+  const memberCount = roster.filter((r) => r.active).length || state.members.size
   const active = useMemo(() => [...state.members.values()].filter((m) => m.active), [state.members])
   const others = useMemo(() => active.filter((m) => m.name !== me), [active, me])
   const people = useMemo(() => active.map((m) => ({ name: m.name, label: memberName(m), agent: isAgent(m) })), [active])
@@ -168,7 +171,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         key={m.seq}
         m={m}
         me={me}
-        author={state.members.get(m.from)}
+        author={(m.pk && byKey.get(m.pk)) || state.members.get(m.from)}
         trust={state.trust.get(m.seq)}
         online={online.has(m.from)}
         head={head}
@@ -190,8 +193,8 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       : connection === "reconnecting"
         ? "Reconnecting…"
         : online.size
-          ? `${active.length} members, ${online.size} online`
-          : `${active.length} ${active.length === 1 ? "member" : "members"}`
+          ? `${memberCount} members, ${online.size} online`
+          : `${memberCount} ${memberCount === 1 ? "member" : "members"}`
   const asking = isOwner ? requests.filter((r) => !requests.some((x) => x.sponsorRequest === r.id)) : []
 
   return (
@@ -319,6 +322,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         <Details
           code={member.code}
           me={me}
+          myKey={member.identity.pk}
           isOwner={isOwner}
           roster={roster}
           requests={requests}

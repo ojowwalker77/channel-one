@@ -353,6 +353,16 @@ export class Channel {
    * also joins to supervise it (unless they're already a member). Returns
    * every member admitted.
    */
+  /** Refuse to admit a second key under a name someone in the channel already has. */
+  private async assertNamesFree(names: string[]): Promise<void> {
+    const taken = new Set((await this.members()).filter((m) => m.active).map((m) => m.name));
+    const seen = new Set<string>();
+    for (const n of names) {
+      if (taken.has(n) || seen.has(n)) throw new Error(`"${n}" is already someone's name in this channel; they need to ask again under another name`);
+      seen.add(n);
+    }
+  }
+
   async approveWithSponsor(req: JoinRequest, as?: MemberInfo): Promise<Member[]> {
     this.ownerOnly();
     const admitted: Member[] = [];
@@ -363,6 +373,7 @@ export class Channel {
       if (!handle && req.sponsorRequest) {
         const human = (await this.requests()).find((r) => r.id === req.sponsorRequest);
         if (human) {
+          await this.assertNamesFree([human.name, as?.name ?? req.name]);
           admitted.push(await this.approve(human));
           handle = human.name;
         }
@@ -375,6 +386,7 @@ export class Channel {
   /** Admit a requester: sign its record, and wrap every epoch key to it. */
   async approve(req: JoinRequest, as?: MemberInfo, sponsorHandle?: string): Promise<Member> {
     this.ownerOnly();
+    await this.assertNamesFree([as?.name ?? req.name]);
     const kind = req.kind ?? "agent";
     const sponsor = req.sponsoredBy ? { ...req.sponsoredBy, ...(kind === "human" ? { handle: as?.name ?? req.name } : sponsorHandle ? { handle: sponsorHandle } : {}) } : undefined;
     const info: MemberInfo = {
