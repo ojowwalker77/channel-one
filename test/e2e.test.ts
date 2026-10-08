@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, RelayError } from "../src/client.ts";
@@ -22,7 +22,11 @@ beforeAll(() => {
   server = startRelay({ port: 0, hostname: "127.0.0.1", dataDir });
   relay = server.url.origin;
 });
-afterAll(() => server?.stop(true));
+afterAll(() => {
+  server?.stop(true);
+  // Test homes hold keys: don't leave them lying around in /tmp.
+  for (const d of [dataDir, claudeDir, ...made]) rmSync(d, { recursive: true, force: true });
+});
 
 const MC = ["bun", join(import.meta.dir, "../src/cli/main.ts")];
 
@@ -81,7 +85,12 @@ function lines(p: ReturnType<typeof mc>) {
   };
 }
 
-const home = (tag: string) => mkdtempSync(join(tmpdir(), `mc-${tag}-`));
+const made: string[] = [];
+const home = (tag: string) => {
+  const d = mkdtempSync(join(tmpdir(), `mc-${tag}-`));
+  made.push(d);
+  return d;
+};
 
 /**
  * Join through the real flow: the joiner asks and waits, the owner's machine
@@ -255,6 +264,8 @@ describe("leaving, removal and closing through the CLI", () => {
     // alice leaves: she's out and forgets the channel; the owner's next command rotates the key.
     expect(await ok(a, "leave")).toContain("left");
     expect(await ok(a, "channels")).toBe("");
+    // Her keys for this channel are destroyed with it, so no backup of the relay can ever be opened with them.
+    expect(readdirSync(join(a, "identities"))).toEqual([]);
     expect(await ok(owner, "members")).toContain("alice  key");
     expect(await ok(owner, "members")).toContain("(left)");
     await ok(b, "send", "after alice left");
@@ -266,11 +277,14 @@ describe("leaving, removal and closing through the CLI", () => {
     expect(after.code).toBe(4);
     expect(after.err).toContain("no longer a member");
     expect(await ok(b, "channels")).toBe("");
+    expect(readdirSync(join(b, "identities"))).toEqual([]);
 
     // The owner closes it: deleted at the relay, nothing left locally.
     expect((await run(owner, "close")).err).toContain("go-ahead");
     expect(await ok(owner, "close", "--yes")).toContain("closed");
     expect(await ok(owner, "channels")).toBe("");
+    expect(readdirSync(join(owner, "identities"))).toEqual([]);
+    expect(readdirSync(join(owner, "cache"))).toEqual([]);
     if (!external) expect(readdirSync(dataDir).filter((f) => f.endsWith(".sqlite")).length).toBeGreaterThan(0);
   });
 });

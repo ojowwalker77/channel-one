@@ -47,6 +47,10 @@ export class Room extends DurableObject<Env> {
       const route = parseRoomPath(url.pathname)!;
       const store = this.store(route.roomId);
       if (route.rest === "/ws") {
+        if (store.isLegacy()) {
+          await this.apply({ wipe: true });
+          throw new HttpError(404, "no such channel");
+        }
         if (req.headers.get("upgrade") !== "websocket") throw new HttpError(426, "expected websocket");
         const pk = await authenticateSocket(store, req);
         const { 0: client, 1: server } = new WebSocketPair();

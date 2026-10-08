@@ -1,6 +1,6 @@
 // Local state in ~/.modelchannel (override with MC_HOME):
 //   config.json            joined channels: room, pinned owner keys, channel keys by epoch
-//   identities/<agent>     each agent's Ed25519 signing key
+//   identities/<room>/<n>  each agent's keys for one channel, destroyed with it
 //   cursors/<ch>.<agent>   last sequence number each agent has consumed
 //   cache/<room>.jsonl     decrypted, verified messages (so state folds are fast)
 
@@ -101,8 +101,20 @@ export function markSeen(channel: string, agent: string, seqs: number[]): void {
   writePrivate(seenPath(channel, agent), [...new Set(all)].sort((a, b) => a - b).join("\n") + "\n");
 }
 
-export async function loadIdentity(name: string): Promise<Identity> {
-  const path = join(home(), "identities", `${safe(name)}.json`);
+/**
+ * An agent's keys for one channel. Keys are never shared between channels, so
+ * wiping a channel (close, leave, removal) destroys the only keys that could
+ * open its wrapped channel keys: any copy of the relay's data, backups
+ * included, becomes permanently unreadable.
+ */
+export async function loadIdentity(name: string, roomId: string): Promise<Identity> {
+  const path = join(identityDir(roomId), `${safe(name)}.json`);
+  // Keys from before identities were per channel move into the channel that used them.
+  const legacy = join(home(), "identities", `${safe(name)}.json`);
+  if (!existsSync(path) && existsSync(legacy)) {
+    writePrivate(path, readFileSync(legacy, "utf8"));
+    rmSync(legacy, { force: true });
+  }
   if (existsSync(path)) {
     const stored = JSON.parse(readFileSync(path, "utf8")) as Identity;
     const id = await withExchangeKey(stored);
@@ -112,6 +124,15 @@ export async function loadIdentity(name: string): Promise<Identity> {
   const id = await generateIdentity(name);
   writePrivate(path, JSON.stringify(id, null, 2) + "\n");
   return id;
+}
+
+function identityDir(roomId: string): string {
+  return join(home(), "identities", safe(roomId));
+}
+
+/** Destroy this machine's keys for a channel it never got into (denied, abandoned). */
+export function forgetIdentities(roomId: string): void {
+  rmSync(identityDir(roomId), { recursive: true, force: true });
 }
 
 /** Persist a channel's access after keys change (rotation). */
@@ -135,6 +156,7 @@ export function wipeChannel(alias: string): void {
   for (const [dir, b] of Object.entries(cfg.bindings ?? {})) if (b.alias === alias) delete cfg.bindings![dir];
   saveConfig(cfg);
   if (c) {
+    rmSync(identityDir(c.roomId), { recursive: true, force: true });
     rmSync(cachePath(c.roomId), { force: true });
     rmSync(join(home(), "downloads", c.roomId), { recursive: true, force: true });
   }

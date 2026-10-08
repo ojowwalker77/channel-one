@@ -7,8 +7,8 @@ import { join as joinPath } from "node:path";
 import { AgentSession, Rejected } from "../agent.ts";
 import { loadImages } from "../attach.ts";
 import { Channel, ChannelGone, RelayError } from "../client.ts";
-import { DEFAULT_RELAY, loadConfig, loadIdentity, saveConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
-import { b64url, decodeJoinCode } from "../crypto.ts";
+import { DEFAULT_RELAY, forgetIdentities, loadConfig, loadIdentity, saveConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
+import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
 import type { JoinRequest } from "../membership.ts";
 import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "../format.ts";
 import { fingerprint } from "../identity.ts";
@@ -187,7 +187,7 @@ function joinedAlias(roomId: string, alias?: string): string {
 
 /** Owner dashboard link: the code plus the owner key, so the page can approve and post as the human. */
 async function ownerLink(c: ChannelConfig): Promise<string> {
-  const id = await loadIdentity(c.owner!);
+  const id = await loadIdentity(c.owner!, c.roomId);
   return `${c.relay}/#${encodeURIComponent(c.code)}&id=${b64url(new TextEncoder().encode(JSON.stringify(id)))}`;
 }
 
@@ -223,10 +223,15 @@ const commands: Record<string, () => Promise<void>> = {
     const name = agentName();
     if (name === OWNER_NAME) die(`"${OWNER_NAME}" is reserved for the channel owner; pick an agent name with --as`);
     const relay = relayUrl();
-    const [owner, agent] = await Promise.all([loadIdentity(OWNER_NAME), loadIdentity(name)]);
-    const { code, access } = await Channel.create(relay, owner, { name: OWNER_NAME, role: "owner" }, [
-      { ...agent, info: { name, ...(opt.role ? { role: opt.role } : {}), ...(opt.about ? { about: opt.about } : {}) } },
-    ]);
+    const roomId = newRoomId();
+    const [owner, agent] = await Promise.all([loadIdentity(OWNER_NAME, roomId), loadIdentity(name, roomId)]);
+    const { code, access } = await Channel.create(
+      relay,
+      owner,
+      { name: OWNER_NAME, role: "owner" },
+      [{ ...agent, info: { name, ...(opt.role ? { role: opt.role } : {}), ...(opt.about ? { about: opt.about } : {}) } }],
+      roomId,
+    );
     const alias = joinedAlias(access.roomId, args[1]);
     const cfg = loadConfig();
     cfg.channels[alias] = { ...access, relay, code, as: name, owner: OWNER_NAME };
@@ -255,7 +260,7 @@ const commands: Record<string, () => Promise<void>> = {
     const name = agentName();
     if (name === OWNER_NAME) die(`"${OWNER_NAME}" is reserved for the channel owner; pick an agent name with --as`);
     const relay = relayUrl();
-    const id = await loadIdentity(name);
+    const id = await loadIdentity(name, decodeJoinCode(code).roomId);
     const info = { name, ...(opt.role ? { role: opt.role } : {}), ...(opt.about ? { about: opt.about } : {}) };
     // Asking again with the same key resumes the same request, so re-running this is always safe.
     const req = await Channel.requestJoin(relay, code, id, info);
@@ -264,7 +269,10 @@ const commands: Record<string, () => Promise<void>> = {
     const deadline = Date.now() + parseDuration(opt.timeout ?? "15m") * 1000;
     for (;;) {
       const st = await Channel.joinStatus(relay, code, id, req.requestId);
-      if (st.status === "denied") die("the owner denied this request");
+      if (st.status === "denied") {
+        forgetIdentities(decodeJoinCode(code).roomId);
+        die("the owner denied this request");
+      }
       if (st.status === "approved") {
         const alias = joinedAlias(st.access.roomId, args[2]);
         const cfg = loadConfig();
@@ -651,7 +659,7 @@ const commands: Record<string, () => Promise<void>> = {
     let link = `${c.relay}/#${encodeURIComponent(c.code)}`;
     if (opt["sign-in"]) {
       // Hand this agent's identity to the browser, so the page acts as that member.
-      const id = await loadIdentity(agentName(c));
+      const id = await loadIdentity(agentName(c), c.roomId);
       link += `&id=${b64url(new TextEncoder().encode(JSON.stringify(id)))}`;
     }
     out(link);

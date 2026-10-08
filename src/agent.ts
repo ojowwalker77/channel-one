@@ -41,8 +41,8 @@ export class AgentSession {
   }
 
   static async open(alias: string, cfg: ChannelConfig, name: string): Promise<AgentSession> {
-    const owner = cfg.owner ? await loadIdentity(cfg.owner) : null;
-    return new AgentSession(alias, cfg, await loadIdentity(name), owner);
+    const owner = cfg.owner ? await loadIdentity(cfg.owner, cfg.roomId) : null;
+    return new AgentSession(alias, cfg, await loadIdentity(name, cfg.roomId), owner);
   }
 
   /** The verified member list (owner-signed records). */

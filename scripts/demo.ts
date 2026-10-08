@@ -11,16 +11,17 @@ import { join } from "node:path";
 import { AgentSession } from "../src/agent.ts";
 import { Channel } from "../src/client.ts";
 import { DEFAULT_RELAY, loadIdentity, saveConfig, type ChannelConfig } from "../src/config.ts";
-import { b64url } from "../src/crypto.ts";
+import { b64url, newRoomId } from "../src/crypto.ts";
 
 process.env.MC_HOME ??= mkdtempSync(join(tmpdir(), "mc-demo-"));
 const relay = (process.env.MC_RELAY ?? DEFAULT_RELAY).replace(/\/+$/, "");
 const pace = Number(process.env.DEMO_PACE ?? 250);
 // The demo's human owns the channel and admits every agent up front.
 const names = ["lead", "mac", "win", "reviewer"] as const;
-const owner = await loadIdentity("human");
-const ids = await Promise.all(names.map((n) => loadIdentity(n)));
-const { code, access } = await Channel.create(relay, owner, { name: "human", role: "owner" }, ids.map((id) => ({ ...id, info: { name: id.name } })));
+const roomId = newRoomId();
+const owner = await loadIdentity("human", roomId);
+const ids = await Promise.all(names.map((n) => loadIdentity(n, roomId)));
+const { code, access } = await Channel.create(relay, owner, { name: "human", role: "owner" }, ids.map((id) => ({ ...id, info: { name: id.name } })), roomId);
 const cfg: ChannelConfig = { ...access, relay, code, owner: "human" };
 saveConfig({ default: "demo", channels: { demo: cfg } });
 

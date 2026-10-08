@@ -153,9 +153,14 @@ export class Channel {
    * Create a channel owned by `owner` (the human), with `agent` (the creating
    * agent) admitted alongside. Returns the join code and the owner's access.
    */
-  static async create(relay: string, owner: Identity, ownerInfo: MemberInfo, agents: (Identity & { info: MemberInfo })[] = []): Promise<{ code: string; access: ChannelAccess }> {
+  static async create(
+    relay: string,
+    owner: Identity,
+    ownerInfo: MemberInfo,
+    agents: (Identity & { info: MemberInfo })[] = [],
+    roomId = newRoomId(),
+  ): Promise<{ code: string; access: ChannelAccess }> {
     if (!owner.xpk) throw new Error("owner identity has no exchange key");
-    const roomId = newRoomId();
     const key = newChannelKey();
     const ownerSig = await sign(owner, { room: roomId, xpk: owner.xpk });
     const enroll = async (id: Identity, info: MemberInfo, isOwner: boolean) => ({

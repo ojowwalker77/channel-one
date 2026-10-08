@@ -99,6 +99,11 @@ export class RoomStore {
     return this.sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").length > 0;
   }
 
+  /** A room from before owner-gated channels: it has data but no owner. Such rooms are deleted on sight. */
+  isLegacy(): boolean {
+    return this.exists() && !this.get("owner_pk");
+  }
+
   private init(): void {
     this.sql.run("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
     this.sql.run("CREATE TABLE msgs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, iv TEXT NOT NULL, ct TEXT NOT NULL, e INTEGER NOT NULL)");
@@ -371,6 +376,9 @@ export async function onHttp(store: RoomStore, req: Request, path: string): Prom
     }
   };
   const ok = (data: unknown, fx?: Effects) => ({ res: Response.json(data), fx });
+
+  // Shared-code rooms from before owners existed: delete them outright the first time anything touches them.
+  if (store.isLegacy()) return { res: Response.json({ error: "no such channel" }, { status: 404 }), fx: { wipe: true } };
 
   if (path === "/info" && method === "GET") {
     const m = store.meta();

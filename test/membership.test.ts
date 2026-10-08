@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, ChannelGone, RelayError } from "../src/client.ts";
@@ -20,7 +20,10 @@ beforeAll(() => {
   server = startRelay({ port: 0, hostname: "127.0.0.1", dataDir });
   relay = server.url.origin;
 });
-afterAll(() => server?.stop(true));
+afterAll(() => {
+  server?.stop(true);
+  rmSync(dataDir, { recursive: true, force: true });
+});
 
 async function roster(ch: Channel): Promise<Roster> {
   return (await ch.members()).map((m) => ({ name: m.name, pk: m.pk, role: m.role, about: m.about, owner: m.owner, at: m.at, active: m.active }));
@@ -148,3 +151,21 @@ async function rawLast(ch: Channel): Promise<{ iv: string; ct: string }> {
   const { messages } = (await res.json()) as { messages: { iv: string; ct: string }[] };
   return messages.at(-1)!;
 }
+
+describe("rooms from before owners existed", () => {
+  test("are deleted the first time anything touches them", async () => {
+    if (external) return;
+    const { Database } = await import("bun:sqlite");
+    const roomId = "ab".repeat(16);
+    const file = join(dataDir, `${roomId}.sqlite`);
+    const db = new Database(file, { create: true });
+    db.run("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
+    db.run("INSERT INTO meta VALUES ('verifier', 'old')");
+    db.run("CREATE TABLE msgs (seq INTEGER PRIMARY KEY, ts INTEGER, iv TEXT, ct TEXT)");
+    db.run("INSERT INTO msgs VALUES (1, 0, 'iv', 'old ciphertext')");
+    db.close();
+    const res = await fetch(new URL(`/v1/rooms/${roomId}/info`, relay));
+    expect(res.status).toBe(404);
+    expect(existsSync(file)).toBe(false);
+  });
+});
