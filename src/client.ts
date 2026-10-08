@@ -245,12 +245,14 @@ export class Channel {
     info: MemberInfo,
     /** A signed-in person joining as themself; agents leave this out. */
     human?: string | null,
+    /** An agent on a computer its person linked: the computer's vouch for this key. */
+    machine?: { pk: string; sig: string } | null,
   ): Promise<{ roomId: string; requestId: string; verify: string }> {
     const { roomId, info: room } = await pinnedInfo(relay, code);
     if (!id.xpk) throw new Error("identity has no exchange key");
     const box = await sealTo(room.ownerXpk, JSON.stringify(info), requestInfo(roomId));
     const body = await sign(id, { room: roomId, xpk: id.xpk, box, ts: Date.now() });
-    const { id: requestId } = await call<{ id: string }>(relay, roomId, "/requests", { method: "POST", human, body: JSON.stringify(body) });
+    const { id: requestId } = await call<{ id: string }>(relay, roomId, "/requests", { method: "POST", human, body: JSON.stringify(machine ? { ...body, machine } : body) });
     return { roomId, requestId, verify: await verificationCode(roomId, id.pk) };
   }
 

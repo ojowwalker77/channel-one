@@ -317,7 +317,7 @@ export class RoomStore {
    * themself (they are their own sponsor); otherwise it's an agent, which on a
    * sign-in relay must later be vouched for by its own human.
    */
-  async request(body: RequestBody, human: { user: string; name: string } | null = null): Promise<{ id: string; fresh: boolean }> {
+  async request(body: RequestBody, human: { user: string; name: string } | null = null, vouchUser: string | null = null): Promise<{ id: string; fresh: boolean }> {
     this.meta();
     this.migrate();
     const { pk, xpk, box, ts, sig } = body ?? ({} as RequestBody);
@@ -331,7 +331,11 @@ export class RoomStore {
     const existing = this.sql.all<{ id: string; status: string }>("SELECT id, status FROM requests WHERE pk = ?", pk)[0];
     if (existing?.status === "denied") throw new HttpError(403, "this key was denied");
     if (this.sql.all("SELECT 1 FROM members WHERE pk = ? AND active = 0", pk).length) throw new HttpError(403, "this key was removed; join with a new identity");
-    if (existing) return { id: existing.id, fresh: false };
+    if (existing) {
+      // Asking again from a computer its person has since linked: the vouch applies now.
+      if (vouchUser && !human) this.sql.run("UPDATE requests SET sponsor_user = ? WHERE id = ? AND status = 'pending' AND sponsor_user IS NULL AND kind = 'agent'", vouchUser, existing.id);
+      return { id: existing.id, fresh: false };
+    }
     const pending = this.sql.all<{ n: number }>("SELECT COUNT(*) AS n FROM requests WHERE status = 'pending'")[0]!.n;
     if (pending >= MAX_PENDING) throw new HttpError(429, "too many pending join requests");
     const id = crypto.randomUUID();
@@ -345,7 +349,8 @@ export class RoomStore {
       ts,
       human ? "human" : "agent",
       // Only the sign-in user id is kept; names are looked up when the owner reads requests.
-      human?.user ?? null,
+      // An agent from a computer its person linked arrives already vouched for by them.
+      human?.user ?? vouchUser ?? null,
       Date.now(),
     );
     return { id, fresh: true };
@@ -531,7 +536,14 @@ export function onClientFrame(store: RoomStore, raw: string): Effects {
  *   GET    /messages?since=N          member
  *   POST   /messages                  member: {iv, ct, e}
  */
-export async function onHttp(store: RoomStore, req: Request, path: string, human: HumanAuth | null = null): Promise<{ res: Response; fx?: Effects }> {
+export async function onHttp(
+  store: RoomStore,
+  req: Request,
+  path: string,
+  human: HumanAuth | null = null,
+  /** Who vouches for an agent key, from its computer's signature (see machines.ts). */
+  vouch: ((agentPk: string, machine: unknown) => Promise<string | null>) | null = null,
+): Promise<{ res: Response; fx?: Effects }> {
   const url = new URL(req.url);
   const method = req.method.toUpperCase();
   const body = method === "GET" || method === "DELETE" ? "" : await req.text();
@@ -577,7 +589,10 @@ export async function onHttp(store: RoomStore, req: Request, path: string, human
   };
 
   if (path === "/requests" && method === "POST") {
-    const { id, fresh } = await store.request(json<RequestBody>(), await person());
+    const b = json<RequestBody & { machine?: unknown }>();
+    const who = await person();
+    const vouchUser = !who && vouch && typeof b?.pk === "string" ? await vouch(b.pk, b.machine) : null;
+    const { id, fresh } = await store.request(b, who, vouchUser);
     return ok({ id }, fresh ? { broadcast: [frame({ t: "request" })] } : undefined);
   }
   const publicMatch = /^\/requests\/([0-9a-f-]{36})\/public$/.exec(path);

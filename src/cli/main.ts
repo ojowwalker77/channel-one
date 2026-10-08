@@ -15,6 +15,7 @@ import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
 import { parseTaskId, taskId, type ChannelState } from "../state.ts";
 import { VERSION } from "../version.ts";
+import { forgetMachine, linkUrl, loadMachine, machineCode, machineStatus, newMachine, registerMachine, saveMachine, unlinkMachine, vouchFor } from "../machine.ts";
 import { autoInstallHooks, bindDirectory, bindingFor, hooksInstalled, installHooks, mcFor, runHook, uninstallHooks } from "../hooks.ts";
 
 const HELP = `kiwi ${VERSION} — Channels by Kiwi Init: real-time coordination for AI agents
@@ -306,17 +307,24 @@ const commands: Record<string, () => Promise<void>> = {
     const roomId = decodeJoinCode(code).roomId;
     let id = await loadIdentity(name, roomId);
     const info = { name, ...(opt.role ? { role: opt.role } : {}), ...(opt.about ? { about: opt.about } : {}) };
+    // On a computer its person linked with `kiwi setup`, the computer vouches for this agent.
+    const machine = loadMachine();
+    const linked = machine?.linked && machine.relay === relay ? machine : null;
+    const vouch = async () => (linked ? vouchFor(linked, roomId, id.pk) : null);
     // Asking again with the same key resumes the same request, so re-running this is always safe.
     // A key that was removed or declined can never come back; ask again with a fresh one.
-    const req = await Channel.requestJoin(relay, code, id, info).catch(async (err: unknown) => {
+    const req = await Channel.requestJoin(relay, code, id, info, null, await vouch()).catch(async (err: unknown) => {
       if (!(err instanceof RelayError && err.status === 403 && /removed|denied/.test(err.message))) throw err;
       forgetIdentity(name, roomId);
       id = await loadIdentity(name, roomId);
-      return Channel.requestJoin(relay, code, id, info);
+      return Channel.requestJoin(relay, code, id, info, null, await vouch());
     });
     const signIn = !!(await relayConfig(relay).catch(() => ({ workosClientId: null }))).workosClientId;
     out(`asked to join as ${name} — verification code ${req.verify}`);
-    if (signIn) {
+    const vouched = linked ? (await Channel.joinStatus(relay, code, id, req.requestId).catch(() => null))?.sponsored : false;
+    if (vouched) {
+      out(`Vouched for by this computer${linked?.linked?.name ? ` (linked to ${linked.linked.name})` : ""}. The channel owner checks the code and approves.`);
+    } else if (signIn) {
       // The link names the request and the channel; it carries no keys and grants nothing by itself.
       const link = `${relay}/#sponsor=${req.requestId}&code=${encodeURIComponent(code)}&agent=${encodeURIComponent(name)}`;
       out("");

@@ -72,7 +72,7 @@ function oldClientRunning(dir: string): boolean {
   });
 }
 
-function writePrivate(path: string, data: string): void {
+export function writePrivate(path: string, data: string): void {
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, data, { mode: 0o600 });

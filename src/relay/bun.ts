@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import type { HumanAuth } from "./human.ts";
+import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
 import {
   HttpError,
   RoomStore,
@@ -40,6 +41,19 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
   // Signed-in people's channel lists (room ids and join codes only).
   const people = new Database(join(dataDir, "people.sqlite"), { create: true });
   people.run("CREATE TABLE IF NOT EXISTS entries (user TEXT NOT NULL, room TEXT NOT NULL, entry TEXT NOT NULL, PRIMARY KEY (user, room))");
+  people.run("CREATE TABLE IF NOT EXISTS machines (pk TEXT PRIMARY KEY, rec TEXT NOT NULL, user TEXT)");
+  const machines: MachineStore = {
+    get: async (pk) => {
+      const row = people.query("SELECT rec FROM machines WHERE pk = ?").get(pk) as { rec: string } | null;
+      return row ? (JSON.parse(row.rec) as MachineRecord) : null;
+    },
+    put: async (rec) => void people.query("INSERT OR REPLACE INTO machines (pk, rec, user) VALUES (?, ?, ?)").run(rec.pk, JSON.stringify(rec), rec.user),
+    remove: async (rec) => void people.query("DELETE FROM machines WHERE pk = ?").run(rec.pk),
+    listFor: async (user) =>
+      (people.query("SELECT rec FROM machines WHERE user = ?").all(user) as { rec: string }[])
+        .map((r) => JSON.parse(r.rec) as MachineRecord)
+        .map((m) => ({ pk: m.pk, label: m.label, linked: m.linked ?? m.created })),
+  };
 
   /** A store for the room; rooms that don't exist get a throwaway in-memory DB (so no file appears). */
   const storeFor = (roomId: string, creating: boolean): RoomStore => {
@@ -89,6 +103,8 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
         const url = new URL(req.url);
         if (url.pathname === "/") return new Response("Kiwi Channels relay (bun)\n");
         if (url.pathname === "/v1/config") return relayConfig(human);
+        const machine = await onMachineHttp(req, machines, human);
+        if (machine) return machine;
         if (url.pathname === "/v1/me/channels" && req.method === "GET") {
           return await myChannels(req, human, async (user) =>
             (people.query("SELECT entry FROM entries WHERE user = ?").all(user) as { entry: string }[]).map((r) => JSON.parse(r.entry) as DirectoryEntry),
@@ -109,7 +125,7 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
         }
         let result: Awaited<ReturnType<typeof onHttp>>;
         try {
-          result = await onHttp(store, req, route.rest, human);
+          result = await onHttp(store, req, route.rest, human, (pk, m) => vouchedBy(machines, route.roomId, pk, m));
         } catch (err) {
           // A create that failed leaves no file behind.
           if (route.rest === "/create" && !store.exists()) {

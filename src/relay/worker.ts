@@ -8,6 +8,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import { workosHumanAuth, workosProfiles, type HumanAuth } from "./human.ts";
+import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
 import {
   HttpError,
   RoomStore,
@@ -83,7 +84,7 @@ export class Channel extends DurableObject<Env> {
         for (const f of welcomeFrames(store, Number(url.searchParams.get("since") ?? 0) || 0)) server.send(f);
         return new Response(null, { status: 101, webSocket: client, headers: wsHeaders(req) });
       }
-      const { res, fx } = await onHttp(store, req, route.rest, human(this.env));
+      const { res, fx } = await onHttp(store, req, route.rest, human(this.env), (pk, machine) => vouchedBy(machineStore(this.env), route.roomId, pk, machine));
       if (fx) await this.apply(fx);
       return res;
     } catch (err) {
@@ -132,9 +133,27 @@ export class Directory extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS entries (room TEXT PRIMARY KEY, entry TEXT NOT NULL)");
+    // A person's linked computers; and, in a computer's own object, its record.
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS machines (pk TEXT PRIMARY KEY, label TEXT NOT NULL, linked INTEGER NOT NULL)");
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS machine (k INTEGER PRIMARY KEY CHECK (k = 1), rec TEXT NOT NULL)");
   }
 
   override async fetch(req: Request): Promise<Response> {
+    const { pathname, searchParams } = new URL(req.url);
+    const sql = this.ctx.storage.sql;
+    if (pathname === "/machine") {
+      if (req.method === "PUT") sql.exec("INSERT OR REPLACE INTO machine (k, rec) VALUES (1, ?)", await req.text());
+      else if (req.method === "DELETE") sql.exec("DELETE FROM machine");
+      const row = sql.exec("SELECT rec FROM machine").toArray()[0] as { rec: string } | undefined;
+      return Response.json(row ? JSON.parse(row.rec) : null);
+    }
+    if (pathname === "/machines") {
+      if (req.method === "PUT") {
+        const m = (await req.json()) as { pk: string; label: string; linked: number };
+        sql.exec("INSERT OR REPLACE INTO machines (pk, label, linked) VALUES (?, ?, ?)", m.pk, m.label, m.linked);
+      } else if (req.method === "DELETE") sql.exec("DELETE FROM machines WHERE pk = ?", searchParams.get("pk") ?? "");
+      return Response.json(sql.exec("SELECT pk, label, linked FROM machines ORDER BY linked DESC").toArray());
+    }
     if (req.method === "POST") {
       const u = (await req.json()) as DirectoryUpdate;
       if (u.entry) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO entries (room, entry) VALUES (?, ?)", u.room, JSON.stringify(u.entry));
@@ -144,6 +163,23 @@ export class Directory extends DurableObject<Env> {
     const rows = this.ctx.storage.sql.exec("SELECT entry FROM entries").toArray() as { entry: string }[];
     return Response.json(rows.map((r) => JSON.parse(r.entry) as DirectoryEntry));
   }
+}
+
+/** Computers live in their own Directory object ("machine:<pk>"); each person's object lists theirs. */
+function machineStore(env: Env): MachineStore {
+  const at = (name: string) => env.PEOPLE.get(env.PEOPLE.idFromName(name));
+  return {
+    get: async (pk) => (await at(`machine:${pk}`).fetch("https://directory/machine")).json<MachineRecord | null>(),
+    put: async (rec) => {
+      await at(`machine:${rec.pk}`).fetch("https://directory/machine", { method: "PUT", body: JSON.stringify(rec) });
+      if (rec.user) await at(rec.user).fetch("https://directory/machines", { method: "PUT", body: JSON.stringify({ pk: rec.pk, label: rec.label, linked: rec.linked ?? Date.now() }) });
+    },
+    remove: async (rec) => {
+      await at(`machine:${rec.pk}`).fetch("https://directory/machine", { method: "DELETE" });
+      if (rec.user) await at(rec.user).fetch(`https://directory/machines?pk=${encodeURIComponent(rec.pk)}`, { method: "DELETE" });
+    },
+    listFor: async (user) => (await at(user).fetch("https://directory/machines")).json(),
+  };
 }
 
 function send(ws: WebSocket, f: string): void {
@@ -162,6 +198,13 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === "/v1/config") return relayConfig(human(env));
+    if (url.pathname.startsWith("/v1/machines") || url.pathname.startsWith("/v1/me/machines")) {
+      try {
+        return (await onMachineHttp(req, machineStore(env), human(env))) ?? errorResponse(new HttpError(404, "not found"));
+      } catch (err) {
+        return errorResponse(err);
+      }
+    }
     if (url.pathname === "/v1/me/channels" && req.method === "GET") {
       try {
         return await myChannels(req, human(env), async (user) => (await env.PEOPLE.get(env.PEOPLE.idFromName(user)).fetch("https://directory/list")).json());
