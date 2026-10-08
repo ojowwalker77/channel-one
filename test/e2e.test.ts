@@ -43,7 +43,7 @@ const claudeDir = mkdtempSync(join(tmpdir(), "mc-claude-"));
 function mc(home: string, ...args: string[]) {
   return Bun.spawn([...MC, ...args], {
     cwd: home,
-    env: { ...process.env, KIWI_HOME: home, KIWI_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir },
+    env: { ...process.env, KIWI_HOME: home, KIWI_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir, CLAUDECODE: "1" },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
