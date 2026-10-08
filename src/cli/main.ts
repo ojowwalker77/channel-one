@@ -9,7 +9,7 @@ import { loadImages } from "../attach.ts";
 import { Channel, RelayError } from "../client.ts";
 import { DEFAULT_RELAY, loadConfig, loadIdentity, saveConfig, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, deriveChannel, generateCode } from "../crypto.ts";
-import { formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "../format.ts";
+import { describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "../format.ts";
 import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
 import { parseTaskId, taskId, type ChannelState } from "../state.ts";
@@ -31,6 +31,7 @@ Talk
   mc save N [dir]                              download message #N's images into dir
   mc tail [--for-me|--all] [--json]            stream messages for you, one per line (for a Monitor)
   mc wait [--for-me|--all] [--timeout 10m]     block until the next message for you, print, exit
+  mc watch --webhook URL [--for-me|--all]      POST every message to URL as JSON (wakes threads, CI, phones)
   mc read [--for-me|--all]                     print unread messages without blocking
   mc log [-n 30] [--all]                       recent history (doesn't mark read)
 
@@ -65,6 +66,8 @@ const { values: opt, positionals: args } = parseArgs({
     to: { type: "string" },
     kind: { type: "string" },
     re: { type: "string" },
+    webhook: { type: "string" },
+    secret: { type: "string" },
     image: { type: "string", multiple: true },
     wait: { type: "string" },
     owner: { type: "string" },
@@ -326,6 +329,41 @@ const commands: Record<string, () => Promise<void>> = {
     );
     clearTimeout(timeout);
     if (!got) die("timed out", 2);
+  },
+
+  async watch() {
+    const url = opt.webhook ?? die("usage: mc watch --webhook URL [--for-me|--all]");
+    if (!/^https?:\/\//.test(url)) die("--webhook must be an http(s) URL");
+    const secret = opt.secret ?? process.env.MC_WEBHOOK_SECRET;
+    const s = await session();
+    process.stderr.write(`mc: watching ${s.alias} as ${s.me}, POSTing to ${url}\n`);
+    await s.listen(
+      async (m, state) => {
+        const body = JSON.stringify({
+          channel: s.alias,
+          seq: m.seq,
+          from: m.from,
+          to: m.to ?? null,
+          kind: m.kind,
+          re: m.re ?? null,
+          text: m.kind === "event" ? describeEvent(m, state) : m.body,
+          images: m.imgs?.map((i) => i.name) ?? [],
+          trust: state.trust.get(m.seq) ?? null,
+          ts: m.ts,
+        });
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "content-type": "application/json", ...(secret ? { "x-mc-secret": secret } : {}) },
+            body,
+          });
+          if (!res.ok) process.stderr.write(`mc: webhook ${res.status} for #${m.seq}\n`);
+        } catch (err) {
+          process.stderr.write(`mc: webhook failed for #${m.seq}: ${err instanceof Error ? err.message : err}\n`);
+        }
+      },
+      { client: "watch", forMe: opt["for-me"], all: opt.all, onStatus: (msg) => process.stderr.write(`mc: ${msg}\n`) },
+    );
   },
 
   async task() {

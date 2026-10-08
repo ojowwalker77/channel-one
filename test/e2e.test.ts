@@ -268,6 +268,35 @@ describe("images and cross-channel tasks through the CLI", () => {
     expect(all).toContain("## second");
     expect(all).toContain("second task");
   });
+
+  test("watch POSTs every message to a webhook", async () => {
+    const a = home("watcher");
+    const created = await ok(a, "create", "w", "--as", "eye");
+    const code = /join code: (\S+)/.exec(created)![1]!;
+    const b = home("watchsender");
+    await ok(b, "join", code, "w", "--as", "peer");
+    const hooks: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (req) => {
+        if (req.method === "POST") hooks.push(await req.text());
+        return new Response("ok");
+      },
+    });
+    const watching = mc(a, "watch", "--webhook", `http://127.0.0.1:${server.port}/hook`);
+    const linesP = lines(watching);
+    await Bun.sleep(1500);
+    await ok(b, "send", "ping the hook");
+    const end = Date.now() + 15_000;
+    while (!hooks.length && Date.now() < end) await Bun.sleep(50);
+    watching.kill();
+    await linesP.stop().catch(() => {});
+    server.stop(true);
+    expect(hooks.length).toBeGreaterThanOrEqual(1);
+    const bodies = hooks.map((h) => JSON.parse(h) as { from: string; text: string; kind: string });
+    expect(bodies).toContainEqual(expect.objectContaining({ channel: "w", from: "peer", text: "ping the hook", kind: "msg" }));
+  });
 });
 
 describe("MCP server", () => {
