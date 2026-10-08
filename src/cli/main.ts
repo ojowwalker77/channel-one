@@ -7,7 +7,7 @@ import { join as joinPath } from "node:path";
 import { AgentSession, Rejected } from "../agent.ts";
 import { loadImages } from "../attach.ts";
 import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
-import { DEFAULT_RELAY, forgetIdentities, identitiesIn, loadConfig, loadIdentity, saveConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
+import { DEFAULT_RELAY, forgetIdentities, forgetIdentity, identitiesIn, loadConfig, loadIdentity, saveConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
 import { describeMember, type JoinRequest } from "../membership.ts";
 import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "../format.ts";
@@ -280,10 +280,17 @@ const commands: Record<string, () => Promise<void>> = {
     const name = agentName();
     if (name === OWNER_NAME) die(`"${OWNER_NAME}" is reserved for the channel owner; pick an agent name with --as`);
     const relay = relayUrl();
-    const id = await loadIdentity(name, decodeJoinCode(code).roomId);
+    const roomId = decodeJoinCode(code).roomId;
+    let id = await loadIdentity(name, roomId);
     const info = { name, ...(opt.role ? { role: opt.role } : {}), ...(opt.about ? { about: opt.about } : {}) };
     // Asking again with the same key resumes the same request, so re-running this is always safe.
-    const req = await Channel.requestJoin(relay, code, id, info);
+    // A key that was removed or declined can never come back; ask again with a fresh one.
+    const req = await Channel.requestJoin(relay, code, id, info).catch(async (err: unknown) => {
+      if (!(err instanceof RelayError && err.status === 403 && /removed|denied/.test(err.message))) throw err;
+      forgetIdentity(name, roomId);
+      id = await loadIdentity(name, roomId);
+      return Channel.requestJoin(relay, code, id, info);
+    });
     const signIn = !!(await relayConfig(relay).catch(() => ({ workosClientId: null }))).workosClientId;
     out(`asked to join as ${name} — verification code ${req.verify}`);
     if (signIn) {

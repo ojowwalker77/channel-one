@@ -136,6 +136,11 @@ function identityDir(roomId: string): string {
 }
 
 /** Agent names this machine holds keys for in a channel (the owner's key included). */
+/** Throw away one agent's key for a channel (say, after it was removed), so the next join makes a fresh one. */
+export function forgetIdentity(name: string, roomId: string): void {
+  rmSync(join(identityDir(roomId), `${safe(name)}.json`), { force: true });
+}
+
 export function identitiesIn(roomId: string): string[] {
   const dir = identityDir(roomId);
   if (!existsSync(dir)) return [];
