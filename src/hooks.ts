@@ -11,7 +11,7 @@
 //
 // Hooks must never break a session: every failure path exits 0 silently.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { AgentSession } from "./agent.ts";
@@ -31,21 +31,41 @@ export interface Binding {
   as: string;
 }
 
-/** Remember that an agent working in `dir` is `as` on channel `alias`. */
-export function bindDirectory(dir: string, b: Binding): void {
+/**
+ * Directories too broad to bind: the home folder and the filesystem root. A
+ * binding there would make every session in every project act as that agent.
+ */
+function real(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+function tooBroad(dir: string): boolean {
+  const d = real(dir);
+  return d === real(homedir()) || dirname(d) === d;
+}
+
+/** Remember that an agent working in `dir` is `as` on channel `alias`. Returns false for home/root. */
+export function bindDirectory(dir: string, b: Binding): boolean {
+  if (tooBroad(dir)) return false;
   const cfg = loadConfig();
   cfg.bindings = { ...(cfg.bindings ?? {}), [resolve(dir)]: b };
   saveConfig(cfg);
+  return true;
 }
 
-/** The binding for `dir` or its nearest bound ancestor. */
+/** The binding for `dir` or its nearest bound ancestor, never reaching home or root. */
 export function bindingFor(dir: string): Binding | null {
-  const bindings = loadConfig().bindings ?? {};
-  for (let d = resolve(dir); ; d = dirname(d)) {
+  const cfg = loadConfig();
+  const bindings = cfg.bindings ?? {};
+  for (let d = resolve(dir); !tooBroad(d); d = dirname(d)) {
     const b = bindings[d];
-    if (b && loadConfig().channels[b.alias]) return b;
-    if (dirname(d) === d) return null;
+    if (b && cfg.channels[b.alias]) return b;
   }
+  return null;
 }
 
 // ---------- live listeners ----------
@@ -193,11 +213,12 @@ export function mcBin(): string {
   return selfCommand();
 }
 
-/** `mc` plus whatever flags this agent needs to reach this channel. */
-export function mcFor(alias: string, as: string): string {
+/** `mc` plus whatever flags this agent needs: none when its working directory is bound to it. */
+export function mcFor(alias: string, as: string, dir = process.cwd()): string {
+  const b = bindingFor(dir);
+  if (b && b.alias === alias && b.as === as) return mcBin();
   const cfg = loadConfig();
-  const implicit = cfg.default === alias && cfg.channels[alias]?.as === as;
-  return implicit ? mcBin() : `${mcBin()} -c ${alias} --as ${as}`;
+  return cfg.default === alias ? `${mcBin()} --as ${as}` : `${mcBin()} -c ${alias} --as ${as}`;
 }
 
 const MAX_CONTEXT = 6_000;
@@ -218,7 +239,7 @@ export async function runHook(event: string): Promise<void> {
   if (!b) return;
   const cfg = loadConfig().channels[b.alias];
   if (!cfg) return;
-  const mc = mcFor(b.alias, b.as);
+  const mc = mcFor(b.alias, b.as, input.cwd ?? process.cwd());
   const listening = isListening(b.alias, b.as);
 
   const deadline = new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 15_000));

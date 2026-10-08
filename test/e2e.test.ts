@@ -363,6 +363,59 @@ describe("images and cross-channel tasks through the CLI", () => {
   });
 });
 
+describe("several agents on one machine", () => {
+  test("each agent keeps its own name, by folder; nothing guesses between them", async () => {
+    const owner = home("multi-owner");
+    const shared = home("multi-shared"); // one MC_HOME, like two agents on the same Mac
+    const dirA = home("multi-a");
+    const dirB = home("multi-b");
+    const code = /join code: (\S+)/.exec(await ok(owner, "create", "m", "--as", "boss"))![1]!;
+
+    const inDir = (dir: string, ...args: string[]) =>
+      Bun.spawn([...MC, ...args], { cwd: dir, env: { ...process.env, MC_HOME: shared, MC_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const runIn = async (dir: string, ...args: string[]) => {
+      const p = inDir(dir, ...args);
+      const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+      return { code: await p.exited, out, err };
+    };
+    const joinFrom = async (dir: string, name: string) => {
+      const p = inDir(dir, "join", code, "--as", name);
+      const l = lines(p);
+      await l.until((x) => x.some((y) => /verification code/.test(y)));
+      await ok(owner, "approve", /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!, "--yes");
+      expect(await p.exited).toBe(0);
+    };
+    await joinFrom(dirA, "alpha");
+    await joinFrom(dirB, "beta"); // beta joined last: it must not take over alpha's folder
+
+    expect((await runIn(dirA, "send", "from a")).code).toBe(0);
+    expect((await runIn(dirB, "send", "from b")).code).toBe(0);
+    const log = await ok(owner, "log");
+    expect(log).toMatch(/alpha → all: from a/);
+    expect(log).toMatch(/beta → all: from b/);
+
+    // Outside either folder there's no way to know who's speaking: refuse instead of guessing.
+    const elsewhere = home("multi-elsewhere");
+    const r = await runIn(elsewhere, "send", "who am i");
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("several agents on this machine are in this channel");
+    expect((await runIn(elsewhere, "--as", "beta", "send", "explicit")).code).toBe(0);
+  });
+
+  test("a home folder is never bound", async () => {
+    const owner = home("hb-owner");
+    const h = home("hb-home");
+    const code = /join code: (\S+)/.exec(await ok(owner, "create", "hb", "--as", "boss"))![1]!;
+    const p = Bun.spawn([...MC, "join", code, "--as", "solo"], { cwd: h, env: { ...process.env, HOME: h, MC_HOME: h, MC_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const l = lines(p);
+    await l.until((x) => x.some((y) => /verification code/.test(y)));
+    await ok(owner, "approve", /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!, "--yes");
+    expect(await p.exited).toBe(0);
+    expect(await new Response(p.stderr).text()).toContain("too broad");
+    expect(JSON.parse(readFileSync(join(h, "config.json"), "utf8")).bindings ?? {}).toEqual({});
+  });
+});
+
 describe("Claude Code hooks", () => {
   async function hook(dir: string, mcHome: string, event: string, input: object): Promise<string> {
     const p = Bun.spawn([...MC, "hook", event], {

@@ -7,7 +7,7 @@ import { join as joinPath } from "node:path";
 import { AgentSession, Rejected } from "../agent.ts";
 import { loadImages } from "../attach.ts";
 import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
-import { DEFAULT_RELAY, forgetIdentities, loadConfig, loadIdentity, saveConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
+import { DEFAULT_RELAY, forgetIdentities, identitiesIn, loadConfig, loadIdentity, saveConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
 import type { JoinRequest } from "../membership.ts";
 import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "../format.ts";
@@ -15,7 +15,7 @@ import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
 import { parseTaskId, taskId, type ChannelState } from "../state.ts";
 import { VERSION } from "../version.ts";
-import { autoInstallHooks, bindDirectory, hooksInstalled, installHooks, mcFor, runHook, uninstallHooks } from "../hooks.ts";
+import { autoInstallHooks, bindDirectory, bindingFor, hooksInstalled, installHooks, mcFor, runHook, uninstallHooks } from "../hooks.ts";
 
 const HELP = `mc ${VERSION} — real-time coordination for AI agents
 
@@ -124,15 +124,27 @@ function relayUrl(): string {
 
 function channelAlias(): string {
   const cfg = loadConfig();
-  const alias = opt.channel ?? process.env.MC_CHANNEL ?? cfg.default;
+  // Explicit flags win; otherwise the channel this directory is bound to; otherwise the default.
+  const alias = opt.channel ?? process.env.MC_CHANNEL ?? bindingFor(process.cwd())?.alias ?? cfg.default;
   if (!alias) die("no channel: pass -c ALIAS, or create/join one first");
   if (!cfg.channels[alias]) die(`unknown channel "${alias}" (see: mc channels)`);
   return alias;
 }
 
 function agentName(ch?: ChannelConfig): string {
-  // Default to the OS username so the first run just works; explicit flags win.
-  const raw = opt.as ?? process.env.MC_AS ?? ch?.as ?? process.env.USER ?? process.env.USERNAME ?? "human";
+  const explicit = opt.as ?? process.env.MC_AS;
+  let raw = explicit;
+  if (!raw && ch) {
+    // Several agents can share a machine (and a channel): never guess between them.
+    const bound = bindingFor(process.cwd());
+    if (bound && ch.roomId === loadConfig().channels[bound.alias]?.roomId) raw = bound.as;
+    else {
+      const mine = identitiesIn(ch.roomId).filter((n) => n !== ch.owner);
+      if (mine.length > 1) die(`several agents on this machine are in this channel (${mine.join(", ")}); pass --as NAME`);
+      raw = mine[0] ?? ch.as;
+    }
+  }
+  raw ??= process.env.USER ?? process.env.USERNAME ?? "human";
   const name = raw.trim() || "human";
   if (!NAME_RE.test(name)) die(`agent name "${name}" is invalid (1-32 letters, digits, _ . or -); pass --as NAME`);
   return name;
@@ -201,7 +213,9 @@ async function findRequest(s: AgentSession, needle: string): Promise<JoinRequest
 
 /** Bind this directory to the agent, and make sure Claude Code keeps it listening. */
 function settleIn(alias: string, name: string): void {
-  bindDirectory(process.cwd(), { alias, as: name });
+  if (!bindDirectory(process.cwd(), { alias, as: name })) {
+    process.stderr.write(`mc: not binding ${process.cwd()} (too broad); run mc from your project folder, or pass --as ${name}\n`);
+  }
   const installed = autoInstallHooks();
   if (installed) process.stderr.write(`mc: installed Claude Code hooks (${installed}) so this agent keeps listening; \`mc hooks uninstall\` removes them\n`);
 }

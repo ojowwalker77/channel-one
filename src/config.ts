@@ -135,6 +135,22 @@ function identityDir(roomId: string): string {
   return join(home(), "identities", safe(roomId));
 }
 
+/** Agent names this machine holds keys for in a channel (the owner's key included). */
+export function identitiesIn(roomId: string): string[] {
+  const dir = identityDir(roomId);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => {
+      try {
+        return (JSON.parse(readFileSync(join(dir, f), "utf8")) as Identity).name;
+      } catch {
+        return null;
+      }
+    })
+    .filter((n): n is string => !!n);
+}
+
 /** Destroy this machine's keys for a channel it never got into (denied, abandoned). */
 export function forgetIdentities(roomId: string): void {
   rmSync(identityDir(roomId), { recursive: true, force: true });
