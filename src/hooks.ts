@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { AgentSession } from "./agent.ts";
-import { home, loadConfig, saveConfig } from "./config.ts";
+import { home, loadConfig, updateConfig } from "./config.ts";
 import { formatMessage } from "./format.ts";
 
 /** Marks our entries in settings.json so install/uninstall can find them. */
@@ -51,9 +51,9 @@ function tooBroad(dir: string): boolean {
 /** Remember that an agent working in `dir` is `as` on channel `alias`. Returns false for home/root. */
 export function bindDirectory(dir: string, b: Binding): boolean {
   if (tooBroad(dir)) return false;
-  const cfg = loadConfig();
-  cfg.bindings = { ...(cfg.bindings ?? {}), [resolve(dir)]: b };
-  saveConfig(cfg);
+  updateConfig((cfg) => {
+    cfg.bindings = { ...(cfg.bindings ?? {}), [resolve(dir)]: b };
+  });
   return true;
 }
 
@@ -217,8 +217,7 @@ export function mcBin(): string {
 export function mcFor(alias: string, as: string, dir = process.cwd()): string {
   const b = bindingFor(dir);
   if (b && b.alias === alias && b.as === as) return mcBin();
-  const cfg = loadConfig();
-  return cfg.default === alias ? `${mcBin()} --as ${as}` : `${mcBin()} -c ${alias} --as ${as}`;
+  return `${mcBin()} -c ${alias} --as ${as}`;
 }
 
 const MAX_CONTEXT = 6_000;

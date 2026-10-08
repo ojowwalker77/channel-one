@@ -189,6 +189,8 @@ export class RoomStore {
 
   /** The member key that signed this request, or a 401/403. */
   async authenticate(req: Request, method: string, path: string, body: string): Promise<string> {
+    // A closed channel has no tables at all: say so, so members forget it.
+    if (!this.exists()) throw new HttpError(404, "no such channel");
     const pk = await verifyRequest(requestToken(req), this.roomId, method, path, body);
     if (!pk) throw new HttpError(401, "bad or expired signature");
     if (!this.isMember(pk)) throw new HttpError(403, "not a member of this channel");

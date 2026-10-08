@@ -402,6 +402,52 @@ describe("several agents on one machine", () => {
     expect((await runIn(elsewhere, "--as", "beta", "send", "explicit")).code).toBe(0);
   });
 
+  test("agents in different channels on one machine never touch each other's state", async () => {
+    const ownerA = home("iso-owner-a");
+    const ownerB = home("iso-owner-b");
+    const shared = home("iso-shared"); // one MC_HOME for every agent on this "machine"
+    const [dirA, dirB, dirC, elsewhere] = [home("iso-a"), home("iso-b"), home("iso-c"), home("iso-elsewhere")];
+    const codeA = /join code: (\S+)/.exec(await ok(ownerA, "create", "a", "--as", "boss"))![1]!;
+    const codeB = /join code: (\S+)/.exec(await ok(ownerB, "create", "b", "--as", "boss"))![1]!;
+
+    const inDir = (dir: string, ...args: string[]) =>
+      Bun.spawn([...MC, ...args], { cwd: dir, env: { ...process.env, MC_HOME: shared, MC_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const runIn = async (dir: string, ...args: string[]) => {
+      const p = inDir(dir, ...args);
+      const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+      return { code: await p.exited, out, err };
+    };
+    const joinFrom = async (dir: string, owner: string, code: string, name: string) => {
+      const p = inDir(dir, "join", code, "--as", name);
+      const l = lines(p);
+      await l.until((x) => x.some((y) => /verification code/.test(y)));
+      await ok(owner, "approve", /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!, "--yes");
+      expect(await p.exited).toBe(0);
+    };
+    // Joined concurrently, like separate sessions: neither may lose the other's config.
+    await Promise.all([joinFrom(dirA, ownerA, codeA, "alpha"), joinFrom(dirB, ownerB, codeB, "beta")]);
+    await joinFrom(dirC, ownerA, codeA, "gamma"); // a second local agent in channel a
+
+    // Outside a bound folder, with several channels here, nothing picks one for you.
+    const r = await runIn(elsewhere, "send", "where does this go");
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("isn't bound to a channel");
+
+    // Removing gamma forgets gamma only; alpha, in the same channel, keeps its key.
+    await ok(ownerA, "kick", "gamma");
+    expect((await runIn(dirC, "status")).code).toBe(4);
+    expect((await runIn(dirA, "send", "alpha still here")).code).toBe(0);
+
+    // Closing b forgets b only; a is untouched.
+    await ok(ownerB, "close", "--yes");
+    expect((await runIn(dirB, "status")).code).toBe(4);
+    expect((await runIn(dirA, "send", "a is fine")).code).toBe(0);
+    const cfg = JSON.parse(readFileSync(join(shared, "config.json"), "utf8")) as { channels: Record<string, unknown>; bindings: Record<string, { as: string }> };
+    expect(Object.keys(cfg.channels)).toHaveLength(1);
+    expect(Object.values(cfg.bindings).map((b) => b.as)).toEqual(["alpha"]);
+    expect(await ok(ownerA, "log")).toMatch(/alpha → all: a is fine/);
+  });
+
   test("a home folder is never bound", async () => {
     const owner = home("hb-owner");
     const h = home("hb-home");

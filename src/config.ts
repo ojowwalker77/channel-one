@@ -4,7 +4,7 @@
 //   cursors/<ch>.<agent>   last sequence number each agent has consumed
 //   cache/<room>.jsonl     decrypted, verified messages (so state folds are fast)
 
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChannelAccess } from "./crypto.ts";
@@ -69,6 +69,40 @@ export function loadConfig(): Config {
 
 export function saveConfig(cfg: Config): void {
   writePrivate(join(home(), "config.json"), JSON.stringify(cfg, null, 2) + "\n");
+}
+
+/**
+ * Change the config safely while other mc processes (other agents on this
+ * machine, their hooks and listeners) do the same: take a lock, read the
+ * latest version, apply the change, write it back. A plain load-then-save
+ * would silently undo whatever another agent wrote in between.
+ */
+export function updateConfig(change: (cfg: Config) => void): Config {
+  mkdirSync(home(), { recursive: true, mode: 0o700 });
+  const lock = join(home(), "config.lock");
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch {
+      // A lock left behind by a crashed process expires after a few seconds.
+      try {
+        const age = Date.now() - statSync(lock).mtimeMs;
+        if (age > 5_000) rmSync(lock, { recursive: true, force: true });
+      } catch {}
+      if (Date.now() > deadline) throw new Error(`couldn't lock ${lock}; if no mc is running, delete it`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+    }
+  }
+  try {
+    const cfg = loadConfig();
+    change(cfg);
+    saveConfig(cfg);
+    return cfg;
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
 }
 
 function safe(s: string): string {
@@ -163,24 +197,25 @@ export function forgetIdentities(roomId: string): void {
 
 /** Persist a channel's access after keys change (rotation). */
 export function saveAccess(alias: string, access: ChannelAccess): void {
-  const cfg = loadConfig();
-  const c = cfg.channels[alias];
-  if (!c) return;
-  cfg.channels[alias] = { ...c, epoch: access.epoch, keys: { ...c.keys, ...access.keys } };
-  saveConfig(cfg);
+  updateConfig((cfg) => {
+    const c = cfg.channels[alias];
+    if (c) cfg.channels[alias] = { ...c, epoch: access.epoch, keys: { ...c.keys, ...access.keys } };
+  });
 }
 
 /**
- * Forget a channel on this machine: config, keys, message cache, cursors and
- * downloads. Used when leaving, when removed, and when the owner closes it.
+ * Forget a whole channel on this machine: config, every local agent's keys,
+ * message cache, cursors and downloads. Only for a channel that is gone for
+ * everyone (its owner closed it, or this machine's owner closed it).
  */
 export function wipeChannel(alias: string): void {
-  const cfg = loadConfig();
-  const c = cfg.channels[alias];
-  delete cfg.channels[alias];
-  if (cfg.default === alias) cfg.default = Object.keys(cfg.channels)[0];
-  for (const [dir, b] of Object.entries(cfg.bindings ?? {})) if (b.alias === alias) delete cfg.bindings![dir];
-  saveConfig(cfg);
+  let c: ChannelConfig | undefined;
+  updateConfig((cfg) => {
+    c = cfg.channels[alias];
+    delete cfg.channels[alias];
+    if (cfg.default === alias) delete cfg.default;
+    for (const [dir, b] of Object.entries(cfg.bindings ?? {})) if (b.alias === alias) delete cfg.bindings![dir];
+  });
   if (c) {
     rmSync(identityDir(c.roomId), { recursive: true, force: true });
     rmSync(cachePath(c.roomId), { force: true });
@@ -188,6 +223,26 @@ export function wipeChannel(alias: string): void {
   }
   const dir = join(home(), "cursors");
   if (existsSync(dir)) for (const f of readdirSync(dir)) if (f.startsWith(`${safe(alias)}.`)) rmSync(join(dir, f), { force: true });
+}
+
+/**
+ * Forget one agent's membership: it left or was removed. Other agents on this
+ * machine in the same channel keep theirs; the channel itself is forgotten
+ * only once no local agent is left in it.
+ */
+export function forgetMember(alias: string, name: string): void {
+  const c = loadConfig().channels[alias];
+  if (!c) return;
+  forgetIdentity(name, c.roomId);
+  rmSync(cursorPath(alias, name), { force: true });
+  rmSync(seenPath(alias, name), { force: true });
+  const left = identitiesIn(c.roomId).filter((n) => n !== c.owner);
+  if (!left.length) return wipeChannel(alias);
+  updateConfig((cfg) => {
+    for (const [dir, b] of Object.entries(cfg.bindings ?? {})) if (b.alias === alias && b.as === name) delete cfg.bindings![dir];
+    const ch = cfg.channels[alias];
+    if (ch?.as === name) ch.as = left[0];
+  });
 }
 
 function cachePath(roomId: string): string {

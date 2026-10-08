@@ -7,7 +7,7 @@ import { join as joinPath } from "node:path";
 import { AgentSession, Rejected } from "../agent.ts";
 import { loadImages } from "../attach.ts";
 import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
-import { DEFAULT_RELAY, forgetIdentities, forgetIdentity, identitiesIn, loadConfig, loadIdentity, saveConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
+import { DEFAULT_RELAY, forgetIdentities, forgetIdentity, forgetMember, identitiesIn, loadConfig, loadIdentity, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
 import { describeMember, type JoinRequest } from "../membership.ts";
 import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "../format.ts";
@@ -63,7 +63,7 @@ Coordinate
 More
   mc hello [--role R] [--about "…"]            update your role/description
   mc mcp [--push]                              serve the channel as MCP tools (--push: Claude Code channel)
-  mc channels    mc use ALIAS    mc web [--sign-in]    mc relay [--port 8787]
+  mc channels    mc use ALIAS --as NAME (bind this directory)    mc web [--sign-in]    mc relay [--port 8787]
 
 Options: -c/--channel ALIAS, --as NAME (or MC_CHANNEL / MC_AS), --relay URL (or MC_RELAY)
 Kinds: ${CHAT_KINDS.join(", ")}. Task states: ${TASK_STATES.join(", ")}.`;
@@ -122,12 +122,21 @@ function relayUrl(): string {
   return (opt.relay ?? process.env.MC_RELAY ?? DEFAULT_RELAY).replace(/\/+$/, "");
 }
 
+/** The channel (and agent) this command acts for, once resolved: the only ones it may ever forget. */
+const acting: { alias?: string; name?: string } = {};
+
 function channelAlias(): string {
   const cfg = loadConfig();
-  // Explicit flags win; otherwise the channel this directory is bound to; otherwise the default.
-  const alias = opt.channel ?? process.env.MC_CHANNEL ?? bindingFor(process.cwd())?.alias ?? cfg.default;
-  if (!alias) die("no channel: pass -c ALIAS, or create/join one first");
+  const all = Object.keys(cfg.channels);
+  // Explicit flags win; otherwise the channel this directory is bound to; otherwise the only one.
+  // Never a machine-wide default: other agents on this machine are in other channels.
+  const alias = opt.channel ?? process.env.MC_CHANNEL ?? bindingFor(process.cwd())?.alias ?? (all.length === 1 ? all[0] : undefined);
+  if (!alias) {
+    if (!all.length) die("no channel: create or join one first");
+    die(`this directory isn't bound to a channel, and this machine is in several (${all.join(", ")}); pass -c ALIAS --as NAME, or run mc from the directory you joined in`);
+  }
   if (!cfg.channels[alias]) die(`unknown channel "${alias}" (see: mc channels)`);
+  acting.alias = alias;
   return alias;
 }
 
@@ -153,7 +162,8 @@ function agentName(ch?: ChannelConfig): string {
 async function session(): Promise<AgentSession> {
   const alias = channelAlias();
   const cfg = loadConfig().channels[alias]!;
-  return AgentSession.open(alias, cfg, agentName(cfg));
+  acting.name = agentName(cfg);
+  return AgentSession.open(alias, cfg, acting.name);
 }
 
 function render(m: Message, state?: ChannelState | null): string {
@@ -253,10 +263,9 @@ const commands: Record<string, () => Promise<void>> = {
       roomId,
     );
     const alias = joinedAlias(access.roomId, args[1]);
-    const cfg = loadConfig();
-    cfg.channels[alias] = { ...access, relay, code, as: name, owner: OWNER_NAME };
-    cfg.default = alias;
-    saveConfig(cfg);
+    const cfg = updateConfig((c) => {
+      c.channels[alias] = { ...access, relay, code, as: name, owner: OWNER_NAME };
+    });
     writeCursor(alias, name, 0);
     const s = await AgentSession.open(alias, cfg.channels[alias]!, name);
     await s.hello(opt.role, opt.about);
@@ -318,10 +327,11 @@ const commands: Record<string, () => Promise<void>> = {
       }
       if (st.status === "approved") {
         const alias = joinedAlias(st.access.roomId, args[2]);
-        const cfg = loadConfig();
-        cfg.channels[alias] = { ...st.access, relay, code, as: name };
-        cfg.default = alias;
-        saveConfig(cfg);
+        // Another agent on this machine may already be in this channel: keep its entry, add ours.
+        const cfg = updateConfig((c) => {
+          const prior = c.channels[alias];
+          c.channels[alias] = prior?.roomId === st.access.roomId ? { ...prior, ...st.access, keys: { ...prior.keys, ...st.access.keys }, as: prior.as ?? name } : { ...st.access, relay, code, as: name };
+        });
         const s = await AgentSession.open(alias, cfg.channels[alias]!, name);
         writeCursor(alias, name, await s.ch.head());
         await s.hello(opt.role, opt.about);
@@ -402,8 +412,8 @@ const commands: Record<string, () => Promise<void>> = {
     const s = await session();
     if (s.ownerCh) die("you own this channel; `mc close` deletes it for everyone");
     await s.ch.leave();
-    wipeChannel(s.alias);
-    out(`left "${s.alias}" and forgot it on this machine`);
+    forgetMember(s.alias, s.me);
+    out(`${s.me} left "${s.alias}"; its key is gone from this machine`);
   },
 
   async close() {
@@ -419,17 +429,22 @@ const commands: Record<string, () => Promise<void>> = {
 
   async channels() {
     const cfg = loadConfig();
+    const here = bindingFor(process.cwd());
     for (const [alias, c] of Object.entries(cfg.channels)) {
-      out(`${alias === cfg.default ? "*" : " "} ${alias}${c.as ? ` (as ${c.as})` : ""}  ${c.relay}`);
+      const agents = identitiesIn(c.roomId).filter((n) => n !== c.owner);
+      out(`${here?.alias === alias ? "*" : " "} ${alias}  ${agents.length ? `agents here: ${agents.join(", ")}` : "no agent keys"}  ${c.relay}`);
     }
   },
 
+  /** Bind this directory to a channel and agent, so plain `mc` here acts as them. */
   async use() {
     const cfg = loadConfig();
-    const alias = args[1] ?? die("usage: mc use <alias>");
-    if (!cfg.channels[alias]) die(`unknown channel "${alias}"`);
-    cfg.default = alias;
-    saveConfig(cfg);
+    const alias = args[1] ?? die("usage: mc use <alias> --as NAME");
+    const c = cfg.channels[alias] ?? die(`unknown channel "${alias}"`);
+    const name = agentName(c);
+    if (!identitiesIn(c.roomId).includes(name)) die(`${name} has no key in "${alias}" on this machine`);
+    if (!bindDirectory(process.cwd(), { alias, as: name })) die("won't bind your home folder or the filesystem root; cd into a project first");
+    out(`mc in ${process.cwd()} now acts as ${name} in "${alias}"`);
   },
 
   async status() {
@@ -786,9 +801,10 @@ if (import.meta.main) {
     if (cmd !== "mcp" && cmd !== "relay") process.exit(0);
   } catch (err) {
     if (err instanceof ChannelGone) {
-      // Removed, or the owner closed it: forget everything about it here.
-      const alias = opt.channel ?? process.env.MC_CHANNEL ?? loadConfig().default;
-      if (alias) wipeChannel(alias);
+      // Forget only what this command was acting for. Closed: the channel is gone for
+      // everyone, so all of it goes. Removed: just this agent; others here keep theirs.
+      if (acting.alias && err.why === "closed") wipeChannel(acting.alias);
+      else if (acting.alias && acting.name) forgetMember(acting.alias, acting.name);
       die(`${err.message}; forgot it on this machine`, 4);
     }
     if (err instanceof Rejected) die(err.message);

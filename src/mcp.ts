@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { AgentSession, Rejected } from "./agent.ts";
 import { loadImages } from "./attach.ts";
-import { home, loadConfig } from "./config.ts";
+import { home, identitiesIn, loadConfig } from "./config.ts";
 import { formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "./format.ts";
 import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
 import { parseTaskId, taskId } from "./state.ts";
@@ -242,7 +242,10 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
       const out: string[] = [];
       for (const alias of aliases) {
         const c = cfg.channels[alias]!;
-        const sess = await AgentSession.open(alias, c, c.as ?? s.me);
+        // Read each channel as an agent that's actually in it here; never mint a key in someone else's channel.
+        const as = identitiesIn(c.roomId).includes(s.me) ? s.me : identitiesIn(c.roomId).find((n) => n !== c.owner);
+        if (!as) continue;
+        const sess = await AgentSession.open(alias, c, as);
         const { state } = await sess.state();
         const owner = mine ? sess.me : undefined;
         const lines = formatTasks(state, { all, owner });
