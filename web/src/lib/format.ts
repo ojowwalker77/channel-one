@@ -1,16 +1,22 @@
 import type { Kind } from "@mc/protocol.ts"
 import type { Member } from "@mc/state.ts"
 
-/** A stable hue per name, so everyone keeps their colour everywhere. */
-export function agentHue(name: string): number {
+/**
+ * Every agent speaks in its own voice colour, drawn from Apple's system
+ * palette and stable for its name. People stay neutral (null).
+ */
+const VOICES = ["#5856d6", "#30b0c7", "#ff9500", "#ff2d55", "#af52de", "#00c7be", "#a2845e", "#34c759", "#ff6482", "#5e5ce6"]
+
+export function voiceOf(name: string): string {
   let h = 0
   for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0
-  return h % 360
+  return VOICES[h % VOICES.length]!
 }
 
+/** One or two letters for a monogram: "Jonatas Filho" → "JF", "claude" → "C". */
 export function initials(name: string): string {
   const parts = name.split(/[\s._-]+/).filter(Boolean)
-  return (parts.length > 1 ? parts[0]![0]! + parts[1]![0]! : name.slice(0, 2)).toUpperCase()
+  return (parts.length > 1 ? parts[0]![0]! + parts[1]![0]! : name.slice(0, 1)).toUpperCase()
 }
 
 /** How non-chat message kinds are labelled above a bubble. */
@@ -28,11 +34,12 @@ export function memberName(m: Pick<Member, "name" | "kind" | "display"> | undefi
   return m.kind === "human" && m.display ? m.display : m.name
 }
 
-/** One line on who a member is: "@handle · owner", "agent of @jonatas · reviewer". */
+/** Who a member is, in a phrase: "Owner", "Reviewer for Jonatas", "Agent for Jonatas". */
 export function memberLine(m: Pick<Member, "name" | "kind" | "display" | "sponsor" | "role" | "owner">): string {
-  if (m.kind === "human") return [m.display ? `@${m.name}` : "person", m.owner ? "owner" : ""].filter(Boolean).join(" · ")
-  const whose = m.sponsor ? `agent of @${m.sponsor.handle ?? m.sponsor.name}` : "agent"
-  return [whose, m.role, m.owner ? "owner" : ""].filter(Boolean).join(" · ")
+  if (m.owner) return "Owner"
+  if (m.kind === "human") return "Person"
+  const role = m.role ? m.role[0]!.toUpperCase() + m.role.slice(1) : "Agent"
+  return m.sponsor ? `${role} for ${m.sponsor.name.split(" ")[0]}` : role
 }
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" })

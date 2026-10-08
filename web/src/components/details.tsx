@@ -1,11 +1,13 @@
-import { ChevronRightIcon, CopyIcon, LockIcon, XIcon } from "lucide-react"
+import { ArrowRight01Icon, Cancel01Icon, Copy01Icon, SquareLock02Icon } from "@hugeicons/core-free-icons"
 import { useState } from "react"
 
 import type { JoinRequest, Member as RosterMember } from "@mc/membership.ts"
 import type { ChannelState } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
 import { formatAgo, memberLine, memberName } from "@/lib/format"
-import { Alert, Avatar, AvatarStack, Button, IconButton, Row, Section, errorText, toast } from "./kit"
+import { voiceFor } from "./bubble"
+import { Icon } from "./icon"
+import { Alert, Avatar, Button, IconButton, Row, Section, errorText, toast } from "./kit"
 
 export type Filter = { kind: "from"; name: string } | { kind: "open" } | { kind: "mine" }
 
@@ -67,28 +69,28 @@ export function Details(p: Props) {
 
   return (
     <aside className="animate-slide-in flex h-full w-full flex-col overflow-hidden border-l border-separator bg-grouped md:w-[360px]">
-      <header className="flex h-[52px] shrink-0 items-center justify-between px-3">
+      <header className="flex h-[56px] shrink-0 items-center justify-between px-3">
         <span className="w-8" />
-        <span className="text-[15px] font-semibold">Details</span>
+        <span className="text-[14px] font-semibold">Details</span>
         <IconButton label="Close" onClick={p.onDismiss}>
-          <XIcon />
+          <Icon icon={Cancel01Icon} size={18} />
         </IconButton>
       </header>
 
       <div className="flex-1 space-y-6 overflow-y-auto px-4 pb-8">
         <div className="flex flex-col items-center gap-2 pt-2 text-center">
-          <AvatarStack names={active.filter((m) => m.name !== p.me).map((m) => memberName(m))} size={64} />
-          <h2 className="text-[20px] font-semibold">{p.title}</h2>
+          <Avatar name={p.title} size={72} />
+          <h2 className="mt-1 text-[20px] leading-tight font-semibold tracking-[-0.02em]">{p.title}</h2>
           <p className="flex items-center gap-1 text-[12px] text-label-2">
-            <LockIcon className="size-3" />
-            End-to-end encrypted · {active.length} {active.length === 1 ? "member" : "members"}
+            <Icon icon={SquareLock02Icon} size={13} />
+            End-to-end encrypted
           </p>
         </div>
 
         {needsSignIn && (
           <Section footer="Your owner key alone can’t approve, remove or close. That’s by design.">
             <Row>
-              <span className="flex-1 text-[15px]">Sign in to manage this channel</span>
+              <span className="flex-1 text-[14px]">Sign in to manage this channel</span>
               <Button size="sm" onClick={auth.signIn}>
                 Sign in
               </Button>
@@ -105,24 +107,24 @@ export function Details(p: Props) {
               return (
                 <div key={r.id} className="grid gap-2 px-4 py-3">
                   <div className="flex items-center gap-3">
-                    <Avatar name={r.name} size={36} />
+                    <Avatar name={r.name} voice={r.kind === "human" ? null : voiceFor(r.name, undefined)} size={36} />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-[15px] font-medium">
+                      <p className="truncate text-[14px] font-medium">
                         {r.name}
-                        {r.role && <span className="font-normal text-label-2"> · {r.role}</span>}
+                        {r.role && <span className="font-normal text-label-2">, {r.role}</span>}
                       </p>
                       <p className="text-[12px] leading-snug text-label-2">
                         {r.kind === "human"
-                          ? `Person · signed in as ${r.sponsoredBy?.name ?? "?"}`
+                          ? `Signed in as ${r.sponsoredBy?.name ?? "someone"}`
                           : r.sponsoredBy
-                            ? `Agent of ${r.sponsoredBy.name}${supervisor ? `, who joins too as @${supervisor.name}` : ""}`
+                            ? `Agent for ${r.sponsoredBy.name}${supervisor ? `, who joins with it as @${supervisor.name}` : ""}`
                             : signInRelay
-                              ? "Agent · waiting for its own human to approve it"
-                              : "Agent"}{" "}
-                        · {formatAgo(r.ts, p.now)}
+                              ? "Agent, waiting for its own person to vouch for it"
+                              : "Agent"}
+                        , {formatAgo(r.ts, p.now)}
                       </p>
                     </div>
-                    <code className="rounded-md bg-fill-2 px-1.5 py-0.5 font-mono text-[13px] font-semibold tracking-wider">{r.code}</code>
+                    <span className="rounded-md bg-fill-2 px-2 py-0.5 text-[13px] font-semibold tracking-[0.06em] tabular-nums">{r.code}</span>
                   </div>
                   <div className="flex gap-2 pl-12">
                     <Button size="sm" variant="secondary" className="flex-1" onClick={() => run(() => p.onDeny(r), `Declined ${r.name}`)}>
@@ -141,14 +143,14 @@ export function Details(p: Props) {
         <Section title="Members">
           {active.map((m) => (
             <div key={m.pk} className="group flex min-h-12 items-center gap-3 px-4 py-2">
-              <Avatar name={memberName(m)} size={32} online={p.online.has(m.name)} />
+              <Avatar name={memberName(m)} voice={voiceFor(m.name, m)} size={34} online={p.online.has(m.name)} />
               <button type="button" className="min-w-0 flex-1 text-left" onClick={() => p.onFilter({ kind: "from", name: m.name })} title="Show only their messages">
-                <p className="truncate text-[15px]">
+                <p className="truncate text-[14px] font-medium">
                   {memberName(m)}
-                  {m.name === p.me && <span className="text-label-2"> (you)</span>}
+                  {m.name === p.me && <span className="font-normal text-label-2"> (you)</span>}
                 </p>
-                <p className="truncate text-[12px] text-label-2">
-                  {memberLine(m)} · key {m.pk.slice(0, 8)}
+                <p className="truncate text-[12px] text-label-2" title={`Key ${m.pk.slice(0, 16)}`}>
+                  {memberLine(m)}
                 </p>
               </button>
               {p.isOwner && !m.owner && (
@@ -163,23 +165,23 @@ export function Details(p: Props) {
 
         <Section>
           <Row onClick={() => p.onFilter({ kind: "open" })}>
-            <span className="flex-1 text-[15px]">Open questions</span>
-            <span className="text-[15px] text-label-2">{p.state.openAsks.length}</span>
-            <ChevronRightIcon className="size-4 text-label-3" />
+            <span className="flex-1 text-[14px]">Open questions</span>
+            <span className="text-[14px] text-label-2 tabular-nums">{p.state.openAsks.length}</span>
+            <Icon icon={ArrowRight01Icon} size={16} className="text-label-3" />
           </Row>
           <Row onClick={() => p.onFilter({ kind: "mine" })}>
-            <span className="flex-1 text-[15px]">Messages to you</span>
-            <span className="text-[15px] text-label-2">{p.mentions}</span>
-            <ChevronRightIcon className="size-4 text-label-3" />
+            <span className="flex-1 text-[14px]">Messages to you</span>
+            <span className="text-[14px] text-label-2 tabular-nums">{p.mentions}</span>
+            <Icon icon={ArrowRight01Icon} size={16} className="text-label-3" />
           </Row>
         </Section>
 
         {p.isOwner && (
           <Section title="Invite an agent" footer="It installs channel-one and asks to join. Its request shows up here with a code to check.">
             <div className="flex items-start gap-2 px-4 py-3">
-              <code className="min-w-0 flex-1 font-mono text-[12px] leading-relaxed break-all text-label-2">{joinCommand}</code>
+              <code className="min-w-0 flex-1 font-mono text-[11.5px] leading-relaxed break-all text-label-2">{joinCommand}</code>
               <IconButton label="Copy" tone="blue" onClick={() => navigator.clipboard.writeText(joinCommand).then(() => toast("Copied. Replace <name> with the agent’s name"))}>
-                <CopyIcon />
+                <Icon icon={Copy01Icon} size={17} />
               </IconButton>
             </div>
           </Section>
@@ -193,10 +195,7 @@ export function Details(p: Props) {
                   <code className="min-w-0 flex-1 truncate font-mono text-[13px]">{c.path}</code>
                   <span className="shrink-0 text-[12px] text-label-2">{minutesLeft(c.expires, p.now)}</span>
                 </div>
-                <p className="truncate text-[12px] text-label-2">
-                  {c.owner}
-                  {c.note ? ` · ${c.note}` : ""}
-                </p>
+                <p className="truncate text-[12px] text-label-2">{c.note ? `${c.owner}: ${c.note}` : c.owner}</p>
               </div>
             ))}
           </Section>
@@ -222,12 +221,12 @@ export function Details(p: Props) {
         <Section
           footer={
             p.isOwner
-              ? "Deletes every message, member and key at the relay. Members’ copies are wiped when they next connect."
+              ? "Deletes every message, member and key on the relay. Everyone’s copy is wiped the next time they connect."
               : "You lose access at once. The owner rotates the key so you can’t read anything newer."
           }
         >
           <Row onClick={() => setConfirm({ kind: p.isOwner ? "close" : "leave" })}>
-            <span className="flex-1 text-[15px] text-red">{p.isOwner ? "Close Channel" : "Leave Channel"}</span>
+            <span className="flex-1 text-[14px] text-red">{p.isOwner ? "Close Channel" : "Leave Channel"}</span>
           </Row>
         </Section>
       </div>
@@ -241,7 +240,7 @@ export function Details(p: Props) {
             <>
               {confirm.req.sponsoredBy && confirm.req.kind !== "human" ? <>Agent of {confirm.req.sponsoredBy.name}. </> : null}
               Check that it shows exactly this code.
-              <span className="mt-3 block font-mono text-[28px] font-semibold tracking-widest text-label">{confirm.req.code}</span>
+              <span className="mt-3 block text-[30px] font-semibold tracking-[0.06em] text-label tabular-nums">{confirm.req.code}</span>
             </>
           )
         }

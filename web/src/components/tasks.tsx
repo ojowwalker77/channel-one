@@ -1,4 +1,4 @@
-import { CheckIcon, XIcon } from "lucide-react"
+import { Cancel01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
 import { useState } from "react"
 
 import { describeEvent } from "@mc/format.ts"
@@ -6,14 +6,15 @@ import type { Message, TaskState } from "@mc/protocol.ts"
 import { taskId, waitingOn, type ChannelState, type Task } from "@mc/state.ts"
 import { formatAgo, formatFull } from "@/lib/format"
 import { cx } from "@/lib/utils"
+import { Icon } from "./icon"
 import { IconButton, Modal } from "./kit"
 import { Markdown } from "./markdown"
 
 const STATES: Record<TaskState, { label: string; color: string }> = {
-  doing: { label: "In Progress", color: "var(--blue)" },
+  doing: { label: "In progress", color: "var(--blue)" },
   blocked: { label: "Blocked", color: "var(--red)" },
-  review: { label: "In Review", color: "var(--orange)" },
-  todo: { label: "To Do", color: "var(--label-3)" },
+  review: { label: "In review", color: "var(--orange)" },
+  todo: { label: "To do", color: "var(--label-3)" },
   done: { label: "Done", color: "var(--green)" },
 }
 const ORDER: TaskState[] = ["doing", "blocked", "review", "todo", "done"]
@@ -24,7 +25,7 @@ function Ring({ state }: { state: TaskState }) {
   if (state === "done") {
     return (
       <span className="flex size-[22px] shrink-0 items-center justify-center rounded-full" style={{ background: color }}>
-        <CheckIcon className="size-3.5 text-white" strokeWidth={3} />
+        <Icon icon={Tick02Icon} size={14} strokeWidth={2.6} className="text-white" />
       </span>
     )
   }
@@ -38,17 +39,18 @@ function Ring({ state }: { state: TaskState }) {
 function TaskRow({ task, state, now, onOpen }: { task: Task; state: ChannelState; now: number; onOpen: () => void }) {
   const waits = waitingOn(state, task)
   return (
-    <button type="button" onClick={onOpen} className="flex w-full items-start gap-3 rounded-lg pl-4 text-left transition hover:bg-fill-2">
-      <span className="pt-[11px]">
+    <button type="button" onClick={onOpen} className="group flex w-full items-start gap-3 rounded-[12px] pl-3 text-left transition-colors hover:bg-fill-2">
+      <span className="pt-[12px]">
         <Ring state={task.state} />
       </span>
-      <span className="min-w-0 flex-1 border-b border-separator py-2.5 pr-4">
-        <span className={cx("block text-[15px] leading-snug", task.state === "done" && "text-label-2")}>{task.title}</span>
-        <span className="mt-0.5 block truncate text-[12px] text-label-2">
-          {taskId(task.id)}
-          {task.owner ? ` · ${task.owner}` : " · unassigned"}
-          {waits.length ? ` · after ${waits.map(taskId).join(", ")}` : ""}
-          {task.notes.length ? ` · ${task.notes.length} ${task.notes.length === 1 ? "note" : "notes"}` : ""} · {formatAgo(task.updatedAt, now)}
+      <span className="min-w-0 flex-1 py-2.5 pr-3 shadow-[inset_0_-0.5px_0_var(--separator)] group-last:shadow-none">
+        <span className={cx("block text-[14.5px] leading-snug", task.state === "done" && "text-label-2")}>{task.title}</span>
+        <span className="mt-1 flex items-center gap-3 text-[12px] text-label-2">
+          <span className="tabular-nums">{taskId(task.id)}</span>
+          <span className="truncate">{task.owner ?? "Unassigned"}</span>
+          {waits.length > 0 && <span className="shrink-0 text-orange">Waits on {waits.map(taskId).join(", ")}</span>}
+          {task.notes.length > 0 && <span className="shrink-0">{task.notes.length === 1 ? "1 note" : `${task.notes.length} notes`}</span>}
+          <span className="ml-auto shrink-0">{formatAgo(task.updatedAt, now)}</span>
         </span>
       </span>
     </button>
@@ -62,7 +64,7 @@ export function Tasks({ state, now, onOpen }: { state: ChannelState; now: number
   if (!all.length) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-1 p-8 text-center">
-        <p className="text-[17px] font-semibold">No Tasks</p>
+        <p className="text-[15px] font-semibold">No tasks yet</p>
         <p className="max-w-xs text-[13px] text-label-2">When agents split up work with `mc task add`, it shows up here.</p>
       </div>
     )
@@ -78,7 +80,7 @@ export function Tasks({ state, now, onOpen }: { state: ChannelState; now: number
           return (
             <section key={s} className="mb-6">
               <div className="flex items-baseline justify-between px-4 pb-1">
-                <h3 className="text-[20px] font-bold" style={{ color: STATES[s].color === "var(--label-3)" ? "var(--label)" : STATES[s].color }}>
+                <h3 className="text-[19px] font-bold tracking-[-0.02em]" style={{ color: STATES[s].color === "var(--label-3)" ? "var(--label)" : STATES[s].color }}>
                   {STATES[s].label}
                 </h3>
                 {done ? (
@@ -119,11 +121,11 @@ export function TaskDetail({ id, state, messages, now, onClose, onOpen }: { id: 
             <div className="min-w-0 flex-1">
               <h2 className="text-[17px] leading-snug font-semibold">{task.title}</h2>
               <p className="mt-0.5 text-[12px] text-label-2">
-                {taskId(task.id)} · <span style={{ color: STATES[task.state].color === "var(--label-3)" ? undefined : STATES[task.state].color }}>{STATES[task.state].label}</span>
+                <span className="tabular-nums">{taskId(task.id)}</span>{"  "}<span style={{ color: STATES[task.state].color === "var(--label-3)" ? undefined : STATES[task.state].color }}>{STATES[task.state].label}</span>
               </p>
             </div>
             <IconButton label="Close" onClick={onClose}>
-              <XIcon />
+              <Icon icon={Cancel01Icon} size={18} />
             </IconButton>
           </header>
 
@@ -176,7 +178,7 @@ export function TaskDetail({ id, state, messages, now, onClose, onOpen }: { id: 
         </div>
       ) : (
         <div className="p-6 text-center">
-          <p className="text-[17px] font-semibold">Task not found</p>
+          <p className="text-[15px] font-semibold">This task is gone</p>
           <p className="mt-1 text-[13px] text-label-2">It may have been pruned from the channel history.</p>
         </div>
       )}

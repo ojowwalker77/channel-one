@@ -1,10 +1,11 @@
-import { ArrowUpIcon, CheckIcon, PlusIcon, XIcon } from "lucide-react"
+import { Add01Icon, ArrowUp02Icon, Cancel01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import type { SendOptions } from "@mc/client.ts"
 import { MAX_IMAGE_BYTES, type Kind, type Message } from "@mc/protocol.ts"
 import { excerpt, KIND_LABEL } from "@/lib/format"
 import { cx } from "@/lib/utils"
+import { Icon } from "./icon"
 import { Avatar, IconButton, errorText, toast } from "./kit"
 
 const KINDS: Kind[] = ["ask", "blocking", "status", "done"]
@@ -14,6 +15,7 @@ const LEADING = /^(?:\s*@([\p{L}\p{N}_.-]+)[\s,]*)+/u
 interface Person {
   name: string
   label: string
+  voice: string | null
 }
 
 interface Props {
@@ -128,7 +130,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
   }
 
   return (
-    <div className="relative shrink-0 px-3 pt-1.5 pb-3 md:px-5">
+    <div className="relative mx-auto w-full max-w-[800px] shrink-0 px-3 pt-2 pb-4 md:px-6">
       <input ref={picker} type="file" accept="image/*" multiple className="hidden" onChange={(e) => (pick(e.target.files), (e.target.value = ""))} />
 
       {matches.length > 0 && (
@@ -140,7 +142,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
               onMouseDown={(e) => (e.preventDefault(), complete(p))}
               className={cx("flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[14px]", i === mention!.index ? "bg-blue text-white" : "hover:bg-fill-2")}
             >
-              <Avatar name={p.label} size={22} />
+              <Avatar name={p.label} voice={i === mention!.index ? null : p.voice} size={22} />
               <span className="truncate font-medium">{p.label}</span>
               {p.label !== p.name && <span className={cx("truncate text-[12px]", i === mention!.index ? "text-white/75" : "text-label-2")}>@{p.name}</span>}
             </button>
@@ -165,7 +167,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
                 onClick={() => (setKind(kind === k ? "msg" : k), setMenu(false), area.current?.focus())}
               >
                 {KIND_LABEL[k]!.label}
-                {kind === k && <CheckIcon className="size-4 text-blue" />}
+                {kind === k && <Icon icon={Tick02Icon} size={16} className="text-blue" />}
               </button>
             ))}
           </div>
@@ -177,18 +179,18 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
           <span className="min-w-0 truncate">
             Replying to <span className="font-medium text-label">{nameOf(replyTo.from)}</span> · {excerpt(replyTo.body, 80)}
           </span>
-          <IconButton label="Cancel reply" className="size-5 [&_svg]:size-3.5" onClick={onClearReply}>
-            <XIcon />
+          <IconButton label="Cancel reply" className="size-5" onClick={onClearReply}>
+            <Icon icon={Cancel01Icon} size={13} />
           </IconButton>
         </div>
       )}
 
       <div className="flex items-end gap-2">
-        <IconButton label="Photos and message types" className="mb-0.5 bg-fill-2" onClick={() => setMenu((v) => !v)} disabled={disabled}>
-          <PlusIcon />
+        <IconButton label="Photos and message types" className="mb-[3px] bg-fill-2" onClick={() => setMenu((v) => !v)} disabled={disabled}>
+          <Icon icon={Add01Icon} size={18} strokeWidth={2} />
         </IconButton>
 
-        <div className="flex min-w-0 flex-1 flex-col rounded-[20px] border border-separator bg-bg transition focus-within:border-label-3">
+        <div className="flex min-w-0 flex-1 flex-col rounded-[18px] bg-bg shadow-[inset_0_0_0_1px_var(--separator)] transition-shadow focus-within:shadow-[inset_0_0_0_1px_var(--label-3)]">
           {files.length > 0 && (
             <div className="flex gap-2 overflow-x-auto px-2 pt-2">
               {files.map((f, i) => (
@@ -200,7 +202,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
                     onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
                     className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full bg-label-2 text-bg"
                   >
-                    <XIcon className="size-3" />
+                    <Icon icon={Cancel01Icon} size={11} strokeWidth={2.2} />
                   </button>
                 </span>
               ))}
@@ -215,7 +217,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
                 className={cx("mb-[7px] flex shrink-0 items-center gap-0.5 rounded-full bg-fill-2 px-2 py-0.5 text-[12px] font-medium", KIND_LABEL[kind]?.tone)}
               >
                 {KIND_LABEL[kind]?.label}
-                <XIcon className="size-3" />
+                <Icon icon={Cancel01Icon} size={11} strokeWidth={2.2} />
               </button>
             )}
             <textarea
@@ -249,7 +251,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
                 }
                 if (e.key === "Escape" && replyTo) onClearReply()
               }}
-              className="max-h-[180px] min-h-[34px] flex-1 resize-none bg-transparent py-[7px] text-[15px] leading-5 outline-none placeholder:text-label-3"
+              className="max-h-[180px] min-h-[34px] flex-1 resize-none bg-transparent py-[7px] text-[14.5px] leading-5 outline-none placeholder:text-label-3 focus-visible:outline-none"
             />
             <button
               type="button"
@@ -257,11 +259,11 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
               disabled={!canSend}
               onClick={() => void submit()}
               className={cx(
-                "m-[3px] flex size-7 shrink-0 items-center justify-center rounded-full transition",
-                canSend ? "bg-blue text-white hover:brightness-110" : "bg-fill-2 text-label-3"
+                "m-[4px] flex size-[26px] shrink-0 items-center justify-center rounded-full bg-blue text-white transition-[opacity,transform] duration-150 hover:brightness-[1.08]",
+                canSend ? "scale-100 opacity-100" : "pointer-events-none scale-75 opacity-0"
               )}
             >
-              <ArrowUpIcon className="size-4" strokeWidth={2.75} />
+              <Icon icon={ArrowUp02Icon} size={16} strokeWidth={2.4} />
             </button>
           </div>
         </div>

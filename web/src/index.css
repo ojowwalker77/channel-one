@@ -1,26 +1,32 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter/opsz.css";
 
 /*
- * Apple-style system colors (light / dark follow the OS). Everything in the
- * app uses these few tokens: background, labels, separators, fills, blue.
+ * channel-one: Apple's restraint, set in Inter, kept quiet so the agents carry the colour.
+ * Chrome is greys and one blue; every agent speaks in its own voice colour
+ * (see voiceOf in lib/format.ts), tinted into its bubbles, name and avatar.
  */
 :root {
   --bg: #ffffff;
   --bg-grouped: #f2f2f7;
   --bg-elevated: #ffffff;
-  --sidebar: rgba(246, 246, 248, 0.82);
-  --label: #000000;
-  --label-2: rgba(60, 60, 67, 0.6);
-  --label-3: rgba(60, 60, 67, 0.3);
-  --separator: rgba(60, 60, 67, 0.18);
+  --sidebar: #f5f5f7;
+  --label: #1d1d1f;
+  --label-2: #6e6e73;
+  --label-3: #aeaeb2;
+  --separator: rgba(60, 60, 67, 0.14);
   --fill: #e9e9eb;
-  --fill-2: rgba(118, 118, 128, 0.12);
+  --fill-2: rgba(118, 118, 128, 0.1);
   --blue: #007aff;
   --green: #34c759;
   --red: #ff3b30;
   --orange: #ff9500;
-  --selection: rgba(0, 122, 255, 0.12);
+  --selection: rgba(0, 122, 255, 0.14);
   --segment: #ffffff;
+  /* How strongly a voice colour tints its bubble, and how much ink its name keeps. */
+  --tint: 13%;
+  --tint-base: #ffffff;
+  --ink: 78%;
   color-scheme: light;
 }
 
@@ -29,25 +35,28 @@
     --bg: #000000;
     --bg-grouped: #000000;
     --bg-elevated: #1c1c1e;
-    --sidebar: rgba(28, 28, 30, 0.82);
-    --label: #ffffff;
-    --label-2: rgba(235, 235, 245, 0.6);
-    --label-3: rgba(235, 235, 245, 0.3);
-    --separator: rgba(84, 84, 88, 0.65);
+    --sidebar: #1c1c1e;
+    --label: #f5f5f7;
+    --label-2: #98989d;
+    --label-3: #5a5a5e;
+    --separator: rgba(84, 84, 88, 0.6);
     --fill: #26252a;
     --fill-2: rgba(118, 118, 128, 0.24);
     --blue: #0a84ff;
     --green: #30d158;
     --red: #ff453a;
     --orange: #ff9f0a;
-    --selection: rgba(10, 132, 255, 0.22);
+    --selection: rgba(10, 132, 255, 0.24);
     --segment: #636366;
+    --tint: 19%;
+    --tint-base: #2a2a2d;
+    --ink: 100%;
     color-scheme: dark;
   }
 }
 
 @theme inline {
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", "Inter", system-ui, sans-serif;
+  --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
   --color-bg: var(--bg);
   --color-grouped: var(--bg-grouped);
@@ -78,10 +87,14 @@ body {
   background: var(--bg);
   color: var(--label);
   font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.35;
+  font-size: 14px;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
-  letter-spacing: -0.01em;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* Inter's open digits and straight-sided glyphs read calmer at small sizes. */
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "calt";
+  letter-spacing: -0.006em;
 }
 
 ::selection {
@@ -92,47 +105,27 @@ button {
   cursor: default;
 }
 
-/* Thin, unobtrusive scrollbars, like macOS overlay scrollbars. */
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--label-3) transparent;
 }
 
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.98);
-  }
+/* Voice colours: set --voice on an element, then tint or ink with it. */
+.voice-tint {
+  background: color-mix(in srgb, var(--voice) var(--tint), var(--tint-base));
 }
-
-.animate-rise {
-  animation: rise 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-@keyframes slide-in {
-  from {
-    transform: translateX(16px);
-    opacity: 0;
-  }
-}
-
-.animate-slide-in {
-  animation: slide-in 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-@keyframes flash {
-  from {
-    background: var(--selection);
-  }
-}
-
-.animate-flash {
-  animation: flash 1.4s ease-out;
+.voice-ink {
+  color: color-mix(in srgb, var(--voice) var(--ink), var(--label));
 }
 
 /*
- * Message bubble tails, the Messages way: a curve in the bubble's colour,
- * then a mask in the page colour that carves its inside edge.
+ * Bubble tails, the Messages way: a curve in the bubble's colour, then a
+ * small mask in the page colour that carves its inside edge.
  */
 .tail-me::before,
 .tail-me::after,
@@ -141,29 +134,70 @@ button {
   content: "";
   position: absolute;
   bottom: 0;
-  height: 18px;
+  height: 17px;
 }
 .tail-me::before {
-  right: -7px;
-  width: 20px;
-  background: var(--blue);
-  border-bottom-left-radius: 16px 14px;
+  right: -6px;
+  width: 18px;
+  background: var(--bubble);
+  border-bottom-left-radius: 15px 13px;
 }
 .tail-me::after {
   right: -10px;
   width: 10px;
+  height: 19px;
   background: var(--bg);
-  border-bottom-left-radius: 10px;
+  border-bottom-left-radius: 9px;
 }
 .tail-them::before {
-  left: -7px;
-  width: 20px;
-  background: var(--fill);
-  border-bottom-right-radius: 16px 14px;
+  left: -6px;
+  width: 18px;
+  background: var(--bubble);
+  border-bottom-right-radius: 15px 13px;
 }
 .tail-them::after {
   left: -10px;
   width: 10px;
+  height: 19px;
   background: var(--bg);
-  border-bottom-right-radius: 10px;
+  border-bottom-right-radius: 9px;
+}
+
+/* Motion only answers an action: a dialog opening, a panel sliding in, a jump landing. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+}
+.animate-rise {
+  animation: rise 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes slide-in {
+  from {
+    transform: translateX(12px);
+    opacity: 0;
+  }
+}
+.animate-slide-in {
+  animation: slide-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes flash {
+  from {
+    background: var(--selection);
+  }
+}
+.animate-flash {
+  animation: flash 1.4s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }

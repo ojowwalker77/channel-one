@@ -1,4 +1,4 @@
-import { CheckIcon, LockIcon } from "lucide-react"
+import { SquareLock02Icon, Tick02Icon } from "@hugeicons/core-free-icons"
 import { useEffect, useState, type ReactNode } from "react"
 
 import { Channel } from "@mc/client.ts"
@@ -18,6 +18,7 @@ import {
   type PendingJoin,
   type StoredMember,
 } from "@/lib/channel"
+import { Icon } from "./icon"
 import { AppMark, Button, Modal, Spinner, TextField, errorText } from "./kit"
 import { Conversation } from "./conversation"
 
@@ -27,7 +28,7 @@ function Stage({ children }: { children: ReactNode }) {
 }
 
 function VerifyCode({ code }: { code: string }) {
-  return <div className="font-mono text-[40px] font-semibold tracking-[0.15em] tabular-nums">{code}</div>
+  return <div className="text-[44px] leading-none font-semibold tracking-[0.04em] tabular-nums">{code}</div>
 }
 
 // ---------- nothing selected ----------
@@ -36,27 +37,27 @@ export function Welcome({ onNew, onJoin }: { onNew: () => void; onJoin: () => vo
   const auth = useAuth()
   return (
     <Stage>
-      <AppMark size={72} />
-      <div className="grid gap-1.5">
-        <h1 className="text-[28px] font-bold tracking-tight">channel-one</h1>
-        <p className="max-w-sm text-[15px] text-label-2">Agents on any machine, talking in real time. You approve every member, and can delete it all without a trace.</p>
+      <AppMark size={64} />
+      <div className="mt-2 grid gap-2">
+        <h1 className="text-[30px] leading-tight font-bold tracking-[-0.03em]">channel-one</h1>
+        <p className="max-w-[340px] text-[15px] leading-snug text-label-2">A private room where your agents talk to each other in real time, while you watch and step in.</p>
       </div>
-      <div className="mt-2 flex flex-col items-center gap-2">
+      <div className="mt-4 flex flex-col items-center gap-1.5">
         {auth.status === "signed-out" ? (
-          <Button size="lg" onClick={auth.signIn} className="min-w-56">
-            Sign In
+          <Button size="lg" onClick={auth.signIn} className="min-w-[220px]">
+            Sign in
           </Button>
         ) : (
-          <Button size="lg" onClick={onNew} className="min-w-56" disabled={auth.status === "loading"}>
-            New Channel
+          <Button size="lg" onClick={onNew} className="min-w-[220px]" disabled={auth.status === "loading"}>
+            New channel
           </Button>
         )}
         <Button variant="plain" onClick={onJoin}>
           Join with a code
         </Button>
       </div>
-      <p className="mt-6 flex items-center gap-1.5 text-[12px] text-label-2">
-        <LockIcon className="size-3" />
+      <p className="mt-10 flex items-center gap-1.5 text-[12px] text-label-2">
+        <Icon icon={SquareLock02Icon} size={13} />
         End-to-end encrypted. The relay never sees names, messages or keys.
       </p>
     </Stage>
@@ -95,7 +96,7 @@ export function NewChannel({ open, onClose, onCreated }: { open: boolean; onClos
         }}
       >
         <div className="text-center">
-          <h2 className="text-[17px] font-semibold">New Channel</h2>
+          <h2 className="text-[15px] font-semibold">New channel</h2>
           <p className="mt-1 text-[13px] text-label-2">You own it and approve everyone who joins. Its key is made in this browser.</p>
         </div>
         {canCreate ? (
@@ -113,7 +114,7 @@ export function NewChannel({ open, onClose, onCreated }: { open: boolean; onClos
               {busy ? <Spinner className="size-4 border-white/40 border-t-white" /> : "Create"}
             </Button>
           ) : (
-            <Button onClick={auth.signIn}>Sign In</Button>
+            <Button onClick={auth.signIn}>Sign in</Button>
           )}
         </div>
       </form>
@@ -136,7 +137,7 @@ export function JoinWithCode({ open, onClose, onJoin }: { open: boolean; onClose
         }}
       >
         <div className="text-center">
-          <h2 className="text-[17px] font-semibold">Join a Channel</h2>
+          <h2 className="text-[15px] font-semibold">Join a channel</h2>
           <p className="mt-1 text-[13px] text-label-2">A join code only lets you ask. The owner approves you after checking a short code.</p>
         </div>
         <TextField autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder="mc2-…" autoComplete="off" spellCheck={false} className="font-mono text-[13px]" />
@@ -226,19 +227,19 @@ export function ChannelGate({ code, identity, onBack, onGone }: { code: string; 
       {phase.kind === "waiting" && (
         <>
           <Spinner />
-          <h2 className="text-[20px] font-semibold">Waiting for approval</h2>
+          <h2 className="text-[20px] font-semibold tracking-[-0.02em]">Waiting for the owner</h2>
           <p className="max-w-xs text-[13px] text-label-2">
             The owner will see your request as <span className="font-medium text-label">{phase.pending.identity.name}</span> with this code. Make sure it matches.
           </p>
           <VerifyCode code={phase.pending.verify} />
           <Button variant="plain" onClick={giveUp}>
-            Cancel Request
+            Cancel request
           </Button>
         </>
       )}
       {(phase.kind === "denied" || phase.kind === "error") && (
         <>
-          <h2 className="text-[20px] font-semibold">{phase.kind === "denied" ? "Request declined" : "Can’t open this channel"}</h2>
+          <h2 className="text-[20px] font-semibold">{phase.kind === "denied" ? "The owner said no" : "This channel won’t open"}</h2>
           <p className="max-w-xs text-[13px] text-label-2">{phase.kind === "denied" ? "The owner didn’t let this browser in." : phase.message}</p>
           <Button onClick={giveUp}>OK</Button>
         </>
@@ -277,25 +278,25 @@ function AskToJoin({ code, onAsked, onCancel }: { code: string; onAsked: (p: Pen
       }}
     >
       <AppMark size={56} className="mx-auto" />
-      <h2 className="text-[22px] font-bold">Ask to Join</h2>
+      <h2 className="text-[22px] font-bold tracking-[-0.02em]">Ask to join</h2>
       <p className="text-[13px] text-label-2">The channel’s owner approves every member, person or agent.</p>
       <TextField value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name in the channel" autoFocus aria-invalid={!!name && !valid} />
       <TextField value={role} onChange={(e) => setRole(e.target.value)} placeholder="Role (optional)" />
       {error && <p className="text-[13px] text-red">{error}</p>}
       {auth.status === "signed-out" ? (
         <Button size="lg" onClick={auth.signIn}>
-          Sign In to Ask
+          Sign in to ask
         </Button>
       ) : (
         <Button size="lg" type="submit" disabled={!valid || busy}>
-          {busy ? <Spinner className="size-4 border-white/40 border-t-white" /> : "Request Access"}
+          {busy ? <Spinner className="size-4 border-white/40 border-t-white" /> : "Ask to join"}
         </Button>
       )}
       <Button variant="plain" onClick={onCancel}>
         Cancel
       </Button>
       <p className="flex items-start gap-1.5 text-left text-[12px] text-label-2">
-        <LockIcon className="mt-0.5 size-3 shrink-0" />
+        <Icon icon={SquareLock02Icon} size={13} className="mt-px shrink-0" />
         Your key is made in this browser. Once you’re in, messages are decrypted here and nowhere else.
       </p>
     </form>
@@ -385,7 +386,7 @@ export function SponsorPage({ requestId, code, agent, onOpen }: { requestId: str
     <div className="flex h-svh">
       <Stage>
         <AppMark size={56} />
-        <h1 className="text-[24px] font-bold">Approve Your Agent</h1>
+        <h1 className="text-[24px] font-bold tracking-[-0.02em]">Is this your agent?</h1>
         <p className="max-w-sm text-[15px] text-label-2">
           <span className="font-medium text-label">{agent}</span> asked to join a channel. Approve it only if it’s really yours: it will act there on your behalf, and you’ll join
           too so you can watch what it does.
@@ -394,8 +395,8 @@ export function SponsorPage({ requestId, code, agent, onOpen }: { requestId: str
         {auth.status === "loading" && <Spinner />}
         {auth.status === "off" && <p className="text-[13px] text-label-2">This relay doesn’t use sign-in, so there’s nothing to approve here.</p>}
         {auth.status === "signed-out" && (
-          <Button size="lg" className="min-w-56" onClick={auth.signIn}>
-            Sign In
+          <Button size="lg" className="min-w-[220px]" onClick={auth.signIn}>
+            Sign in
           </Button>
         )}
         {auth.status === "signed-in" && (
@@ -406,8 +407,8 @@ export function SponsorPage({ requestId, code, agent, onOpen }: { requestId: str
                 <p className="mt-2 text-[13px] text-label-2">Check that your agent’s terminal shows this exact code:</p>
                 <VerifyCode code={step.verify} />
                 {step.sponsored && <p className="text-[12px] text-label-2">Someone already vouched for this agent.</p>}
-                <Button size="lg" className="mt-2 min-w-64" onClick={() => void vouch()}>
-                  It’s My Agent
+                <Button size="lg" className="mt-2 min-w-[220px]" onClick={() => void vouch()}>
+                  Yes, it’s mine
                 </Button>
               </>
             )}
@@ -420,12 +421,12 @@ export function SponsorPage({ requestId, code, agent, onOpen }: { requestId: str
             {step.kind === "done" && (
               <>
                 <span className="flex size-12 items-center justify-center rounded-full bg-green text-white">
-                  <CheckIcon className="size-6" strokeWidth={3} />
+                  <Icon icon={Tick02Icon} size={24} strokeWidth={2.6} />
                 </span>
                 <p className="text-[15px]">{agent} is in, acting on your behalf.</p>
                 {loadMember(code) && (
-                  <Button size="lg" className="min-w-56" onClick={() => onOpen(code)}>
-                    Open the Channel
+                  <Button size="lg" className="min-w-[220px]" onClick={() => onOpen(code)}>
+                    Open channel
                   </Button>
                 )}
               </>

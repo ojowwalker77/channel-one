@@ -1,4 +1,4 @@
-import { ArrowDownIcon, ChevronLeftIcon, InfoIcon, SearchIcon, XIcon } from "lucide-react"
+import { ArrowDown01Icon, ArrowLeft01Icon, Cancel01Icon, InformationCircleIcon, Search01Icon, UserAdd01Icon } from "@hugeicons/core-free-icons"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { Message } from "@mc/protocol.ts"
@@ -6,10 +6,11 @@ import { useAuth } from "@/lib/auth"
 import { channelTitle, forgetChannel, loadRecent, saveRecent, useChannel, type StoredMember } from "@/lib/channel"
 import { excerpt, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
-import { Bubble, EventLine, TimeMark } from "./bubble"
+import { Bubble, EventLine, TimeMark, voiceFor } from "./bubble"
 import { Composer } from "./composer"
 import { Details, type Filter } from "./details"
-import { AvatarStack, Button, IconButton, Segmented, Spinner, TextField } from "./kit"
+import { Icon } from "./icon"
+import { Button, Count, IconButton, Segmented, Spinner, TextField } from "./kit"
 import { TaskDetail, Tasks } from "./tasks"
 
 /** A gap this long (or a new day) gets a timestamp, like Messages. */
@@ -62,7 +63,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const nameOf = useCallback((name: string) => memberName(state.members.get(name), name), [state.members])
   const active = useMemo(() => [...state.members.values()].filter((m) => m.active), [state.members])
   const others = useMemo(() => active.filter((m) => m.name !== me), [active, me])
-  const people = useMemo(() => active.map((m) => ({ name: m.name, label: memberName(m) })), [active])
+  const people = useMemo(() => active.map((m) => ({ name: m.name, label: memberName(m), voice: voiceFor(m.name, m) })), [active])
   const title = channelTitle(member, others.length ? { from: "", text: "", ts: 0, people: others.map((m) => memberName(m)) } : loadRecent(member.code))
   const forMe = useMemo(() => messages.filter((m) => m.from !== me && m.to?.includes(me)), [messages, me])
   useTitleBadge(messages.filter((m) => m.from !== me).length)
@@ -187,63 +188,54 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       ? connection === "connecting"
         ? "Connecting…"
         : "Reconnecting…"
-      : `${active.length} ${active.length === 1 ? "member" : "members"}${online.size ? ` · ${online.size} online` : ""}`
+      : online.size
+        ? `${online.size} of ${active.length} online`
+        : `${active.length} ${active.length === 1 ? "member" : "members"}`
+  const tabs = [
+    { value: "chat" as const, label: "Chat" },
+    { value: "tasks" as const, label: <>Tasks<Count n={openTasks} className={tab === "tasks" ? "bg-blue/12 text-blue" : ""} /></> },
+  ]
 
   return (
     <div className="flex h-full min-w-0 flex-1">
       <div className={cx("relative flex min-w-0 flex-1 flex-col", details && "hidden md:flex")}>
-        <header className="z-10 flex h-[52px] shrink-0 items-center gap-2 border-b border-separator bg-bg/85 px-2 backdrop-blur-xl md:px-4">
+        <header className="z-10 flex h-[56px] shrink-0 items-center gap-1.5 bg-bg/80 px-2 shadow-[inset_0_-0.5px_0_var(--separator)] backdrop-blur-2xl backdrop-saturate-150 md:px-4">
           <IconButton label="Channels" tone="blue" className="md:hidden" onClick={onBack}>
-            <ChevronLeftIcon />
+            <Icon icon={ArrowLeft01Icon} size={22} />
           </IconButton>
-          <button type="button" className="flex min-w-0 flex-1 items-center gap-2.5 text-left" onClick={() => setDetails((d) => !d)}>
-            <AvatarStack names={others.map((m) => memberName(m))} size={32} />
-            <span className="min-w-0">
-              <span className="block truncate text-[15px] leading-tight font-semibold">{title}</span>
-              <span className={cx("block truncate text-[12px] leading-tight", connection === "live" ? "text-label-2" : "text-orange")}>{subtitle}</span>
+          <button type="button" className="min-w-0 flex-1 rounded-lg px-1 text-left" onClick={() => setDetails((d) => !d)}>
+            <span className="block truncate text-[15px] leading-tight font-semibold tracking-[-0.015em]">{title}</span>
+            <span className={cx("mt-0.5 flex items-center gap-1.5 truncate text-[12px] leading-tight", connection === "live" ? "text-label-2" : "text-orange")}>
+              {connection === "live" && online.size > 0 && <span className="size-1.5 rounded-full bg-green" />}
+              {subtitle}
             </span>
           </button>
-          <div className="hidden sm:block">
-            <Segmented
-              value={tab}
-              onChange={setTab}
-              options={[
-                { value: "chat", label: "Chat" },
-                { value: "tasks", label: openTasks ? `Tasks ${openTasks}` : "Tasks" },
-              ]}
-            />
+          <div className="mr-1 hidden sm:block">
+            <Segmented value={tab} onChange={setTab} options={tabs} />
           </div>
           {tab === "chat" && (
-            <IconButton label="Search" onClick={() => setSearch((s) => (s === null ? "" : null))}>
-              <SearchIcon />
+            <IconButton label="Search" tone={search !== null ? "blue" : "gray"} onClick={() => setSearch((s) => (s === null ? "" : null))}>
+              <Icon icon={Search01Icon} size={19} />
             </IconButton>
           )}
           <IconButton label="Details" tone={details ? "blue" : "gray"} onClick={() => setDetails((d) => !d)}>
-            <InfoIcon />
-            {isOwner && requests.length > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-red text-[10px] font-semibold text-white">{requests.length}</span>
-            )}
+            <Icon icon={InformationCircleIcon} size={20} />
+            {isOwner && requests.length > 0 && <span className="absolute top-1 right-1 size-2 rounded-full bg-red ring-2 ring-[var(--bg)]" />}
           </IconButton>
         </header>
 
-        <div className="flex justify-center border-b border-separator py-1.5 sm:hidden">
-          <Segmented
-            value={tab}
-            onChange={setTab}
-            options={[
-              { value: "chat", label: "Chat" },
-              { value: "tasks", label: openTasks ? `Tasks ${openTasks}` : "Tasks" },
-            ]}
-          />
+        <div className="flex justify-center py-2 shadow-[inset_0_-0.5px_0_var(--separator)] sm:hidden">
+          <Segmented value={tab} onChange={setTab} options={tabs} />
         </div>
 
-        {isOwner && requests.length > 0 && !details && (
+        {isOwner && requests.length > 0 && !details && tab === "chat" && (
           <button
             type="button"
             onClick={() => setDetails(true)}
-            className="animate-rise mx-auto mt-2 rounded-full bg-blue px-3.5 py-1 text-[13px] font-medium text-white shadow-sm hover:brightness-110"
+            className="animate-rise absolute top-[68px] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-elevated/90 py-1.5 pr-3.5 pl-3 text-[13px] font-medium whitespace-nowrap text-blue shadow-[0_8px_30px_-8px_rgba(0,0,0,0.22),0_0_0_0.5px_rgba(0,0,0,0.08)] backdrop-blur-xl transition-colors hover:bg-elevated"
           >
-            {requests.length === 1 ? `${requests[0]!.name} wants to join` : `${requests.length} requests to join`}
+            <Icon icon={UserAdd01Icon} size={15} strokeWidth={1.8} />
+            {requests.length === 1 ? `${requests[0]!.name} is asking to join` : `${requests.length} people are asking to join`}
           </button>
         )}
 
@@ -252,13 +244,13 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         ) : (
           <>
             {(search !== null || filterLabel) && (
-              <div className="flex shrink-0 items-center gap-2 px-3 pt-2 md:px-5">
+              <div className="mx-auto flex w-full max-w-[800px] shrink-0 items-center gap-2 px-3 pt-3 md:px-6">
                 {search !== null && (
                   <TextField
                     autoFocus
                     value={search}
-                    placeholder="Search"
-                    className="h-8 text-[14px]"
+                    placeholder="Search messages"
+                    className="h-9"
                     onChange={(e) => setSearch(e.target.value)}
                     onKeyDown={(e) => e.key === "Escape" && setSearch(null)}
                   />
@@ -267,10 +259,10 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
                   <button
                     type="button"
                     onClick={() => setFilter(null)}
-                    className="flex shrink-0 items-center gap-1 rounded-full bg-blue/12 px-3 py-1 text-[13px] font-medium text-blue hover:bg-blue/20"
+                    className="flex h-8 shrink-0 items-center gap-1 rounded-full bg-blue/10 pr-2.5 pl-3 text-[13px] font-medium text-blue transition-colors hover:bg-blue/15"
                   >
                     {filterLabel}
-                    <XIcon className="size-3.5" />
+                    <Icon icon={Cancel01Icon} size={14} strokeWidth={2} />
                   </button>
                 )}
               </div>
@@ -278,7 +270,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
 
             <div
               ref={scroller}
-              className="flex-1 overflow-y-auto pb-3"
+              className="flex-1 overflow-y-auto"
               onScroll={(e) => {
                 const el = e.currentTarget
                 atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
@@ -291,13 +283,13 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
                 </Centered>
               ) : visible.length === 0 ? (
                 <Centered>
-                  <p className="text-[15px] font-semibold">{search ? "No Results" : filter ? "Nothing here" : "No Messages Yet"}</p>
+                  <p className="text-[15px] font-semibold">{search ? "No results" : filter ? "Nothing here yet" : "No messages yet"}</p>
                   <p className="max-w-xs text-[13px] text-label-2">
-                    {search ? `Nothing mentions “${search}”.` : filter ? "Nothing matches this filter." : "Messages from agents appear here the moment they’re sent."}
+                    {search ? `No message mentions “${search}”.` : filter ? "Clear the filter to see everything." : "Invite an agent from Details. Its messages land here the moment they’re sent."}
                   </p>
                 </Centered>
               ) : (
-                rows
+                <div className="mx-auto w-full max-w-[800px] px-3 pb-4 md:px-6">{rows}</div>
               )}
             </div>
 
@@ -305,10 +297,10 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
               <button
                 type="button"
                 onClick={toBottom}
-                className="animate-rise absolute bottom-20 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-elevated px-3 py-1.5 text-[13px] font-medium text-blue shadow-[0_6px_24px_rgba(0,0,0,0.15)] ring-1 ring-separator"
+                className="animate-rise absolute bottom-24 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-elevated py-1.5 pr-3.5 pl-2.5 text-[13px] font-medium text-blue shadow-[0_8px_30px_-6px_rgba(0,0,0,0.25),0_0_0_0.5px_rgba(0,0,0,0.08)]"
               >
-                <ArrowDownIcon className="size-3.5" />
-                {behind} new
+                <Icon icon={ArrowDown01Icon} size={16} strokeWidth={2} />
+                {behind} new {behind === 1 ? "message" : "messages"}
               </button>
             )}
 
