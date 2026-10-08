@@ -329,6 +329,12 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   );
 
   await server.connect(new StdioServerTransport());
+  // An MCP server lives exactly as long as its client: exit when stdin closes,
+  // so a crashed or killed agent never leaves an orphaned listener behind.
+  const bye = () => process.exit(0);
+  process.stdin.on("end", bye);
+  process.stdin.on("close", bye);
+  server.server.onclose = bye;
 
   if (opts.push) {
     await s.listen(

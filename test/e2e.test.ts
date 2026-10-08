@@ -338,6 +338,17 @@ describe("images and cross-channel tasks through the CLI", () => {
 });
 
 describe("MCP server", () => {
+  test("exits when its client goes away", async () => {
+    const h = home("mcp-exit");
+    await ok(h, "create", "e", "--as", "solo");
+    const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, MC_HOME: h, MC_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    await Bun.sleep(500);
+    p.stdin.end();
+    const code = await Promise.race([p.exited, Bun.sleep(5000).then(() => "still running")]);
+    if (code === "still running") p.kill();
+    expect(code).toBe(0);
+  });
+
   test("exposes the channel as tools", async () => {
     const h = home("mcp");
     const other = home("mcp-other");
@@ -345,57 +356,60 @@ describe("MCP server", () => {
     await joinVia(h, other, code, "m", "agent-b");
 
     const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, MC_HOME: h, MC_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    const reader = p.stdout.getReader();
-    let buf = "";
-    let id = 0;
-    const rpc = async (method: string, params: object = {}) => {
-      const myId = ++id;
-      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: myId, method, params }) + "\n");
-      p.stdin.flush();
-      for (;;) {
-        const nl = buf.indexOf("\n");
-        if (nl >= 0) {
-          const line = buf.slice(0, nl);
-          buf = buf.slice(nl + 1);
-          const msg = JSON.parse(line);
-          if (msg.id === myId) return msg.result ?? msg.error;
-          continue;
+    try {
+      const reader = p.stdout.getReader();
+      let buf = "";
+      let id = 0;
+      const rpc = async (method: string, params: object = {}) => {
+        const myId = ++id;
+        p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: myId, method, params }) + "\n");
+        p.stdin.flush();
+        for (;;) {
+          const nl = buf.indexOf("\n");
+          if (nl >= 0) {
+            const line = buf.slice(0, nl);
+            buf = buf.slice(nl + 1);
+            const msg = JSON.parse(line);
+            if (msg.id === myId) return msg.result ?? msg.error;
+            continue;
+          }
+          const { value, done } = await reader.read();
+          if (done) throw new Error("mcp exited");
+          buf += new TextDecoder().decode(value);
         }
-        const { value, done } = await reader.read();
-        if (done) throw new Error("mcp exited");
-        buf += new TextDecoder().decode(value);
-      }
-    };
-    const call = async (name: string, args: object = {}) => ((await rpc("tools/call", { name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
+      };
+      const call = async (name: string, args: object = {}) => ((await rpc("tools/call", { name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
 
-    const init = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } })) as { instructions: string };
-    expect(init.instructions).toContain('You are "agent-a"');
-    p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
-    const tools = ((await rpc("tools/list")) as { tools: { name: string }[] }).tools.map((t) => t.name).sort();
-    expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "read", "release", "reply", "save", "send", "status", "task_add", "task_update", "tasks", "who"]);
+      const init = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } })) as { instructions: string };
+      expect(init.instructions).toContain('You are "agent-a"');
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+      const tools = ((await rpc("tools/list")) as { tools: { name: string }[] }).tools.map((t) => t.name).sort();
+      expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "read", "release", "reply", "save", "send", "status", "task_add", "task_update", "tasks", "who"]);
 
-    expect(await call("task_add", { title: "write docs" })).toMatch(/^added T\d+$/);
-    expect(await call("claim", { paths: ["docs/"], ttl: "10m" })).toContain("docs/  @agent-a");
-    expect(await call("status")).toContain("agent-a (you) — builder");
-    expect(await call("facts", { set: "docs.url", value: "https://example.com" })).toContain("docs.url = https://example.com");
-    expect(await ok(other, "tasks")).toContain("write docs");
+      expect(await call("task_add", { title: "write docs" })).toMatch(/^added T\d+$/);
+      expect(await call("claim", { paths: ["docs/"], ttl: "10m" })).toContain("docs/  @agent-a");
+      expect(await call("status")).toContain("agent-a (you) — builder");
+      expect(await call("facts", { set: "docs.url", value: "https://example.com" })).toContain("docs.url = https://example.com");
+      expect(await ok(other, "tasks")).toContain("write docs");
 
-    // Images round-trip: send with a file, read back pixels, save to disk.
-    const png = join(home("img"), "shot.png");
-    mkdirSync(join(home("img")), { recursive: true });
-    await Bun.write(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
-    const sent = await call("send", { text: "the dialog", images: [png] });
-    expect(sent).toMatch(/^sent #\d+$/);
-    const seq = Number(/^sent #(\d+)$/.exec(sent)![1]);
-    const logRes = (await rpc("tools/call", { name: "log", arguments: {} })) as {
-      content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
-    };
-    expect(logRes.content[0]!.type).toBe("text");
-    expect((logRes.content[0] as { text: string }).text).toContain("[image: shot.png");
-    const imgBlock = logRes.content.find((c) => c.type === "image") as unknown as { data: string; mimeType: string };
-    expect(imgBlock.mimeType).toBe("image/png");
-    expect(await call("save", { seq })).toContain(`#${seq}-shot.png`);
-    expect(await ok(other, "who")).toContain("nobody else is listening right now");
-    p.kill();
+      // Images round-trip: send with a file, read back pixels, save to disk.
+      const png = join(home("img"), "shot.png");
+      mkdirSync(join(home("img")), { recursive: true });
+      await Bun.write(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+      const sent = await call("send", { text: "the dialog", images: [png] });
+      expect(sent).toMatch(/^sent #\d+$/);
+      const seq = Number(/^sent #(\d+)$/.exec(sent)![1]);
+      const logRes = (await rpc("tools/call", { name: "log", arguments: {} })) as {
+        content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
+      };
+      expect(logRes.content[0]!.type).toBe("text");
+      expect((logRes.content[0] as { text: string }).text).toContain("[image: shot.png");
+      const imgBlock = logRes.content.find((c) => c.type === "image") as unknown as { data: string; mimeType: string };
+      expect(imgBlock.mimeType).toBe("image/png");
+      expect(await call("save", { seq })).toContain(`#${seq}-shot.png`);
+      expect(await ok(other, "who")).toContain("nobody else is listening right now");
+    } finally {
+      p.kill();
+    }
   });
 });
