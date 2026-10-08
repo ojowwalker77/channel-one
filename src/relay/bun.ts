@@ -7,9 +7,11 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
+import type { HumanAuth } from "./human.ts";
 import {
   HttpError,
   RoomStore,
+  relayConfig,
   authenticateSocket,
   errorResponse,
   onClientFrame,
@@ -26,7 +28,8 @@ interface SocketData {
   since: number;
 }
 
-export function startRelay(opts: { port?: number; hostname?: string; dataDir?: string } = {}) {
+export function startRelay(opts: { port?: number; hostname?: string; dataDir?: string; human?: HumanAuth | null } = {}) {
+  const human = opts.human ?? null;
   const dataDir = opts.dataDir ?? ".relay-data";
   mkdirSync(dataDir, { recursive: true });
   const dbs = new Map<string, Database>();
@@ -76,6 +79,7 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
       try {
         const url = new URL(req.url);
         if (url.pathname === "/") return new Response("channel-one relay (bun)\n");
+        if (url.pathname === "/v1/config") return relayConfig(human);
         const route = parseRoomPath(url.pathname);
         if (!route) throw new HttpError(404, "not found");
         const store = storeFor(route.roomId, route.rest === "/create");
@@ -89,7 +93,7 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
           if (server.upgrade(req, { data: { roomId: route.roomId, pk, since }, headers: wsHeaders(req) })) return undefined;
           throw new HttpError(426, "expected websocket");
         }
-        const { res, fx } = await onHttp(store, req, route.rest);
+        const { res, fx } = await onHttp(store, req, route.rest, human);
         if (fx) apply(route.roomId, fx);
         return res;
       } catch (err) {

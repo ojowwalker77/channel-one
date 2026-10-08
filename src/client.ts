@@ -76,13 +76,23 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const keyInfo = (room: string, e: number | string) => `mc/key\n${room}\n${e}`;
 const requestInfo = (room: string) => `mc/request\n${room}`;
 
-async function call<T>(relay: string, roomId: string, path: string, init: RequestInit & { identity?: Identity } = {}, params: Record<string, string | number> = {}): Promise<T> {
+/** Supplies the signed-in human's WorkOS access token (relays that require sign-in). */
+export type HumanSession = () => Promise<string | null>;
+
+async function call<T>(
+  relay: string,
+  roomId: string,
+  path: string,
+  init: RequestInit & { identity?: Identity; human?: string | null } = {},
+  params: Record<string, string | number> = {},
+): Promise<T> {
   const u = new URL(`/v1/rooms/${roomId}${path}`, relay);
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v));
   const method = (init.method ?? "GET").toUpperCase();
   const body = typeof init.body === "string" ? init.body : "";
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (init.identity) headers.authorization = `Bearer ${await signRequest(init.identity, roomId, method, path, body)}`;
+  if (init.human) headers["x-human-token"] = init.human;
   const res = await fetch(u, { method, body: method === "GET" || method === "DELETE" ? undefined : body, headers });
   const json = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`);
@@ -127,6 +137,8 @@ export class Channel {
     readonly identity: Identity,
     /** Called whenever keys change (e.g. after a rotation) so callers can persist them. */
     private readonly onAccess?: (a: ChannelAccess) => void,
+    /** The signed-in human behind this member (the dashboard), for owner actions on sign-in relays. */
+    private readonly human?: HumanSession,
   ) {
     this.name = identity.name;
   }
@@ -141,7 +153,8 @@ export class Channel {
 
   private async request<T>(path: string, init: RequestInit = {}, params: Record<string, string | number> = {}): Promise<T> {
     try {
-      return await call<T>(this.relay, this.roomId, path, { ...init, identity: this.identity }, params);
+      const human = this.human && this.isOwner ? await this.human() : null;
+      return await call<T>(this.relay, this.roomId, path, { ...init, identity: this.identity, human }, params);
     } catch (err) {
       throw gone(err);
     }
@@ -159,6 +172,7 @@ export class Channel {
     ownerInfo: MemberInfo,
     agents: (Identity & { info: MemberInfo })[] = [],
     roomId = newRoomId(),
+    human?: string | null,
   ): Promise<{ code: string; access: ChannelAccess }> {
     if (!owner.xpk) throw new Error("owner identity has no exchange key");
     const key = newChannelKey();
@@ -170,7 +184,7 @@ export class Channel {
       keys: { "0": await sealTo(id.xpk!, key, keyInfo(roomId, 0)) },
     });
     const members = [await enroll(owner, ownerInfo, true), ...(await Promise.all(agents.map((a) => enroll(a, a.info, false))))];
-    await call(relay, roomId, "/create", { method: "POST", identity: owner, body: JSON.stringify({ owner: { pk: owner.pk, xpk: owner.xpk, sig: ownerSig.sig }, members }) });
+    await call(relay, roomId, "/create", { method: "POST", identity: owner, human, body: JSON.stringify({ owner: { pk: owner.pk, xpk: owner.xpk, sig: ownerSig.sig }, members }) });
     const access: ChannelAccess = { roomId, ownerPk: owner.pk, ownerXpk: owner.xpk, epoch: 0, keys: { "0": key } };
     return { code: encodeJoinCode({ roomId, ownerFp: await ownerFingerprint(owner.pk) }), access };
   }
@@ -508,3 +522,10 @@ export function isDirectedAt(m: Message, agent: string): boolean {
 }
 
 export { encodeJoinCode };
+
+/** Whether a relay requires a signed-in human to create and run channels, and with which WorkOS client. */
+export async function relayConfig(relay: string): Promise<{ workosClientId: string | null }> {
+  const res = await fetch(new URL("/v1/config", relay));
+  if (!res.ok) return { workosClientId: null };
+  return (await res.json()) as { workosClientId: string | null };
+}

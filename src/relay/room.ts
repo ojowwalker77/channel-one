@@ -17,6 +17,7 @@
 // names, roles and every message stay end-to-end encrypted.
 
 import { verifyRequest } from "../auth.ts";
+import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
 import { verify } from "../identity.ts";
 import {
   CLOSE_CLOSED,
@@ -125,6 +126,11 @@ export class RoomStore {
     this.sql.run("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v", k, String(v));
   }
 
+  /** The signed-in human (WorkOS user id) who owns this channel, when the relay requires sign-in. */
+  ownerUser(): string | undefined {
+    return this.get("owner_user");
+  }
+
   meta(): Meta {
     if (!this.exists()) throw new HttpError(404, "no such channel");
     return {
@@ -177,7 +183,7 @@ export class RoomStore {
    * must be signed by the owner. `members` must include the owner and may
    * include the creating agent.
    */
-  async create(signer: string | null, body: CreateBody): Promise<void> {
+  async create(signer: string | null, body: CreateBody, ownerUser: string | null = null): Promise<void> {
     if (this.exists()) throw new HttpError(409, "channel already exists");
     const { owner, members } = body;
     if (!owner || signer !== owner.pk) throw new HttpError(401, "create must be signed by the owner");
@@ -188,6 +194,7 @@ export class RoomStore {
     this.set("owner_xpk", owner.xpk);
     this.set("owner_sig", owner.sig);
     this.set("epoch", 0);
+    if (ownerUser) this.set("owner_user", ownerUser);
     for (const m of members) this.putMember(m, 0);
   }
 
@@ -364,7 +371,7 @@ export function onClientFrame(store: RoomStore, raw: string): Effects {
  *   GET    /messages?since=N          member
  *   POST   /messages                  member: {iv, ct, e}
  */
-export async function onHttp(store: RoomStore, req: Request, path: string): Promise<{ res: Response; fx?: Effects }> {
+export async function onHttp(store: RoomStore, req: Request, path: string, human: HumanAuth | null = null): Promise<{ res: Response; fx?: Effects }> {
   const url = new URL(req.url);
   const method = req.method.toUpperCase();
   const body = method === "GET" || method === "DELETE" ? "" : await req.text();
@@ -380,13 +387,22 @@ export async function onHttp(store: RoomStore, req: Request, path: string): Prom
   // Shared-code rooms from before owners existed: delete them outright the first time anything touches them.
   if (store.isLegacy()) return { res: Response.json({ error: "no such channel" }, { status: 404 }), fx: { wipe: true } };
 
+  /** The signed-in human behind this request, when the relay requires sign-in. */
+  const signedIn = async (): Promise<string | null> => {
+    if (!human) return null;
+    const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
+    if (!user) throw new HttpError(401, "sign in required: channels on this relay are owned and run by a signed-in human (use the dashboard)");
+    return user;
+  };
+
   if (path === "/info" && method === "GET") {
     const m = store.meta();
     return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, epoch: m.epoch, rotate: m.rotate });
   }
   if (path === "/create" && method === "POST") {
     const signer = await verifyRequest(requestToken(req), store.roomId, method, path, body);
-    await store.create(signer, json<CreateBody>());
+    const user = await signedIn();
+    await store.create(signer, json<CreateBody>(), user);
     return ok({ head: 0 });
   }
   if (path === "/requests" && method === "POST") {
@@ -402,8 +418,15 @@ export async function onHttp(store: RoomStore, req: Request, path: string): Prom
   }
 
   const me = await store.authenticate(req, method, path, body);
-  const owner = () => {
+  // Owner actions need the owner key's signature and, on relays that require sign-in,
+  // the owning human's live session: a copied key file alone can't approve anyone.
+  const owner = async () => {
     if (me !== store.meta().ownerPk) throw new HttpError(403, "only the channel owner can do that");
+    const want = store.ownerUser();
+    if (human && want) {
+      const user = await signedIn();
+      if (user !== want) throw new HttpError(403, "only the human who owns this channel can do that");
+    }
   };
 
   if (path === "/" && method === "GET") return ok({ head: store.head() });
@@ -424,34 +447,34 @@ export async function onHttp(store: RoomStore, req: Request, path: string): Prom
     return ok({ left: true }, { disconnect: me, broadcast: [frame({ t: "roster" })] });
   }
   if (path === "/requests" && method === "GET") {
-    owner();
+    await owner();
     return ok({ requests: store.pendingRequests() });
   }
   const denyMatch = /^\/requests\/([0-9a-f-]{36})\/deny$/.exec(path);
   if (denyMatch && method === "POST") {
-    owner();
+    await owner();
     store.deny(denyMatch[1]!);
     return ok({ denied: true });
   }
   if (path === "/members" && method === "POST") {
-    owner();
+    await owner();
     store.approve(json<MemberBody & { request?: string }>());
     return ok({ approved: true }, { broadcast: [frame({ t: "roster" })] });
   }
   const memberMatch = /^\/members\/([A-Za-z0-9_-]{20,})$/.exec(path);
   if (memberMatch && method === "DELETE") {
-    owner();
+    await owner();
     store.remove(memberMatch[1]!);
     return ok({ removed: true }, { disconnect: memberMatch[1]!, broadcast: [frame({ t: "roster" })] });
   }
   if (path === "/epochs" && method === "POST") {
-    owner();
+    await owner();
     const b = json<{ epoch: number; keys: Record<string, string> }>();
     store.rotate(b.epoch, b.keys);
     return ok({ epoch: b.epoch }, { broadcast: [frame({ t: "epoch", epoch: b.epoch })] });
   }
   if (path === "/" && method === "DELETE") {
-    owner();
+    await owner();
     return ok({ closed: true }, { wipe: true });
   }
   throw new HttpError(404, "not found");
@@ -476,3 +499,8 @@ export function parseRoomPath(pathname: string): { roomId: string; rest: string 
 }
 
 export { CLOSE_CLOSED, CLOSE_REMOVED };
+
+/** Relay-wide settings the web app needs: which WorkOS client to sign in with, if any. */
+export function relayConfig(human: HumanAuth | null): Response {
+  return Response.json({ workosClientId: human?.clientId ?? null });
+}

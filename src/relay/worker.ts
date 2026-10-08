@@ -7,9 +7,11 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
+import { workosHumanAuth, type HumanAuth } from "./human.ts";
 import {
   HttpError,
   RoomStore,
+  relayConfig,
   authenticateSocket,
   errorResponse,
   onClientFrame,
@@ -23,6 +25,21 @@ import {
 
 interface Env {
   CHANNELS: DurableObjectNamespace<Channel>;
+  /** When set, channels belong to humans signed in with this WorkOS AuthKit client. */
+  WORKOS_CLIENT_ID?: string;
+  /** The AuthKit domain (https://….authkit.app), whose keys may also sign tokens. */
+  WORKOS_AUTHKIT_DOMAIN?: string;
+}
+
+let humanAuth: HumanAuth | null | undefined;
+/** One verifier (and JWKS cache) per isolate. */
+function human(env: Env): HumanAuth | null {
+  if (humanAuth === undefined) {
+    const id = env.WORKOS_CLIENT_ID;
+    const jwks = id ? [`https://api.workos.com/sso/jwks/${id}`, ...(env.WORKOS_AUTHKIT_DOMAIN ? [`${env.WORKOS_AUTHKIT_DOMAIN}/oauth2/jwks`] : [])] : [];
+    humanAuth = id ? workosHumanAuth(id, jwks) : null;
+  }
+  return humanAuth;
 }
 
 export class Channel extends DurableObject<Env> {
@@ -59,7 +76,7 @@ export class Channel extends DurableObject<Env> {
         for (const f of welcomeFrames(store, Number(url.searchParams.get("since") ?? 0) || 0)) server.send(f);
         return new Response(null, { status: 101, webSocket: client, headers: wsHeaders(req) });
       }
-      const { res, fx } = await onHttp(store, req, route.rest);
+      const { res, fx } = await onHttp(store, req, route.rest, human(this.env));
       if (fx) await this.apply(fx);
       return res;
     } catch (err) {
@@ -112,6 +129,7 @@ function close(ws: WebSocket, code: number, reason: string): void {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+    if (url.pathname === "/v1/config") return relayConfig(human(env));
     const route = parseRoomPath(url.pathname);
     if (!route) return errorResponse(new HttpError(404, "not found"));
     return env.CHANNELS.get(env.CHANNELS.idFromName(route.roomId)).fetch(req);

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import { Channel, ChannelGone, type SendOptions } from "@mc/client.ts"
-import { decodeJoinCode, fromB64url, type ChannelAccess } from "@mc/crypto.ts"
+import { Channel, ChannelGone, type HumanSession, type SendOptions } from "@mc/client.ts"
+import { decodeJoinCode, fromB64url, newRoomId, type ChannelAccess } from "@mc/crypto.ts"
 import { generateIdentity, withExchangeKey, type Identity } from "@mc/identity.ts"
 import type { JoinRequest, Member } from "@mc/membership.ts"
 import type { Message, Presence } from "@mc/protocol.ts"
@@ -58,6 +58,8 @@ export interface StoredMember {
   identity: Identity
   access: ChannelAccess
   at: number
+  /** A label for the channel, known to whoever created it here. */
+  name?: string
 }
 
 /** A join request this browser is waiting on. */
@@ -110,6 +112,7 @@ export function forgetChannel(code: string): void {
 export interface KnownChannel {
   code: string
   at: number
+  name?: string
 }
 
 /** Channels this browser is a member of, newest first. */
@@ -119,7 +122,8 @@ export function knownChannels(): KnownChannel[] {
 }
 
 function rememberChannel(code: string): void {
-  const next = [{ code, at: Date.now() }, ...knownChannels().filter((c) => c.code !== code)].slice(0, 20)
+  const name = loadMember(code)?.name
+  const next = [{ code, at: Date.now(), ...(name ? { name } : {}) }, ...knownChannels().filter((c) => c.code !== code)].slice(0, 20)
   try {
     localStorage.setItem(REGISTRY_KEY, JSON.stringify(next))
   } catch {}
@@ -137,6 +141,20 @@ export async function memberFromLink(code: string, identity: Identity): Promise<
   const ch = new Channel({ roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: info.epoch, keys: {} }, location.origin, id)
   await ch.refreshKeys()
   const m: StoredMember = { code, identity: id, access: ch.access, at: Date.now() }
+  saveMember(m)
+  return m
+}
+
+/**
+ * Create a channel owned by this browser's human. The owner key is generated
+ * here and never leaves this browser; on relays that require sign-in, `token`
+ * proves who the human is.
+ */
+export async function createChannel(name: string, token: string | null): Promise<StoredMember> {
+  const roomId = newRoomId()
+  const owner = await generateIdentity("human")
+  const { code, access } = await Channel.create(location.origin, owner, { name: "human", role: "owner" }, [], roomId, token)
+  const m: StoredMember = { code, identity: owner, access, at: Date.now(), name }
   saveMember(m)
   return m
 }
@@ -178,12 +196,18 @@ export interface ChannelHandle {
 }
 
 /** Stream a channel as a member: messages, presence, member list, and (for the owner) join requests. */
-export function useChannel(member: StoredMember): ChannelHandle {
+export function useChannel(member: StoredMember, human?: HumanSession): ChannelHandle {
+  const humanRef = useRef(human)
+  humanRef.current = human
   const ch = useMemo(
     () =>
-      new Channel(member.access, location.origin, member.identity, (access) => {
-        saveMember({ ...member, access })
-      }),
+      new Channel(
+        member.access,
+        location.origin,
+        member.identity,
+        (access) => saveMember({ ...member, access }),
+        async () => (humanRef.current ? humanRef.current() : null)
+      ),
     [member]
   )
   const [connection, setConnection] = useState<Connection>("connecting")

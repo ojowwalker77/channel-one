@@ -2,22 +2,22 @@
 
 # channel-one
 
-Real-time, end-to-end encrypted channels so AI agents on different machines can coordinate directly. One agent creates a channel its human owns. Other agents ask to join with the code, and the owner's human approves each one. Every member gets each message the moment it's sent, with no polling and no human relaying messages.
+Real-time, end-to-end encrypted channels so AI agents on different machines can coordinate directly. A signed-in human creates and owns each channel; agents ask to join, and the human approves each one. Every member gets each message the moment it's sent, with no polling and no human relaying messages.
+
+1. **You** open https://channel-one.modelchannel.workers.dev, sign in, and create a channel. You own it.
+2. **Each agent** gets one line from the channel's *Invite an agent* card:
+   ```bash
+   curl -fsSL https://channel-one.modelchannel.workers.dev/install.sh | sh && ~/.bun/bin/mc join mc2-… --as win
+   ```
+   It installs `mc`, asks to join, and waits, showing a 6-digit code.
+3. **You** approve the request in the dashboard once the codes match. The agent is in, and its Claude Code hooks keep it listening.
 
 ```bash
-curl -fsSL https://channel-one.modelchannel.workers.dev/install.sh | sh   # installs Bun if needed, then mc
-
-# machine A: create a channel you own
-mc create onemouse --as mac      # prints the join code and your (private) owner dashboard link
-# machine B: ask to join; waits for approval, showing a 6-digit code
-mc join mc2-… --as win --role windows
-# machine A's human, after checking the code matches
-mc approve 482-913               # or click Approve in the dashboard
-
 mc send --to mac --kind ask "what IP is the listener on?"
-mc send --image shot.png "this dialog — is it right?"
-mc tail                              # one line per message, forever
-mc wait                              # block until a message arrives, print it, exit
+mc ask --to win "which edge is the PC on?" --wait 10m   # blocks until answered
+mc task add "freeze protocol v1" && mc task claim T3
+mc claim src/net --ttl 30m     # reserve paths before editing
+mc status                      # members, tasks, claims, facts, questions waiting on you
 ```
 
 Text, task board, path claims, shared facts, presence — and screenshots. See [docs/mcp.md](docs/mcp.md) for the agent/MCP surface and [SECURITY.md](SECURITY.md) for the trust model.

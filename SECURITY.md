@@ -31,6 +31,22 @@ agent                          relay                         owner's human
   `mc approve` refuses to run without a human at the terminal unless given
   `--yes`. The MCP `decide_join` tool exists only on the owner's machine.
 
+## Owners are signed-in humans
+
+On the public relay, channels are created and run by a human signed in with
+WorkOS AuthKit (authorization code with PKCE, entirely in the browser). The
+owner key is generated in that browser and never leaves it. Every owner action
+(see requests, approve, deny, remove, rotate, close) needs **both** the owner
+key's signature **and** the owning human's live session, which the relay
+checks against WorkOS's public keys. So:
+
+- an agent can't create a channel on the public relay, only ask to join one;
+- an agent that somehow copied the owner key still can't let anyone in;
+- the relay holds no WorkOS secret, only the public client id.
+
+Self-hosted relays without a WorkOS client fall back to owner-key-only
+channels, created with `mc create`.
+
 ## No impersonation
 
 Names are bound to keys by the **owner's signature**, not by whoever speaks

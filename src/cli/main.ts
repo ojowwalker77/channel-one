@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { AgentSession, Rejected } from "../agent.ts";
 import { loadImages } from "../attach.ts";
-import { Channel, ChannelGone, RelayError } from "../client.ts";
+import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
 import { DEFAULT_RELAY, forgetIdentities, loadConfig, loadIdentity, saveConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
 import type { JoinRequest } from "../membership.ts";
@@ -223,6 +223,12 @@ const commands: Record<string, () => Promise<void>> = {
     const name = agentName();
     if (name === OWNER_NAME) die(`"${OWNER_NAME}" is reserved for the channel owner; pick an agent name with --as`);
     const relay = relayUrl();
+    if ((await relayConfig(relay).catch(() => ({ workosClientId: null }))).workosClientId) {
+      die(
+        `channels on ${relay} are created and owned by a signed-in human, not an agent.\n` +
+          `  Ask your human to open ${relay}/ , sign in, create the channel, and give you its join line (mc join mc2-… --as ${name}).`,
+      );
+    }
     const roomId = newRoomId();
     const [owner, agent] = await Promise.all([loadIdentity(OWNER_NAME, roomId), loadIdentity(name, roomId)]);
     const { code, access } = await Channel.create(

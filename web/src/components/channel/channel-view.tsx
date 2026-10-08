@@ -8,6 +8,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
 import { Separator } from "@/components/ui/separator"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
+import { useAuth } from "@/lib/auth"
 import { forgetChannel, useChannel, type StoredMember } from "@/lib/channel"
 import { AgentAvatar } from "./agent-avatar"
 import { AppSidebar, type AgentRow, type View } from "./app-sidebar"
@@ -44,7 +45,8 @@ function useTitleBadge(count: number) {
 
 export function ChannelView({ member, onLeave }: { member: StoredMember; onLeave: () => void }) {
   const me = member.identity.name
-  const { ch, connection, gone, messages, roster, state, online, isOwner, requests, send, refreshRequests, refreshRoster } = useChannel(member)
+  const auth = useAuth()
+  const { ch, connection, gone, messages, roster, state, online, isOwner, requests, send, refreshRequests, refreshRoster } = useChannel(member, auth.token)
   const openAsks = state.openAsks
   const now = useNow()
   const [openTask, setOpenTask] = useState<number | null>(null)
@@ -167,6 +169,7 @@ export function ChannelView({ member, onLeave }: { member: StoredMember; onLeave
 
         {view.kind === "members" ? (
           <MembersPanel
+            code={member.code}
             me={me}
             isOwner={isOwner}
             roster={roster}

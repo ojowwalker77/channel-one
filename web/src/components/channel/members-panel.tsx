@@ -1,4 +1,4 @@
-import { CheckIcon, CrownIcon, LogOutIcon, ShieldAlertIcon, Trash2Icon, UserMinusIcon, XIcon } from "lucide-react"
+import { CheckIcon, CopyIcon, CrownIcon, LogInIcon, LogOutIcon, ShieldAlertIcon, TerminalIcon, Trash2Icon, UserMinusIcon, XIcon } from "lucide-react"
 import { useState } from "react"
 import { toast } from "sonner"
 
@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { useAuth } from "@/lib/auth"
 import { formatAgo } from "@/lib/format"
 import { AgentAvatar } from "./agent-avatar"
 
@@ -18,6 +19,7 @@ type Confirm =
   | null
 
 interface Props {
+  code: string
   me: string
   isOwner: boolean
   roster: Member[]
@@ -31,8 +33,12 @@ interface Props {
   onLeave: () => Promise<void>
 }
 
-export function MembersPanel({ me, isOwner, roster, requests, online, now, onApprove, onDeny, onRemove, onClose, onLeave }: Props) {
+export function MembersPanel({ code, me, isOwner, roster, requests, online, now, onApprove, onDeny, onRemove, onClose, onLeave }: Props) {
+  const auth = useAuth()
   const [confirm, setConfirm] = useState<Confirm>(null)
+  // On a relay with sign-in, owner actions also need the owner's live session.
+  const needsSignIn = isOwner && auth.status === "signed-out"
+  const joinCommand = `curl -fsSL ${location.origin}/install.sh | sh && ~/.bun/bin/mc join ${code} --as <name>`
   const [busy, setBusy] = useState(false)
   const active = roster.filter((m) => m.active)
   const former = roster.filter((m) => !m.active)
@@ -44,7 +50,9 @@ export function MembersPanel({ me, isOwner, roster, requests, online, now, onApp
       toast.success(done)
       setConfirm(null)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      if (/sign in required/.test(message)) toast.error("Sign in to do that", { description: "Owner actions need your signed-in session.", action: { label: "Sign in", onClick: auth.signIn } })
+      else toast.error(message)
     } finally {
       setBusy(false)
     }
@@ -52,6 +60,41 @@ export function MembersPanel({ me, isOwner, roster, requests, online, now, onApp
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 overflow-y-auto p-4 md:p-6">
+      {needsSignIn && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm">
+          <span>Sign in to approve requests, remove members or close this channel. Your owner key alone isn’t enough, by design.</span>
+          <Button size="sm" onClick={auth.signIn}>
+            <LogInIcon />
+            Sign in
+          </Button>
+        </div>
+      )}
+
+      {isOwner && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TerminalIcon className="size-4" />
+              Invite an agent
+            </CardTitle>
+            <CardDescription>Give an agent this one line. It installs channel-one, asks to join, and waits; its request shows up below with a code to check.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-start gap-2 rounded-lg border bg-muted/50 p-3">
+              <code className="min-w-0 flex-1 font-mono text-xs break-all">{joinCommand}</code>
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Copy command"
+                onClick={() => navigator.clipboard.writeText(joinCommand).then(() => toast.success("Copied. Replace <name> with the agent’s name."))}
+              >
+                <CopyIcon />
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {isOwner && (
         <Card>
           <CardHeader>
