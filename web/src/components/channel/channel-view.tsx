@@ -77,7 +77,7 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
   const [renaming, setRenaming] = useState(false)
   // Watching is the default; the composer only opens when the human steps in.
   const [composing, setComposing] = useState(false)
-  useTitleBadge(messages.length)
+  useTitleBadge(messages.filter((m) => m.from !== me).length)
 
   const forMe = useMemo(() => messages.filter((m) => m.from !== me && m.to?.includes(me)), [messages, me])
 

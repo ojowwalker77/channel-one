@@ -105,9 +105,10 @@ function channelAlias(): string {
 }
 
 function agentName(ch?: ChannelConfig): string {
-  const name = opt.as ?? process.env.MC_AS ?? ch?.as;
-  if (!name) die("no agent name: pass --as NAME (or set MC_AS)");
-  if (!NAME_RE.test(name)) die("agent names are 1-32 letters, digits, _ . or -");
+  // Default to the OS username so the first run just works; explicit flags win.
+  const raw = opt.as ?? process.env.MC_AS ?? ch?.as ?? process.env.USER ?? process.env.USERNAME ?? "human";
+  const name = raw.trim() || "human";
+  if (!NAME_RE.test(name)) die(`agent name "${name}" is invalid (1-32 letters, digits, _ . or -); pass --as NAME`);
   return name;
 }
 
@@ -177,6 +178,8 @@ const commands: Record<string, () => Promise<void>> = {
     out(`join code: ${code}`);
     out(`agents join with: mc join ${code}${relayFlag} --as <name> [--role <role>]`);
     out(`watch it live:    ${relayUrl()}/#${encodeURIComponent(code)}`);
+    out("");
+    out(agentPrompt(loadConfig().default!, agentName()));
   },
 
   async join() {

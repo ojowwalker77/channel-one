@@ -68,7 +68,7 @@ export function Board({ state, now, onOpen }: { state: ChannelState; now: number
         const meta = STATE_META[col]
         const items = tasks.filter((t) => t.state === col).sort((a, b) => b.updatedAt - a.updatedAt)
         return (
-          <section key={col} className="flex max-w-96 min-w-56 flex-1 flex-col rounded-2xl bg-muted/40 dark:bg-muted/20">
+          <section key={col} className="flex min-w-44 flex-1 flex-col rounded-2xl bg-muted/40 xl:max-w-96 dark:bg-muted/20">
             <header className="flex items-center gap-2 px-3 pt-3 pb-2 text-sm font-medium">
               <meta.icon className={cn("size-4", meta.className)} />
               {meta.label}

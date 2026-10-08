@@ -115,10 +115,12 @@ export class Channel {
     for (;;) {
       const page = await this.request<{ head: number; messages: Envelope[] }>("/messages", {}, { since });
       head = page.head;
-      for (const e of page.messages) {
-        const m = await this.decrypt(e);
+      // Decrypt the page concurrently; envelopes stay in relay order.
+      const decrypted = await Promise.all(page.messages.map((e) => this.decrypt(e)));
+      for (let i = 0; i < page.messages.length; i++) {
+        const m = decrypted[i];
         if (m) messages.push(m);
-        since = e.seq;
+        since = page.messages[i]!.seq;
       }
       if (!page.messages.length || since >= head) break;
     }

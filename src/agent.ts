@@ -152,6 +152,14 @@ export class AgentSession {
     const found = new Map<string, Presence>();
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), waitMs);
+    // Answers arrive within milliseconds of the query, so stop waiting once
+    // they stop coming: each new answer restarts a short quiet window. A busy
+    // channel typically resolves in ~0.5s instead of the full timeout.
+    let quiet: ReturnType<typeof setTimeout> | undefined;
+    const heard = () => {
+      clearTimeout(quiet);
+      quiet = setTimeout(() => ac.abort(), 400);
+    };
     const head = await this.ch.head();
     await this.ch
       .stream(head, () => {}, {
@@ -159,11 +167,14 @@ export class AgentSession {
         onOpen: ({ presence }) => void presence({ client: "probe", query: true }),
         onPresence: (p) => {
           if (p.client === "probe" || p.from === this.me) return;
-          if (p.sigOk || !p.pk) found.set(p.from, p);
+          if (!(p.sigOk || !p.pk)) return;
+          if (!found.has(p.from)) heard();
+          found.set(p.from, p);
         },
       })
       .catch(() => {});
     clearTimeout(timer);
+    clearTimeout(quiet);
     return found;
   }
 

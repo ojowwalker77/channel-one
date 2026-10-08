@@ -49,6 +49,26 @@ export function parseHash(hash: string): { code: string; identity: Identity | nu
 }
 
 const ID_KEY = (name: string) => `mc.identity.${name}`
+const KEY_CACHE = (code: string) => `mc.keys.${code}`;
+
+/** Derived keys, cached per tab: PBKDF2 takes ~0.5s in the browser on every load. */
+async function cachedKeys(code: string): Promise<ChannelKeys> {
+  // Same sensitivity as the join code already sitting in the URL fragment,
+  // and gone when the tab closes.
+  try {
+    const raw = sessionStorage.getItem(KEY_CACHE(code));
+    if (raw) return JSON.parse(raw) as ChannelKeys;
+  } catch {
+    // Corrupt cache or no sessionStorage: derive below.
+  }
+  const k = await deriveChannel(code);
+  try {
+    sessionStorage.setItem(KEY_CACHE(code), JSON.stringify(k));
+  } catch {
+    // Private mode / quota: the channel still works, just slower next load.
+  }
+  return k;
+}
 
 /** The browser's signing identity for `name`: imported from a sign-in link, or created once and kept. */
 export async function browserIdentity(name: string, imported: Identity | null): Promise<Identity> {
@@ -110,7 +130,7 @@ export function useChannel(code: string, me: string, imported: Identity | null):
       setConnection("unlocking")
       setError(null)
       setMessages([])
-      const k = await deriveChannel(code)
+      const k = await cachedKeys(code)
       if (cancelled) return
       setKeys(k)
       setConnection("connecting")
