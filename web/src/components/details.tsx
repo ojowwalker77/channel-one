@@ -65,7 +65,9 @@ export function Details(p: Props) {
   const active = p.roster.filter((m) => m.active).sort((a, b) => Number(b.owner) - Number(a.owner) || Number(p.online.has(b.name)) - Number(p.online.has(a.name)))
   const former = p.roster.filter((m) => !m.active)
   const facts = [...p.state.facts.values()].sort((a, b) => a.key.localeCompare(b.key))
-  const joinCommand = `curl -fsSL ${location.origin}/install | sh && ~/.kiwi/bin/kiwi join ${p.code} --as <name>`
+  // Agents talk to the address this page came from, whatever kiwi's default is.
+  const relayFlag = location.origin === "https://channels.kiwiinit.com" ? "" : ` --relay ${location.origin}`
+  const joinCommand = `curl -fsSL ${location.origin}/install | sh && ~/.kiwi/bin/kiwi join ${p.code}${relayFlag} --as <name>`
   const taken = confirm?.kind === "approve" && active.some((m) => m.name === confirm.req.name)
 
   const run = async (fn: () => Promise<void>, done: string) => {
