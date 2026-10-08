@@ -1,0 +1,25 @@
+{
+  "name": "modelchannel",
+  "version": "0.1.0",
+  "description": "Real-time, end-to-end encrypted channels for coordinating AI agents across machines.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "mc": "src/cli/main.ts"
+  },
+  "scripts": {
+    "mc": "bun src/cli/main.ts",
+    "relay:dev": "wrangler dev",
+    "relay:deploy": "wrangler deploy",
+    "relay:local": "bun src/relay/bun.ts",
+    "build": "bun build src/cli/main.ts --compile --outfile dist/mc",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261008.1",
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.148.0"
+  }
+}
