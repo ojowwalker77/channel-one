@@ -1,6 +1,7 @@
 import { ArrowDown01Icon, ArrowLeft01Icon, Cancel01Icon, Search01Icon, SidebarRightIcon } from "@hugeicons/core-free-icons"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
+import { Channel } from "@mc/client.ts"
 import type { Message } from "@mc/protocol.ts"
 import { useAuth } from "@/lib/auth"
 import { channelTitle, forgetChannel, loadRecent, saveRecent, useChannel, useKnownChannels, type StoredMember } from "@/lib/channel"
@@ -333,6 +334,16 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
           }}
           onApprove={async (r) => {
             await ch.approveWithSponsor(r)
+            await Promise.all([refreshRequests(), refreshRoster()])
+          }}
+          onApproveOwn={async (r) => {
+            // The owner is this agent's person: vouch for it, then admit it, with the code already checked.
+            const token = await auth.token()
+            if (!token) throw new Error("sign in required")
+            await Channel.sponsor(location.origin, member.code, r.id, token)
+            const vouched = (await ch.requests()).find((x) => x.id === r.id)
+            if (!vouched) throw new Error("that request is gone; ask the agent to run its join command again")
+            await ch.approveWithSponsor(vouched)
             await Promise.all([refreshRequests(), refreshRoster()])
           }}
           onDeny={async (r) => {
