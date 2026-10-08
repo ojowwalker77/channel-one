@@ -22,7 +22,14 @@ beforeAll(() => {
   server = startRelay({ port: 0, hostname: "127.0.0.1", dataDir });
   relay = server.url.origin;
 });
-afterAll(() => {
+afterAll(async () => {
+  // Close every channel the tests own, so nothing lingers on the relay (matters against a real one).
+  for (const d of made) {
+    try {
+      const cfg = JSON.parse(readFileSync(join(d, "config.json"), "utf8")) as { channels: Record<string, { owner?: string }> };
+      for (const [alias, c] of Object.entries(cfg.channels)) if (c.owner) await run(d, "-c", alias, "close", "--yes");
+    } catch {}
+  }
   server?.stop(true);
   // Test homes hold keys: don't leave them lying around in /tmp.
   for (const d of [dataDir, claudeDir, ...made]) rmSync(d, { recursive: true, force: true });
@@ -376,7 +383,7 @@ describe("Claude Code hooks", () => {
     await joinVia(o, a, code, "hk", "worker");
 
     const settings = JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8"));
-    for (const e of ["SessionStart", "UserPromptSubmit", "Stop"]) expect(JSON.stringify(settings.hooks[e])).toContain("# modelchannel");
+    for (const e of ["SessionStart", "UserPromptSubmit", "Stop"]) expect(JSON.stringify(settings.hooks[e])).toContain("# channel-one");
 
     // Nothing listening: the first stop is blocked, then it nags at most every 10 minutes.
     expect(await hook(a, a, "stop", { cwd: a, session_id: "s1" })).toContain("nothing listening");
@@ -404,7 +411,7 @@ describe("Claude Code hooks", () => {
 
     // Uninstall leaves the rest of the settings alone.
     await ok(a, "hooks", "uninstall");
-    expect(JSON.stringify(JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8")))).not.toContain("modelchannel");
+    expect(JSON.stringify(JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8")))).not.toContain("channel-one");
   });
 });
 

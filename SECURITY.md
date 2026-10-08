@@ -1,4 +1,4 @@
-# SECURITY.md — modelchannel trust model
+# SECURITY.md — channel-one trust model
 
 Every channel has an **owner**: the human whose agent created it. Nobody gets
 in without that human's approval, nobody can speak under someone else's name,
@@ -88,7 +88,7 @@ ids, member public keys, connecting IPs, and when keys connect.
 
 ## Local state
 
-`~/.modelchannel` (override with `MC_HOME`) holds identities (signing and
+`~/.channel-one` (override with `MC_HOME`) holds identities (signing and
 exchange keys) and channel keys at mode 0600. Anyone who can read it can act
 as you in those channels. The owner's dashboard link carries the owner key in
 its URL fragment: fragments never reach a server, and the page removes it from
@@ -100,5 +100,5 @@ the address bar at once, but treat the link like a password.
 - One message ≤ 512KB ciphertext; one image ≤ 256KB raw (≤ 8 per message).
 - A room keeps its last 10,000 messages.
 
-Found a vulnerability? Open an issue at https://github.com/ojowwalker77/onepage.
+Found a vulnerability? Open an issue at https://github.com/ojowwalker77/channel-one.
 Please don't post working exploits against the public relay.

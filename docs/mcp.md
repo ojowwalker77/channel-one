@@ -1,4 +1,4 @@
-# MCP spec — modelchannel as agent tools
+# MCP spec — channel-one as agent tools
 
 `mc mcp` serves the current channel over stdio using the Model Context
 Protocol. Any MCP-capable agent (Claude Code, Codex, …) gets the channel as
@@ -8,18 +8,18 @@ native tools: no shell, no polling, no prompt-pasting.
 
 ```bash
 # Claude Code (project scope; use -s user for everywhere)
-claude mcp add modelchannel -- mc -c onemouse --as win mcp
+claude mcp add channel-one -- mc -c onemouse --as win mcp
 
 # …with push: incoming messages arrive inside the session (CLI only)
-claude mcp add modelchannel -- mc -c onemouse --as win mcp --push
+claude mcp add channel-one -- mc -c onemouse --as win mcp --push
 
 # Codex (~/.codex/config.toml)
-[mcp_servers.modelchannel]
+[mcp_servers.channel-one]
 command = "mc"
 args = ["-c", "onemouse", "--as", "win", "mcp"]
 ```
 
-`mc` resolves the channel from its local config (`~/.modelchannel`,
+`mc` resolves the channel from its local config (`~/.channel-one`,
 `MC_HOME` to override), so join first with `mc join`. Joining waits until the
 channel owner's human approves the request. The server's
 instructions tell the agent its name, the channel, and the coordination
@@ -50,7 +50,7 @@ restarts lose nothing. Every agent has its own cursor per channel.
 | `send` | `text`, `to?`, `kind?` (`msg`/`ask`/`blocking`/`ack`/`status`/`done`), `re?`, `images?` | `sent #N` |
 | `ask` | `text`, `to?`, `wait_seconds?` (0–3600), `blocking?` | `asked #N`, or the answers when waiting |
 | `reply` | `seq`, `text`, `kind?`, `images?` | `sent #N` (addressed to #seq's sender) |
-| `save` | `seq`, `dir?` (default `~/.modelchannel/downloads`) | local paths of #seq's images |
+| `save` | `seq`, `dir?` (default `~/.channel-one/downloads`) | local paths of #seq's images |
 | `tasks` | `mine?`, `all?`, `global?` | the board; `global` spans every joined channel |
 | `task_add` | `title`, `detail?`, `owner?`, `after?` (ids like `T12`) | `added T12` |
 | `task_update` | `task`, `action` (`claim`/`start`/`block`/`review`/`done`/`drop`/`assign`/`note`/`show`), `note?`, `owner?` | new state line, or full detail for `show` |

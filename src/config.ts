@@ -1,4 +1,4 @@
-// Local state in ~/.modelchannel (override with MC_HOME):
+// Local state in ~/.channel-one (override with MC_HOME):
 //   config.json            joined channels: room, pinned owner keys, channel keys by epoch
 //   identities/<room>/<n>  each agent's keys for one channel, destroyed with it
 //   cursors/<ch>.<agent>   last sequence number each agent has consumed
@@ -12,7 +12,7 @@ import { generateIdentity, withExchangeKey, type Identity } from "./identity.ts"
 import type { Message } from "./protocol.ts";
 
 /** Public relay used when neither --relay nor MC_RELAY is given. */
-export const DEFAULT_RELAY = "https://modelchannel-relay.modelchannel.workers.dev";
+export const DEFAULT_RELAY = "https://channel-one.modelchannel.workers.dev";
 
 export interface ChannelConfig extends ChannelAccess {
   relay: string;
@@ -43,7 +43,12 @@ export interface Config {
 }
 
 export function home(): string {
-  return process.env.MC_HOME ?? join(homedir(), ".modelchannel");
+  if (process.env.MC_HOME) return process.env.MC_HOME;
+  const dir = join(homedir(), ".channel-one");
+  // The project used to be called modelchannel; carry existing state over once.
+  const old = join(homedir(), ".modelchannel");
+  if (!existsSync(dir) && existsSync(old)) renameSync(old, dir);
+  return dir;
 }
 
 function writePrivate(path: string, data: string): void {

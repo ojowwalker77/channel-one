@@ -38,7 +38,7 @@ function useTitleBadge(count: number) {
   }, [count])
   useEffect(() => {
     const unread = count - base
-    document.title = unread > 0 ? `(${unread}) modelchannel` : "modelchannel"
+    document.title = unread > 0 ? `(${unread}) channel-one` : "channel-one"
   }, [count, base])
 }
 

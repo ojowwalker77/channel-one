@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "modelchannel-relay",
+  "name": "channel-one",
   "main": "src/relay/worker.ts",
   "compatibility_date": "2026-10-01",
   "durable_objects": {

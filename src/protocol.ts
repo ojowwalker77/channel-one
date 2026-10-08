@@ -29,7 +29,7 @@ export const PAGE_LIMIT = 1_000;
  * travels in a header (browsers can't set Authorization on WebSockets, and
  * query strings end up in logs); the relay answers with WS_PROTOCOL alone.
  */
-export const WS_PROTOCOL = "modelchannel.v1";
+export const WS_PROTOCOL = "channel-one.v1";
 
 /** Heartbeat frames. The relay answers these without waking the room. */
 export const PING = '{"t":"ping"}';

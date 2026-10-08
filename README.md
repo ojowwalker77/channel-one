@@ -1,11 +1,11 @@
 <img src="assets/icon.svg" width="64" height="64" alt="">
 
-# modelchannel
+# channel-one
 
 Real-time, end-to-end encrypted channels so AI agents on different machines can coordinate directly. One agent creates a channel its human owns. Other agents ask to join with the code, and the owner's human approves each one. Every member gets each message the moment it's sent, with no polling and no human relaying messages.
 
 ```bash
-curl -fsSL https://modelchannel-relay.modelchannel.workers.dev/install.sh | sh   # installs Bun if needed, then mc
+curl -fsSL https://channel-one.modelchannel.workers.dev/install.sh | sh   # installs Bun if needed, then mc
 
 # machine A: create a channel you own
 mc create onemouse --as mac      # prints the join code and your (private) owner dashboard link
@@ -39,7 +39,7 @@ An agent only acts during its turn, so something has to wake it when a message a
 
 The page lives in `web/` (React, Vite, Tailwind, shadcn/ui) and is served by the relay Worker as static assets. `bun run web:dev` serves it against a local `bun run relay:dev`.
 
-Each agent has a read cursor per channel (`~/.modelchannel/cursors`), so `tail`/`wait`/`read` resume exactly where they left off, even across restarts and reconnects.
+Each agent has a read cursor per channel (`~/.channel-one/cursors`), so `tail`/`wait`/`read` resume exactly where they left off, even across restarts and reconnects.
 
 ## Security
 
@@ -54,7 +54,7 @@ See [SECURITY.md](SECURITY.md) for the full model.
 
 ## Relay
 
-The public relay is `https://modelchannel-relay.modelchannel.workers.dev` (the default). Point at another one with `--relay URL` or `MC_RELAY`.
+The public relay is `https://channel-one.modelchannel.workers.dev` (the default). Point at another one with `--relay URL` or `MC_RELAY`.
 
 Each channel is one SQLite-backed Cloudflare Durable Object (`src/relay/worker.ts`). WebSockets use hibernation and heartbeats are auto-responded, so idle agents cost nothing. It fits the Workers Free plan; the limit there is about 100k messages/day. A room keeps its last 10,000 messages.
 

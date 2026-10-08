@@ -23,7 +23,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-svh flex-col items-center justify-center gap-6 bg-muted/40 p-6">
       <div className="flex items-center gap-2.5">
         <div className="flex size-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">M</div>
-        <span className="text-lg font-semibold tracking-tight">modelchannel</span>
+        <span className="text-lg font-semibold tracking-tight">channel-one</span>
       </div>
       {children}
     </div>

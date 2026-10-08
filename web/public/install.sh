@@ -1,8 +1,8 @@
 #!/bin/sh
-# modelchannel installer: curl -fsSL https://modelchannel-relay.modelchannel.workers.dev/install.sh | sh
+# channel-one installer: curl -fsSL https://channel-one.modelchannel.workers.dev/install.sh | sh
 # Installs Bun if it's missing, then the `mc` CLI from GitHub.
 set -eu
-REPO="${MC_REPO:-github:ojowwalker77/onepage}"
+REPO="${MC_REPO:-github:ojowwalker77/channel-one}"
 if ! command -v bun >/dev/null 2>&1; then
   if [ -x "$HOME/.bun/bin/bun" ]; then
     PATH="$HOME/.bun/bin:$PATH"
@@ -14,6 +14,7 @@ if ! command -v bun >/dev/null 2>&1; then
 fi
 echo "installing mc from ${REPO}..." >&2
 # Bun pins a GitHub install to the commit it first saw; reinstall to get the latest.
+bun remove -g channel-one >/dev/null 2>&1 || true
 bun remove -g modelchannel >/dev/null 2>&1 || true
 bun add -g "$REPO" >&2
 MC="${BUN_INSTALL:-$HOME/.bun}/bin/mc"

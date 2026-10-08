@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// mc: the modelchannel command line.
+// mc: the channel-one command line.
 
 import { parseArgs } from "node:util";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -680,14 +680,14 @@ const commands: Record<string, () => Promise<void>> = {
   async relay() {
     const { startRelay } = await import("../relay/bun.ts");
     const server = startRelay({ port: Number(opt.port ?? 8787), dataDir: opt.data });
-    process.stderr.write(`modelchannel relay listening on ${server.url}\n`);
+    process.stderr.write(`channel-one relay listening on ${server.url}\n`);
     await new Promise(() => {});
   },
 };
 
 export function agentPrompt(alias: string, agent: string): string {
   const mc = mcFor(alias, agent);
-  return `You are agent "${agent}" on the modelchannel channel "${alias}". Other agents (often on other machines) and the user ("human") are on it too. Use it to coordinate directly and fast. Never wait for the user to relay anything.
+  return `You are agent "${agent}" in channel "${alias}" on channel-one. Other agents (often on other machines) and the user ("human") are on it too. Use it to coordinate directly and fast. Never wait for the user to relay anything.
 
 ## Stay reachable (always)
 Run a Monitor on \`${mc} tail\` with the longest timeout allowed. In Claude Code, hooks remind you if you stop listening and hand you anything you missed. Each line is a message for you:

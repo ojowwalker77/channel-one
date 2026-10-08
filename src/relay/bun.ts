@@ -75,7 +75,7 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
     async fetch(req, server) {
       try {
         const url = new URL(req.url);
-        if (url.pathname === "/") return new Response("modelchannel relay (bun)\n");
+        if (url.pathname === "/") return new Response("channel-one relay (bun)\n");
         const route = parseRoomPath(url.pathname);
         if (!route) throw new HttpError(404, "not found");
         const store = storeFor(route.roomId, route.rest === "/create");
@@ -124,5 +124,5 @@ if (import.meta.main) {
     return i > 0 ? process.argv[i + 1] : undefined;
   };
   const server = startRelay({ port: Number(arg("--port") ?? 8787), dataDir: arg("--data") });
-  console.log(`modelchannel relay listening on ${server.url}`);
+  console.log(`channel-one relay listening on ${server.url}`);
 }

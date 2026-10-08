@@ -19,7 +19,9 @@ import { home, loadConfig, saveConfig } from "./config.ts";
 import { formatMessage } from "./format.ts";
 
 /** Marks our entries in settings.json so install/uninstall can find them. */
-const MARK = "# modelchannel";
+const MARK = "# channel-one";
+/** What our hooks were tagged with before the rename; cleaned up on (un)install. */
+const OLD_MARKS = ["# modelchannel"];
 const EVENTS = { SessionStart: "session-start", UserPromptSubmit: "prompt", Stop: "stop" } as const;
 
 // ---------- directory bindings ----------
@@ -116,7 +118,7 @@ function writeSettings(s: Settings): void {
 
 function withoutOurs(entries: HookEntry[] | undefined): HookEntry[] {
   return (entries ?? [])
-    .map((e) => ({ ...e, hooks: e.hooks.filter((h) => !h.command.includes(MARK)) }))
+    .map((e) => ({ ...e, hooks: e.hooks.filter((h) => ![MARK, ...OLD_MARKS].some((m) => h.command.includes(m))) }))
     .filter((e) => e.hooks.length > 0);
 }
 
@@ -155,7 +157,8 @@ export function hooksInstalled(): boolean {
 export function autoInstallHooks(): string | null {
   if (process.env.MC_NO_HOOKS || !process.env.CLAUDECODE) return null;
   try {
-    return hooksInstalled() ? null : installHooks();
+    // Installed, but by an older mc (different path or marker)? Refresh them.
+    return hooksInstalled() && !JSON.stringify(readSettings()).includes(OLD_MARKS[0]!) ? null : installHooks();
   } catch {
     return null;
   }
@@ -222,7 +225,7 @@ export async function runHook(event: string): Promise<void> {
 
     if (event === "session-start") {
       const lines = [
-        `You are "${b.as}" on the modelchannel channel "${b.alias}" (agents coordinating in real time; "human" is the user).`,
+        `You are "${b.as}" in channel "${b.alias}" on channel-one (agents coordinating in real time; "human" is the user).`,
         listening
           ? "A listener is already running for you."
           : `First, start a Monitor on \`${mc} tail\` with the longest timeout allowed, and restart it whenever it ends. That's how messages reach you.`,
@@ -236,8 +239,8 @@ export async function runHook(event: string): Promise<void> {
     if (event === "prompt") {
       const unread = await unreadText(s);
       const lines: string[] = [];
-      if (unread) lines.push(`New modelchannel messages for you (${b.alias}):`, unread);
-      if (!listening) lines.push(`You're not listening on modelchannel: start a Monitor on \`${mc} tail\` (longest timeout).`);
+      if (unread) lines.push(`New channel-one messages for you (${b.alias}):`, unread);
+      if (!listening) lines.push(`You're not listening on channel-one: start a Monitor on \`${mc} tail\` (longest timeout).`);
       if (lines.length) process.stdout.write(lines.join("\n"));
       return;
     }
@@ -246,14 +249,14 @@ export async function runHook(event: string): Promise<void> {
       const unread = await unreadText(s);
       if (unread) {
         return process.stdout.write(
-          JSON.stringify({ decision: "block", reason: `Before stopping: unread modelchannel messages for you. Handle them (answer with \`${mc} reply N "…"\`):\n${unread}` }),
+          JSON.stringify({ decision: "block", reason: `Before stopping: unread channel-one messages for you. Handle them (answer with \`${mc} reply N "…"\`):\n${unread}` }),
         );
       }
       if (!listening && !input.stop_hook_active && nagDue(input.session_id ?? "")) {
         return process.stdout.write(
           JSON.stringify({
             decision: "block",
-            reason: `You're about to go idle with nothing listening for you on modelchannel, so messages from other agents won't wake you. Start a Monitor on \`${mc} tail\` (longest timeout allowed), then stop.`,
+            reason: `You're about to go idle with nothing listening for you on channel-one, so messages from other agents won't wake you. Start a Monitor on \`${mc} tail\` (longest timeout allowed), then stop.`,
           }),
         );
       }

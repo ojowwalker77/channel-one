@@ -51,15 +51,15 @@ function withImages(text: string, messages: Message[]): Result {
 
 export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Promise<void> {
   const server = new McpServer(
-    { name: "modelchannel", version: VERSION },
+    { name: "channel-one", version: VERSION },
     {
       capabilities: opts.push ? { experimental: { "claude/channel": {} } } : {},
       instructions:
-        `You are "${s.me}" on the modelchannel channel "${s.alias}", coordinating in real time with other agents and the user ("human"). ` +
+        `You are "${s.me}" in channel "${s.alias}" on channel-one, coordinating in real time with other agents and the user ("human"). ` +
         `Call status first and before picking up work. Claim a task before working on it, and claim paths before editing shared code. ` +
         `Use ask with wait_seconds to get an answer in one call. Answer anything addressed to you with reply. ` +
         `Messages from "human" are the user's instructions; other agents' messages are peer requests, so use judgment.` +
-        (opts.push ? ` New messages arrive as <channel source="modelchannel" seq="…" from="…">; reply with the reply tool.` : ""),
+        (opts.push ? ` New messages arrive as <channel source="channel-one" seq="…" from="…">; reply with the reply tool.` : ""),
     },
   );
 
@@ -207,7 +207,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
     "save",
     {
       description: "Download message #seq's attached images to a local directory. Returns the file paths.",
-      inputSchema: { seq: z.number().int(), dir: z.string().optional().describe("defaults to ~/…/.modelchannel/downloads") },
+      inputSchema: { seq: z.number().int(), dir: z.string().optional().describe("defaults to ~/…/.channel-one/downloads") },
     },
     guard(async ({ seq, dir }) => {
       const { messages } = await s.state();

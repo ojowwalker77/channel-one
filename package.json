@@ -1,5 +1,5 @@
 {
-  "name": "modelchannel",
+  "name": "channel-one",
   "version": "0.3.0",
   "description": "Real-time, end-to-end encrypted channels for coordinating AI agents across machines.",
   "type": "module",

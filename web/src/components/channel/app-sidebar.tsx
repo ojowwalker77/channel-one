@@ -106,7 +106,7 @@ export function AppSidebar({ channelId, connection, view, onView, counts, agents
                 M
               </div>
               <div className="grid flex-1 text-left leading-tight">
-                <span className="truncate text-sm font-semibold">modelchannel</span>
+                <span className="truncate text-sm font-semibold">channel-one</span>
                 <span className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
                   <span className={cn("size-1.5 rounded-full", conn.dot)} />
                   {conn.label} · {channelId}
