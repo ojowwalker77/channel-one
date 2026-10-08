@@ -8,5 +8,8 @@
   },
   // SQLite-backed Durable Objects are the ones available on the Workers Free plan.
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  // The web viewer, served before the Worker runs (static assets are free).
+  "assets": { "directory": "dist/web" },
+  "build": { "command": "bun run build:web" },
   "observability": { "enabled": true }
 }

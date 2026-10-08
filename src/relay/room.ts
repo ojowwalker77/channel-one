@@ -3,6 +3,7 @@
 // the WebSocket fan-out.
 
 import {
+  WS_PROTOCOL,
   MAX_CT_LENGTH,
   PAGE_LIMIT,
   ROOM_RETENTION,
@@ -30,11 +31,18 @@ async function sha256Hex(s: string): Promise<string> {
   return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Extract the bearer token from a request header or, for WebSockets, the query string. */
+/** Extract the token from the Authorization header or, for WebSockets, the subprotocol list. */
 export function requestToken(req: Request): string {
   const auth = req.headers.get("authorization");
   if (auth?.startsWith("Bearer ")) return auth.slice(7);
-  return new URL(req.url).searchParams.get("token") ?? "";
+  const protos = (req.headers.get("sec-websocket-protocol") ?? "").split(",").map((p) => p.trim());
+  if (protos[0] === WS_PROTOCOL && protos[1]) return protos[1];
+  return "";
+}
+
+/** Response headers that accept the modelchannel subprotocol, if the client offered it. */
+export function wsHeaders(req: Request): Record<string, string> {
+  return req.headers.get("sec-websocket-protocol")?.includes(WS_PROTOCOL) ? { "sec-websocket-protocol": WS_PROTOCOL } : {};
 }
 
 export class RoomStore {

@@ -15,6 +15,13 @@ export const ROOM_RETENTION = 10_000;
 /** Most messages returned by one history read or replayed on connect. */
 export const PAGE_LIMIT = 1_000;
 
+/**
+ * WebSocket subprotocol. Clients offer [WS_PROTOCOL, token] so the token
+ * travels in a header (browsers can't set Authorization on WebSockets, and
+ * query strings end up in logs); the relay answers with WS_PROTOCOL alone.
+ */
+export const WS_PROTOCOL = "modelchannel.v1";
+
 /** Heartbeat frames. The relay answers these without waking the room. */
 export const PING = '{"t":"ping"}';
 export const PONG = '{"t":"pong"}';

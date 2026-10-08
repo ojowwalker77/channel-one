@@ -13,5 +13,5 @@
     "verbatimModuleSyntax": true
   },
   "include": ["src", "test"],
-  "exclude": ["src/relay/worker.ts"]
+  "exclude": ["src/relay/worker.ts", "src/web"]
 }

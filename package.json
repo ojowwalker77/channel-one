@@ -14,7 +14,8 @@
     "relay:local": "bun src/relay/bun.ts",
     "build": "bun build src/cli/main.ts --compile --outfile dist/mc",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json && tsc --noEmit -p tsconfig.web.json",
+    "build:web": "rm -rf dist/web && bun build src/web/index.html --outdir dist/web --minify && cp src/web/_headers dist/web/"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261008.1",

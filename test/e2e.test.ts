@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,8 @@ let relay: string;
 // MC_TEST_RELAY=http://localhost:8787 runs the suite against another relay,
 // e.g. the Cloudflare one under `wrangler dev`.
 const external = process.env.MC_TEST_RELAY;
+// Real network round trips (and process spawns) need more than Bun's 5s default.
+setDefaultTimeout(30_000);
 
 beforeAll(() => {
   if (external) return void (relay = external);

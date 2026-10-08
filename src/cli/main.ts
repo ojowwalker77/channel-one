@@ -22,8 +22,9 @@ Messages
   mc read [--for-me] [--json]                                 print unread messages, don't block
   mc log [-n N] [--json]                                      show recent history (doesn't mark read)
 
-Agents
+Agents and humans
   mc prompt                                                   print instructions to paste into an agent
+  mc web                                                      print the link to the channel's web page
 
 Relay
   mc relay [--port 8787] [--data DIR]                         run a self-hosted relay
@@ -116,7 +117,7 @@ async function saveChannel(code: string, alias: string | undefined, create: bool
   const name = alias ?? `ch-${keys.roomId.slice(0, 6)}`;
   const ch = new Channel(keys, relay, opt.as ?? "");
   const head = create ? await ch.create() : await ch.head();
-  cfg.channels[name] = { ...keys, relay, ...(opt.as ? { as: agentName() } : {}) };
+  cfg.channels[name] = { ...keys, relay, code, ...(opt.as ? { as: agentName() } : {}) };
   cfg.default = name;
   saveConfig(cfg);
   if (opt.as) writeCursor(name, opt.as, head);
@@ -212,6 +213,14 @@ const commands: Record<string, () => Promise<void>> = {
     );
     clearTimeout(timeout);
     if (!got) die("timed out", 2);
+  },
+
+  async web() {
+    const alias = channelAlias();
+    const c = loadConfig().channels[alias]!;
+    if (!c.code) die(`the join code for "${alias}" wasn't saved; re-join with: mc join <code> ${alias}`);
+    out(`${c.relay}/#${encodeURIComponent(c.code)}`);
+    process.stderr.write("mc: this link grants full access to the channel; share it like a password\n");
   },
 
   async prompt() {

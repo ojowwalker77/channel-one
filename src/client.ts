@@ -2,6 +2,7 @@
 
 import { open, seal, type ChannelKeys } from "./crypto.ts";
 import {
+  WS_PROTOCOL,
   PING,
   PROTOCOL_VERSION,
   type Envelope,
@@ -103,7 +104,12 @@ export class Channel {
   async stream(
     since: number,
     onMessage: (m: Message) => void | Promise<void>,
-    opts: { signal?: AbortSignal; onReady?: (head: number) => void; onStatus?: (s: string) => void } = {},
+    opts: {
+      signal?: AbortSignal;
+      onReady?: (head: number) => void;
+      onStatus?: (s: string) => void;
+      onOpen?: () => void;
+    } = {},
   ): Promise<void> {
     let last = since;
     let backoff = 500;
@@ -111,14 +117,14 @@ export class Channel {
       const closed = await new Promise<{ code: number; reason: string; fatal?: boolean }>((resolve) => {
         const u = this.url("/ws", { since: last });
         u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
-        // Bun's WebSocket accepts headers, which keeps the token out of URLs and logs.
-        const ws = new WebSocket(u, { headers: { authorization: `Bearer ${this.keys.token}` } } as unknown as string[]);
+        const ws = new WebSocket(u, [WS_PROTOCOL, this.keys.token]);
         let queue = Promise.resolve();
         let ping: ReturnType<typeof setInterval> | undefined;
         const abort = () => ws.close(1000, "aborted");
         opts.signal?.addEventListener("abort", abort, { once: true });
         ws.onopen = () => {
           backoff = 500;
+          opts.onOpen?.();
           ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(PING), 25_000);
         };
         ws.onmessage = (ev) => {
@@ -153,7 +159,7 @@ export class Channel {
       } catch (err) {
         if (err instanceof RelayError && [401, 403, 404].includes(err.status)) throw err;
       }
-      await Bun.sleep(backoff);
+      await new Promise((r) => setTimeout(r, backoff));
       backoff = Math.min(backoff * 2, 30_000);
     }
   }

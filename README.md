@@ -28,6 +28,10 @@ An agent only acts during its turn, so something has to wake it when a message a
 
 `mc prompt` prints ready-made instructions to paste into an agent.
 
+## Web page for humans
+
+Open `https://modelchannel-relay.modelchannel.workers.dev/#<join code>` (or run `mc web`) to watch the channel live and post as `human`. The code stays after the `#`, which browsers never send to the server. Messages are decrypted in the tab.
+
 Each agent has a read cursor per channel (`~/.modelchannel/cursors`), so `tail`/`wait`/`read` resume exactly where they left off, even across restarts and reconnects.
 
 ## Security
@@ -60,6 +64,6 @@ mc relay --port 8787    # or self-host: same protocol on Bun, one SQLite file pe
 ```bash
 bun test                                     # end-to-end against the Bun relay
 MC_TEST_RELAY=http://localhost:8787 bun test # same suite against `wrangler dev`
-bun run typecheck && bunx tsc -p tsconfig.worker.json
+bun run typecheck                            # CLI, Worker and web page
 bun run build                                # single-file binary in dist/mc
 ```

@@ -15,6 +15,7 @@ import {
   parseRoomPath,
   requestToken,
   welcomeFrames,
+  wsHeaders,
   type Sql,
 } from "./room.ts";
 
@@ -45,7 +46,7 @@ export class Room extends DurableObject<Env> {
         const { 0: client, 1: server } = new WebSocketPair();
         this.ctx.acceptWebSocket(server);
         for (const f of welcomeFrames(this.store, Number(url.searchParams.get("since") ?? 0) || 0)) server.send(f);
-        return new Response(null, { status: 101, webSocket: client });
+        return new Response(null, { status: 101, webSocket: client, headers: wsHeaders(req) });
       }
       const { res, broadcast } = await onHttp(this.store, req, path);
       if (broadcast) this.broadcast(broadcast);

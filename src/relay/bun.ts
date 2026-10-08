@@ -15,6 +15,7 @@ import {
   parseRoomPath,
   requestToken,
   welcomeFrames,
+  wsHeaders,
 } from "./room.ts";
 
 interface SocketData {
@@ -60,7 +61,7 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
         if (route.rest === "/ws") {
           await store.authorize(requestToken(req), url.searchParams.get("create") === "1");
           const since = Number(url.searchParams.get("since") ?? 0) || 0;
-          if (server.upgrade(req, { data: { roomId: route.roomId, since } })) return undefined;
+          if (server.upgrade(req, { data: { roomId: route.roomId, since }, headers: wsHeaders(req) })) return undefined;
           throw new HttpError(426, "expected websocket");
         }
         const { res, broadcast: frame } = await onHttp(store, req, route.rest);

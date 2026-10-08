@@ -1,3 +1,0 @@
-[test]
-# Generous: the suite can run against a remote relay (MC_TEST_RELAY).
-timeout = 30000

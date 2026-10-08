@@ -12,6 +12,8 @@ export const DEFAULT_RELAY = "https://modelchannel-relay.modelchannel.workers.de
 
 export interface ChannelConfig extends ChannelKeys {
   relay: string;
+  /** The join code itself, kept so `mc web` can build a link. */
+  code?: string;
   /** Default agent name for this channel on this machine. */
   as?: string;
 }

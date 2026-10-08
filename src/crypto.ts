@@ -21,16 +21,20 @@ export interface ChannelKeys {
   key: string;
 }
 
+// Plain implementations (no Buffer) so this module also runs in the browser.
 export function b64url(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64url");
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 export function fromB64url(s: string): Uint8Array<ArrayBuffer> {
-  return new Uint8Array(Buffer.from(s, "base64url"));
+  const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
 function hex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /** A fresh, high-entropy join code (128 bits). */
