@@ -123,7 +123,7 @@ export function Details(p: Props) {
                             : r.sponsoredBy
                               ? `Agent for ${r.sponsoredBy.name}${supervisor ? `, who joins with it` : ""}`
                               : signInRelay
-                                ? "Agent. Nobody has vouched for it yet."
+                                ? "Agent, waiting for the person who runs it to vouch for it"
                                 : "Agent"}
                         </p>
                         <p className="text-[12px] text-ink-3">Asked {formatAgo(r.ts, p.now)}</p>
@@ -134,8 +134,8 @@ export function Details(p: Props) {
                         Decline
                       </Button>
                       {awaitingSponsor ? (
-                        <Button size="sm" onClick={() => setConfirm({ kind: "approve", req: r, mine: true })}>
-                          It’s my agent
+                        <Button size="sm" variant="ghost" onClick={() => setConfirm({ kind: "approve", req: r, mine: true })}>
+                          I run this agent
                         </Button>
                       ) : (
                         <Button size="sm" onClick={() => setConfirm({ kind: "approve", req: r })}>
@@ -145,7 +145,7 @@ export function Details(p: Props) {
                     </div>
                     {awaitingSponsor && (
                       <p className="mt-2 pl-10 text-[12px] leading-snug text-ink-3">
-                        If it belongs to someone else, they vouch for it from the link it printed in its terminal, and then you can approve it.
+                        The person who runs it opens the link it printed and confirms it’s theirs. Then you can approve it here.
                       </p>
                     )}
                   </div>
@@ -253,11 +253,13 @@ export function Details(p: Props) {
       <Alert
         open={confirm?.kind === "approve"}
         onClose={() => setConfirm(null)}
-        title={confirm?.kind === "approve" ? (confirm.mine ? `Is ${confirm.req.name} your agent?` : `Let ${confirm.req.name} in?`) : ""}
+        title={confirm?.kind === "approve" ? (confirm.mine ? `Do you run ${confirm.req.name} yourself?` : `Let ${confirm.req.name} in?`) : ""}
         message={
           confirm?.kind === "approve" && (
             <>
-              {confirm.mine ? "It will act for you in this channel. Say yes only if its terminal shows this exact code." : <>Approve only if {confirm.req.kind === "human" ? "they show" : "its terminal shows"} this exact code.</>}
+              {confirm.mine ? (
+                "It will be listed as your agent and act for you. If someone else runs it, cancel: they vouch for it from its link. Say yes only if you started it and its terminal shows this code."
+              ) : <>Approve only if {confirm.req.kind === "human" ? "they show" : "its terminal shows"} this exact code.</>}
               <span className="mt-4 mb-1 block text-[34px] leading-none font-semibold tracking-[0.04em] text-ink tabular-nums">{confirm.req.code}</span>
             </>
           )
@@ -268,7 +270,7 @@ export function Details(p: Props) {
         </Button>
         {confirm?.kind === "approve" && (
           <Button disabled={busy || taken} onClick={() => run(() => (confirm.mine ? p.onApproveOwn : p.onApprove)(confirm.req), `${confirm.req.name} joined`)}>
-            {taken ? "That name is taken" : confirm.mine ? "Yes, let it in" : "Approve"}
+            {taken ? "That name is taken" : confirm.mine ? "Yes, I run it" : "Approve"}
           </Button>
         )}
       </Alert>

@@ -119,7 +119,10 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
   const meM = state.members.get(me);
   out.push(`channel ${alias} · you are ${me}${meM?.role ? ` (${meM.role})` : ""} · head #${state.head}${unread ? ` · ${unread} unread` : ""}`);
 
-  const names = new Set([...state.members.keys(), ...online.keys()]);
+  // Only people and agents still in the channel; anyone who left or was removed is listed apart.
+  const current = [...state.members.values()].filter((m) => m.active).map((m) => m.name);
+  const names = new Set([...current, ...[...online.keys()].filter((n) => state.members.get(n)?.active)]);
+  const left = [...state.members.values()].filter((m) => !m.active).map((m) => m.name);
   out.push("", `members (${names.size}):`);
   for (const name of [...names].sort()) {
     const m = state.members.get(name);
@@ -130,6 +133,7 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
     const kind = m?.kind === "human" ? ` · human${m.display ? ` (${m.display})` : ""}${m.owner ? ", owner" : ""}` : m?.sponsor ? ` · agent of @${m.sponsor.handle ?? m.sponsor.name}` : "";
     out.push(`  ${name}${name === me ? " (you)" : ""}${role ? ` — ${role}` : ""}${kind} · ${where}${key}`);
   }
+  if (left.length) out.push(`  left or removed: ${left.sort().join(", ")}`);
 
   const asks = state.openAsks.filter((a) => a.from !== me && (!a.to || a.to.includes(me)));
   if (asks.length) {
