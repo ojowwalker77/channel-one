@@ -2,7 +2,10 @@
 // mc: the modelchannel command line.
 
 import { parseArgs } from "node:util";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join as joinPath } from "node:path";
 import { AgentSession, Rejected } from "../agent.ts";
+import { loadImages } from "../attach.ts";
 import { Channel, RelayError } from "../client.ts";
 import { DEFAULT_RELAY, loadConfig, loadIdentity, saveConfig, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, deriveChannel, generateCode } from "../crypto.ts";
@@ -14,16 +17,18 @@ import { VERSION } from "../version.ts";
 
 const HELP = `mc ${VERSION} — real-time coordination for AI agents
 
-Start
-  mc create [alias] --as NAME [--role R]       start a channel; prints its join code
+Start (one command: mc quick)
+  mc quick [alias] --as NAME [--role R]      create a channel; prints join code, watch link, agent instructions
+  mc create [alias] --as NAME [--role R]     same as quick (explicit name for scripts)
   mc join <code> [alias] --as NAME [--role R]  join, announce yourself, print agent instructions
   mc prompt                                    print instructions to paste into an agent
   mc status                                    members, tasks, claims, facts, questions waiting on you
 
 Talk
-  mc send "text" [--to a,b|role:x] [--kind K] [--re N]   (text from stdin if omitted)
+  mc send "text" [--to a,b|role:x] [--kind K] [--re N] [--image f.png …]   (text from stdin if omitted)
   mc ask --to NAME "question" [--wait 10m]     with --wait, block until answered and print the answer
   mc reply N "text" [--kind done]              answer message #N (goes to its sender)
+  mc save N [dir]                              download message #N's images into dir
   mc tail [--for-me|--all] [--json]            stream messages for you, one per line (for a Monitor)
   mc wait [--for-me|--all] [--timeout 10m]     block until the next message for you, print, exit
   mc read [--for-me|--all]                     print unread messages without blocking
@@ -32,8 +37,8 @@ Talk
 Coordinate
   mc task add "title" [--owner NAME] [--after T3,T4] [--detail "…"]
   mc task claim|start|block|review|done|drop T7 ["note"]
-  mc task assign T7 NAME          mc task note T7 "…"          mc task show T7
-  mc tasks [--mine] [--all]
+   mc task assign T7 NAME          mc task note T7 "…"          mc task show T7
+   mc tasks [--mine] [--all] [--global]   (--global: every channel you joined)
   mc claim PATH… [--ttl 30m] [--note "…"]      reserve paths before editing; fails if someone holds them
   mc release [PATH…]                           release (all of yours if none given)
   mc claims
@@ -60,6 +65,7 @@ const { values: opt, positionals: args } = parseArgs({
     to: { type: "string" },
     kind: { type: "string" },
     re: { type: "string" },
+    image: { type: "string", multiple: true },
     wait: { type: "string" },
     owner: { type: "string" },
     after: { type: "string" },
@@ -69,6 +75,7 @@ const { values: opt, positionals: args } = parseArgs({
     mine: { type: "boolean" },
     "for-me": { type: "boolean" },
     all: { type: "boolean" },
+    global: { type: "boolean" },
     json: { type: "boolean" },
     timeout: { type: "string" },
     "sign-in": { type: "boolean" },
@@ -127,6 +134,18 @@ function list(s: string | undefined): string[] | undefined {
   return items?.length ? items : undefined;
 }
 
+/** `--image a.png --image b.png` → attachments (dies with a clear reason). */
+function images(): { name: string; mime: string; data: string }[] | undefined {
+  const v = opt.image as string | string[] | undefined;
+  const paths = Array.isArray(v) ? v : v ? [v] : [];
+  if (!paths.length) return undefined;
+  try {
+    return loadImages(paths);
+  } catch (err) {
+    die(err instanceof Error ? err.message : String(err));
+  }
+}
+
 function taskArg(i = 2): number {
   const raw = args[i] ?? die(`usage: mc task ${args[1]} T<id>`);
   return parseTaskId(raw) ?? die(`"${raw}" isn't a task id (like T12)`);
@@ -170,6 +189,10 @@ async function joinChannel(code: string, alias: string | undefined, create: bool
 }
 
 const commands: Record<string, () => Promise<void>> = {
+  async quick() {
+    return commands.create!();
+  },
+
   async create() {
     const code = opt.code ?? generateCode();
     if (opt.code && opt.code.length < 16) process.stderr.write("mc: warning: short codes can be guessed; prefer a generated one\n");
@@ -227,7 +250,7 @@ const commands: Record<string, () => Promise<void>> = {
     const kind = (opt.kind ?? "msg") as Kind;
     if (!CHAT_KINDS.includes(kind)) die(`kind must be one of: ${CHAT_KINDS.join(", ")}`);
     const re = list(opt.re)?.map((x) => Number(x.replace(/^#/, ""))).filter((n) => n > 0);
-    out(`sent #${await s.send(body, { to: list(opt.to), kind, re })}`);
+    out(`sent #${await s.send(body, { to: list(opt.to), kind, re, imgs: images() })}`);
   },
 
   async ask() {
@@ -236,8 +259,7 @@ const commands: Record<string, () => Promise<void>> = {
     if (!body.trim()) die('usage: mc ask --to NAME "question" [--wait 10m]');
     const waitSec = opt.wait ? parseDuration(opt.wait) : 0;
     const kind = (opt.kind ?? "ask") as Kind;
-    const { seq, replies } = await s.ask(body, { to: list(opt.to), kind, waitSec });
-    if (!waitSec) return out(`asked #${seq}`);
+    const { seq, replies } = await s.ask(body, { to: list(opt.to), kind, waitSec, imgs: images() });    if (!waitSec) return out(`asked #${seq}`);
     if (!replies.length) die(`no answer to #${seq} within ${opt.wait}; replies will still arrive in tail/wait`, 2);
     for (const r of replies) out(render(r));
   },
@@ -247,7 +269,23 @@ const commands: Record<string, () => Promise<void>> = {
     const seq = Number((args[1] ?? "").replace(/^#/, "")) || die('usage: mc reply N "text"');
     const body = await text(2);
     if (!body.trim()) die("empty reply");
-    out(`sent #${await s.reply(seq, body, (opt.kind ?? "msg") as Kind)}`);
+    out(`sent #${await s.reply(seq, body, (opt.kind ?? "msg") as Kind, images())}`);
+  },
+
+  async save() {
+    const s = await session();
+    const seq = Number((args[1] ?? "").replace(/^#/, "")) || die("usage: mc save N [dir]");
+    const { messages } = await s.state();
+    const m = messages.find((x) => x.seq === seq) ?? die(`no message #${seq}`);
+    if (!m.imgs?.length) die(`message #${seq} has no images`);
+    const dir = args[2] ?? ".";
+    mkdirSync(dir, { recursive: true });
+    for (const img of m.imgs) {
+      const safe = img.name.replace(/[^A-Za-z0-9_.-]/g, "_") || "image";
+      const path = joinPath(dir, `#${seq}-${safe}`);
+      writeFileSync(path, Buffer.from(img.data, "base64"));
+      out(path);
+    }
   },
 
   async log() {
@@ -319,6 +357,21 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async tasks() {
+    if (opt.global) {
+      const cfg = loadConfig();
+      const aliases = Object.keys(cfg.channels).sort();
+      if (!aliases.length) die("no channels yet (see: mc create, mc join)");
+      for (const alias of aliases) {
+        const c = cfg.channels[alias]!;
+        const sess = await AgentSession.open(alias, c, agentName(c));
+        const { state } = await sess.state();
+        const owner = opt.mine ? sess.me : opt.owner;
+        const lines = formatTasks(state, { all: opt.all, owner });
+        out(`## ${alias}${lines === "no tasks" ? " — no tasks" : ""}`);
+        if (lines !== "no tasks") out(lines.split("\n").map((l) => `  ${l}`).join("\n"));
+      }
+      return;
+    }
     const s = await session();
     const { state } = await s.state();
     out(formatTasks(state, { all: opt.all, owner: opt.mine ? s.me : opt.owner }));
@@ -424,6 +477,8 @@ No Monitor tool? Run \`${mc} wait\` in the background instead, handle what it pr
 
 ## Talk
   ${mc} send "text" [--to name|role:x] [--kind status|done|blocking]
+  ${mc} send --image shot.png "this dialog, is it right?"   attach screenshots (png/jpg/gif/webp, ≤256KB each)
+  ${mc} save 42 ~/shots                        download message #42's images
   ${mc} ask --to win "question" --wait 10m      blocks until win answers, then prints the answer
   ${mc} reply 42 "answer"                        answers #42 and notifies its sender
 ## Work

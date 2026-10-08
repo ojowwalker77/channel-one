@@ -6,14 +6,19 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { AgentSession, Rejected } from "./agent.ts";
+import { loadImages } from "./attach.ts";
+import { home, loadConfig } from "./config.ts";
 import { formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "./format.ts";
-import { CHAT_KINDS, type Kind } from "./protocol.ts";
+import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
 import { parseTaskId, taskId } from "./state.ts";
 import { VERSION } from "./version.ts";
 
-type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
+type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+type Result = { content: Content[]; isError?: boolean };
 
 const ok = (text: string): Result => ({ content: [{ type: "text", text }] });
 const fail = (text: string): Result => ({ content: [{ type: "text", text }], isError: true });
@@ -35,6 +40,14 @@ function task(id: string): number {
 }
 
 const kind = z.enum(CHAT_KINDS as [Kind, ...Kind[]]);
+
+/** Text plus one image block per attached image (newest first, at most a few). */
+function withImages(text: string, messages: Message[]): Result {
+  const content: Content[] = [{ type: "text", text }];
+  const imgs = messages.filter((m) => m.imgs?.length).slice(-3);
+  for (const m of imgs) for (const img of m.imgs!.slice(0, 3)) content.push({ type: "image", data: img.data, mimeType: img.mime });
+  return { content };
+}
 
 export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Promise<void> {
   const server = new McpServer(
@@ -62,29 +75,46 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
 
   server.registerTool(
     "read",
-    { description: "Unread messages for you (marks them read).", inputSchema: { all: z.boolean().optional().describe("include every message and event") } },
-    guard(async ({ all }) => {
-      const { messages, state } = await s.read({ all });
-      return messages.length ? messages.map((m) => formatMessage(m, state.trust.get(m.seq), state)).join("\n") : "no unread messages";
-    }),
+    { description: "Unread messages for you (marks them read). Images come back as image blocks.", inputSchema: { all: z.boolean().optional().describe("include every message and event") } },
+    async ({ all }) => {
+      try {
+        const { messages, state } = await s.read({ all });
+        if (!messages.length) return ok("no unread messages");
+        return withImages(messages.map((m) => formatMessage(m, state.trust.get(m.seq), state)).join("\n"), messages);
+      } catch (err) {
+        return fail(err instanceof Error ? err.message : String(err));
+      }
+    },
   );
 
   server.registerTool(
     "log",
-    { description: "Recent channel history (doesn't mark anything read).", inputSchema: { n: z.number().int().min(1).max(500).optional() } },
-    guard(async ({ n }) => {
-      const { messages, state } = await s.state();
-      return messages.slice(-(n ?? 30)).map((m) => formatMessage(m, state.trust.get(m.seq), state)).join("\n") || "no messages";
-    }),
+    { description: "Recent channel history (doesn't mark anything read). Images come back as image blocks.", inputSchema: { n: z.number().int().min(1).max(500).optional() } },
+    async ({ n }) => {
+      try {
+        const { messages, state } = await s.state();
+        const shown = messages.slice(-(n ?? 30));
+        if (!shown.length) return ok("no messages");
+        return withImages(shown.map((m) => formatMessage(m, state.trust.get(m.seq), state)).join("\n"), shown);
+      } catch (err) {
+        return fail(err instanceof Error ? err.message : String(err));
+      }
+    },
   );
 
   server.registerTool(
     "send",
     {
       description: "Post a message. Omit `to` to address everyone; `role:x` addresses everyone with that role.",
-      inputSchema: { text: z.string(), to: z.array(z.string()).optional(), kind: kind.optional(), re: z.array(z.number().int()).optional() },
+      inputSchema: {
+        text: z.string(),
+        to: z.array(z.string()).optional(),
+        kind: kind.optional(),
+        re: z.array(z.number().int()).optional(),
+        images: z.array(z.string()).optional().describe("local image files to attach (png, jpg, gif, webp, ≤256KB each)"),
+      },
     },
-    guard(async ({ text, to, kind, re }) => `sent #${await s.send(text, { to, kind, re })}`),
+    guard(async ({ text, to, kind, re, images }) => `sent #${await s.send(text, { to, kind, re, imgs: images?.length ? loadImages(images) : undefined })}`),
   );
 
   server.registerTool(
@@ -103,14 +133,80 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
 
   server.registerTool(
     "reply",
-    { description: "Reply to message #seq; it goes to that message's sender.", inputSchema: { seq: z.number().int(), text: z.string(), kind: kind.optional() } },
-    guard(async ({ seq, text, kind }) => `sent #${await s.reply(seq, text, kind)}`),
+    {
+      description: "Reply to message #seq; it goes to that message's sender.",
+      inputSchema: {
+        seq: z.number().int(),
+        text: z.string(),
+        kind: kind.optional(),
+        images: z.array(z.string()).optional().describe("local image files to attach (png, jpg, gif, webp, ≤256KB each)"),
+      },
+    },
+    guard(async ({ seq, text, kind, images }) => `sent #${await s.reply(seq, text, kind, images?.length ? loadImages(images) : undefined)}`),
+  );
+
+  server.registerTool(
+    "who",
+    { description: "Who is listening on the channel right now." },
+    guard(async () => {
+      const [online, { state }] = await Promise.all([s.who(), s.state()]);
+      if (!online.size) return "nobody else is listening right now";
+      return [...online]
+        .map(([name, p]) => {
+          const role = p.role ?? state.members.get(name)?.role;
+          return `${name}${role ? ` — ${role}` : ""} · ${p.client}`;
+        })
+        .join("\n");
+    }),
+  );
+
+  server.registerTool(
+    "save",
+    {
+      description: "Download message #seq's attached images to a local directory. Returns the file paths.",
+      inputSchema: { seq: z.number().int(), dir: z.string().optional().describe("defaults to ~/…/.modelchannel/downloads") },
+    },
+    guard(async ({ seq, dir }) => {
+      const { messages } = await s.state();
+      const m = messages.find((x) => x.seq === seq);
+      if (!m) throw new Rejected(`no message #${seq}`);
+      if (!m.imgs?.length) throw new Rejected(`message #${seq} has no images`);
+      const out = dir ?? join(home(), "downloads");
+      mkdirSync(out, { recursive: true });
+      const paths: string[] = [];
+      for (const img of m.imgs) {
+        const safe = img.name.replace(/[^A-Za-z0-9_.-]/g, "_") || "image";
+        const path = join(out, `#${seq}-${safe}`);
+        writeFileSync(path, Buffer.from(img.data, "base64"));
+        paths.push(path);
+      }
+      return paths.join("\n");
+    }),
   );
 
   server.registerTool(
     "tasks",
-    { description: "The shared task board.", inputSchema: { mine: z.boolean().optional(), all: z.boolean().optional().describe("include done tasks") } },
-    guard(async ({ mine, all }) => formatTasks((await s.state()).state, { all, owner: mine ? s.me : undefined })),
+    {
+      description: "The shared task board. With global, every channel you joined.",
+      inputSchema: { mine: z.boolean().optional(), all: z.boolean().optional().describe("include done tasks"), global: z.boolean().optional() },
+    },
+    guard(async ({ mine, all, global }) => {
+      if (!global) return formatTasks((await s.state()).state, { all, owner: mine ? s.me : undefined });
+      const cfg = loadConfig();
+      const aliases = Object.keys(cfg.channels).sort();
+      if (!aliases.length) return "no channels";
+      const out: string[] = [];
+      for (const alias of aliases) {
+        const c = cfg.channels[alias]!;
+        const sess = await AgentSession.open(alias, c, c.as ?? s.me);
+        const { state } = await sess.state();
+        const owner = mine ? sess.me : undefined;
+        const lines = formatTasks(state, { all, owner });
+        out.push(`## ${alias}${lines === "no tasks" ? " — no tasks" : ""}`);
+        if (lines !== "no tasks") out.push(lines.split("\n").map((l) => `  ${l}`).join("\n"));
+      }
+      return out.join("\n");
+    }),
   );
 
   server.registerTool(

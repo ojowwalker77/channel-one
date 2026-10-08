@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, RelayError } from "../src/client.ts";
@@ -233,6 +233,43 @@ describe("agents coordinating through the CLI", () => {
   });
 });
 
+describe("images and cross-channel tasks through the CLI", () => {
+  test("quick, send --image, log markers, save, oversize rejected, tasks --global", async () => {
+    const a = home("imgcli");
+    const created = await ok(a, "quick", "pics", "--as", "pic");
+    const code = /join code: (\S+)/.exec(created)![1]!;
+    expect(created).toContain("watch it live:");
+    expect(created).toContain('You are agent "pic"');
+
+    // No --as needed: falls back to the OS user.
+    const plain = await ok(home("plaincli"), "create", "plain");
+    expect(plain).toMatch(/join code: \S+/);
+
+    const dir = home("imgfiles");
+    mkdirSync(dir, { recursive: true });
+    const png = join(dir, "shot.png");
+    await Bun.write(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+    const sent = await ok(a, "send", "--image", png, "the dialog");
+    const seq = /sent #(\d+)/.exec(sent)![1]!;
+    expect(code.startsWith("mc1-")).toBe(true);
+    expect(await ok(a, "log", "-n", "3")).toContain("[image: shot.png");
+    expect((await ok(a, "save", seq, dir)).trim()).toBe(join(dir, `#${seq}-shot.png`));
+
+    const big = join(dir, "big.png");
+    await Bun.write(big, Buffer.alloc(300 * 1024));
+    const rej = await run(a, "send", "--image", big, "too big");
+    expect(rej.code).toBe(1);
+    expect(rej.err).toContain("limit");
+
+    await ok(a, "create", "second", "--as", "pic");
+    await ok(a, "task", "add", "second task");
+    const all = await ok(a, "tasks", "--global");
+    expect(all).toContain("## pics");
+    expect(all).toContain("## second");
+    expect(all).toContain("second task");
+  });
+});
+
 describe("MCP server", () => {
   test("exposes the channel as tools", async () => {
     const h = home("mcp");
@@ -268,13 +305,30 @@ describe("MCP server", () => {
     expect(init.instructions).toContain('You are "agent-a"');
     p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
     const tools = ((await rpc("tools/list")) as { tools: { name: string }[] }).tools.map((t) => t.name).sort();
-    expect(tools).toEqual(["ask", "claim", "facts", "log", "read", "release", "reply", "send", "status", "task_add", "task_update", "tasks"]);
+    expect(tools).toEqual(["ask", "claim", "facts", "log", "read", "release", "reply", "save", "send", "status", "task_add", "task_update", "tasks", "who"]);
 
     expect(await call("task_add", { title: "write docs" })).toMatch(/^added T\d+$/);
     expect(await call("claim", { paths: ["docs/"], ttl: "10m" })).toContain("docs/  @agent-a");
     expect(await call("status")).toContain("agent-a (you) — builder");
     expect(await call("facts", { set: "docs.url", value: "https://example.com" })).toContain("docs.url = https://example.com");
     expect(await ok(other, "tasks")).toContain("write docs");
+
+    // Images round-trip: send with a file, read back pixels, save to disk.
+    const png = join(home("img"), "shot.png");
+    mkdirSync(join(home("img")), { recursive: true });
+    await Bun.write(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+    const sent = await call("send", { text: "the dialog", images: [png] });
+    expect(sent).toMatch(/^sent #\d+$/);
+    const seq = Number(/^sent #(\d+)$/.exec(sent)![1]);
+    const logRes = (await rpc("tools/call", { name: "log", arguments: {} })) as {
+      content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
+    };
+    expect(logRes.content[0]!.type).toBe("text");
+    expect((logRes.content[0] as { text: string }).text).toContain("[image: shot.png");
+    const imgBlock = logRes.content.find((c) => c.type === "image") as unknown as { data: string; mimeType: string };
+    expect(imgBlock.mimeType).toBe("image/png");
+    expect(await call("save", { seq })).toContain(`#${seq}-shot.png`);
+    expect(await ok(other, "who")).toContain("nobody else is listening right now");
     p.kill();
   });
 });

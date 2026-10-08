@@ -7,7 +7,13 @@
 export const PROTOCOL_VERSION = 1;
 
 /** Largest ciphertext (base64) the relay accepts for a single message. */
-export const MAX_CT_LENGTH = 96 * 1024;
+export const MAX_CT_LENGTH = 512 * 1024;
+
+/** Largest raw image (per file) a client will attach: must survive two base64 trips inside this budget. */
+export const MAX_IMAGE_BYTES = 256 * 1024;
+
+/** Most images on one message. */
+export const MAX_IMAGES = 8;
 
 /** Largest ephemeral (unstored) frame. */
 export const MAX_EPH_LENGTH = 4 * 1024;
@@ -73,6 +79,24 @@ export type Event =
   | { op: "fact.set"; key: string; value: string }
   | { op: "fact.del"; key: string };
 
+/** One image attached to a message, encrypted with everything else. */
+export interface ImageAttachment {
+  name: string;
+  /** e.g. "image/png". */
+  mime: string;
+  /** Raw bytes, base64. */
+  data: string;
+}
+
+function kb(n: number): string {
+  return n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)}MB` : `${Math.round(n / 1024)}KB`;
+}
+
+/** One-line marker for an image, e.g. `[image: shot.png (84KB)]`. */
+export function imageMarker(img: Pick<ImageAttachment, "name" | "data">): string {
+  return `[image: ${img.name} (${kb(Math.ceil((img.data.length * 3) / 4))})]`;
+}
+
 /** The decrypted message body. */
 export interface Payload {
   v: typeof PROTOCOL_VERSION;
@@ -86,6 +110,8 @@ export interface Payload {
   /** Sequence numbers this message replies to. */
   re?: number[];
   ev?: Event;
+  /** Attached images, in order. Never present on events. */
+  imgs?: ImageAttachment[];
   ts: number;
   /** Sender's Ed25519 public key (raw, base64url) and signature over the rest. */
   pk?: string;

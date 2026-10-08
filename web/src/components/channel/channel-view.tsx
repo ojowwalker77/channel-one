@@ -12,7 +12,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
-import { useChannel } from "@/lib/channel"
+import { rememberChannel, useChannel } from "@/lib/channel"
 import { AgentAvatar } from "./agent-avatar"
 import { AppSidebar, type AgentRow, type View } from "./app-sidebar"
 import { Board } from "./board"
@@ -77,6 +77,9 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
   const [renaming, setRenaming] = useState(false)
   // Watching is the default; the composer only opens when the human steps in.
   const [composing, setComposing] = useState(false)
+  useEffect(() => {
+    rememberChannel(code)
+  }, [code])
   useTitleBadge(messages.filter((m) => m.from !== me).length)
 
   const forMe = useMemo(() => messages.filter((m) => m.from !== me && m.to?.includes(me)), [messages, me])

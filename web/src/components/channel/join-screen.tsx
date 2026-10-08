@@ -1,12 +1,13 @@
-import { ArrowRightIcon, LockKeyholeIcon } from "lucide-react"
+import { ArrowRightIcon, KanbanSquareIcon, LockKeyholeIcon } from "lucide-react"
 import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import type { KnownChannel } from "@/lib/channel"
 
-export function JoinScreen({ onJoin }: { onJoin: (code: string) => void }) {
+export function JoinScreen({ channels, onJoin, onGlobal }: { channels: KnownChannel[]; onJoin: (code: string) => void; onGlobal: () => void }) {
   const [code, setCode] = useState("")
 
   return (
@@ -57,6 +58,22 @@ export function JoinScreen({ onJoin }: { onJoin: (code: string) => void }) {
       <p className="text-xs text-muted-foreground">
         No code yet? Run <code className="rounded bg-muted px-1.5 py-0.5 font-mono">mc create</code> on any machine.
       </p>
+
+      {channels.length > 0 && (
+        <div className="grid w-full max-w-sm gap-2">
+          <Button variant="outline" className="w-full" onClick={onGlobal}>
+            <KanbanSquareIcon />
+            Tasks across {channels.length} channel{channels.length === 1 ? "" : "s"}
+          </Button>
+          {channels.slice(0, 5).map((c) => (
+            <Button key={c.code} variant="ghost" size="sm" className="w-full justify-start font-mono text-xs" onClick={() => onJoin(c.code)}>
+              <span className="truncate">
+                {c.code.length > 24 ? `${c.code.slice(0, 18)}…${c.code.slice(-4)}` : c.code}
+              </span>
+            </Button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -5,7 +5,7 @@
 import { Channel, isDirectedAt, isForAgent, type SendOptions } from "./client.ts";
 import { appendCache, loadIdentity, markSeen, readCache, readCursor, readSeen, writeCursor, type ChannelConfig } from "./config.ts";
 import type { Identity } from "./identity.ts";
-import { TASK_STATES, type Event, type Kind, type Message, type Presence, type TaskState } from "./protocol.ts";
+import { TASK_STATES, type Event, type ImageAttachment, type Kind, type Message, type Presence, type TaskState } from "./protocol.ts";
 import { fold, overlaps, taskId, waitingOn, type ChannelState } from "./state.ts";
 
 /** How often a listening agent re-announces itself. Receivers treat 2.5x this as offline. */
@@ -206,9 +206,9 @@ export class AgentSession {
    * referencing it). Returns the replies; they're marked seen so tail/wait
    * don't deliver them a second time.
    */
-  async ask(body: string, opts: { to?: string[]; kind?: Kind; waitSec?: number; signal?: AbortSignal }): Promise<{ seq: number; replies: Message[] }> {
+  async ask(body: string, opts: { to?: string[]; kind?: Kind; waitSec?: number; signal?: AbortSignal; imgs?: ImageAttachment[] }): Promise<{ seq: number; replies: Message[] }> {
     const head = await this.ch.head();
-    const seq = await this.send(body, { to: opts.to, kind: opts.kind ?? "ask" });
+    const seq = await this.send(body, { to: opts.to, kind: opts.kind ?? "ask", imgs: opts.imgs });
     if (!opts.waitSec) return { seq, replies: [] };
     const replies = await this.awaitReplies(seq, head, opts.waitSec, opts.signal);
     return { seq, replies };
@@ -235,12 +235,12 @@ export class AgentSession {
   }
 
   /** Reply to message #seq, addressed to its sender. */
-  async reply(seq: number, body: string, kind: Kind = "msg"): Promise<number> {
+  async reply(seq: number, body: string, kind: Kind = "msg", imgs?: ImageAttachment[]): Promise<number> {
     const { messages } = await this.state();
     const orig = messages.find((m) => m.seq === seq);
     if (!orig) throw new Rejected(`no message #${seq}`);
     const to = orig.from === this.me ? orig.to : [orig.from];
-    return this.ch.send(body, { to, kind, re: [seq] });
+    return this.ch.send(body, { to, kind, re: [seq], imgs });
   }
 
   async hello(role?: string, about?: string): Promise<number> {

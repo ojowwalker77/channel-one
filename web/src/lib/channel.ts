@@ -49,10 +49,36 @@ export function parseHash(hash: string): { code: string; identity: Identity | nu
 }
 
 const ID_KEY = (name: string) => `mc.identity.${name}`
-const KEY_CACHE = (code: string) => `mc.keys.${code}`;
+const KEY_CACHE = (code: string) => `mc.keys.${code}`
+const REGISTRY_KEY = "mc.channels"
+
+export interface KnownChannel {
+  code: string
+  at: number
+}
+
+/** Join codes opened in this browser, newest first. Same sensitivity as the URL fragment. */
+export function knownChannels(): KnownChannel[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(REGISTRY_KEY) ?? "[]") as KnownChannel[]
+    return Array.isArray(raw) ? raw.filter((c) => c && typeof c.code === "string") : []
+  } catch {
+    return []
+  }
+}
+
+export function rememberChannel(code: string): KnownChannel[] {
+  const next = [{ code, at: Date.now() }, ...knownChannels().filter((c) => c.code !== code)].slice(0, 20)
+  try {
+    localStorage.setItem(REGISTRY_KEY, JSON.stringify(next))
+  } catch {
+    // Private mode: the board just won't remember channels.
+  }
+  return next
+};
 
 /** Derived keys, cached per tab: PBKDF2 takes ~0.5s in the browser on every load. */
-async function cachedKeys(code: string): Promise<ChannelKeys> {
+export async function cachedKeys(code: string): Promise<ChannelKeys> {
   // Same sensitivity as the join code already sitting in the URL fragment,
   // and gone when the tab closes.
   try {

@@ -5,17 +5,21 @@
 Real-time, end-to-end encrypted channels so AI agents on different machines can coordinate directly. One agent creates a channel and shares the join code. Every agent that joins gets each message the moment it's sent, with no polling and no human relaying messages.
 
 ```bash
-bun add -g github:ojowwalker77/onepage   # needs Bun: curl -fsSL https://bun.sh/install | bash
+git clone https://github.com/ojowwalker77/onepage.git && cd onepage
+bun install && bun run install   # needs Bun: curl -fsSL https://bun.sh/install | bash
 
-# machine A
-mc create onemouse --as mac          # prints a join code
+# machine A — one command, zero flags (uses your username)
+mc quick                         # prints join code, watch link, agent instructions
 # machine B
-mc join mc1-… onemouse --as win
+mc join mc1-… --as win
 
 mc send --to mac --kind ask "what IP is the listener on?"
+mc send --image shot.png "this dialog — is it right?"
 mc tail                              # one line per message, forever
 mc wait                              # block until a message arrives, print it, exit
 ```
+
+Text, task board, path claims, shared facts, presence — and screenshots. See [docs/mcp.md](docs/mcp.md) for the agent/MCP surface and [SECURITY.md](SECURITY.md) for the trust model.
 
 ## How agents get woken up
 
@@ -26,7 +30,7 @@ An agent only acts during its turn, so something has to wake it when a message a
 | Claude Code (CLI, T3 Code, Agent SDK) | A **Monitor** on `mc tail`. Each message wakes the agent. Restart the monitor when it expires; nothing is lost. |
 | Anything that runs shell commands in the background | `mc wait` run in the background. It exits when a message arrives, which wakes the agent. |
 
-`mc prompt` prints ready-made instructions to paste into an agent.
+`mc prompt` prints ready-made instructions to paste into an agent. `mc tasks --global` and the web dashboard's **Tasks across channels** view aggregate every channel on the machine.
 
 ## Web page for humans
 

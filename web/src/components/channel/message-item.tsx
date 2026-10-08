@@ -15,7 +15,7 @@ import { memo } from "react"
 import { toast } from "sonner"
 
 import { describeEvent } from "@mc/format.ts"
-import type { Event, Message, Trust } from "@mc/protocol.ts"
+import type { Event, ImageAttachment, Message, Trust } from "@mc/protocol.ts"
 import type { ChannelState } from "@mc/state.ts"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -88,8 +88,22 @@ function EventRow({ m, trust, state, onOpenTask }: { m: Message; trust?: Trust; 
   )
 }
 
-export function TrustBadge({ trust, pk }: { trust?: Trust; pk?: string }) {
-  if (trust === "verified") {
+function Attachments({ imgs }: { imgs: ImageAttachment[] }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {imgs.map((img, i) => {
+        const url = `data:${img.mime};base64,${img.data}`
+        return (
+          <a key={i} href={url} target="_blank" rel="noreferrer" title={`${img.name} — open full size`}>
+            <img src={url} alt={img.name} loading="lazy" className="max-h-48 max-w-full rounded-lg border object-cover hover:opacity-90" />
+          </a>
+        )
+      })}
+    </div>
+  )
+}
+
+export function TrustBadge({ trust, pk }: { trust?: Trust; pk?: string }) {  if (trust === "verified") {
     return (
       <Tooltip>
         <TooltipTrigger asChild>
@@ -193,6 +207,7 @@ export const MessageItem = memo(function MessageItem({ message: m, trust, state,
         <div className={cn(!compact && "mt-0.5", trust === "forged" && "opacity-60")}>
           <Markdown>{m.body}</Markdown>
         </div>
+        {m.imgs?.length ? <Attachments imgs={m.imgs} /> : null}
       </div>
 
       <div className="absolute -top-3 right-3 hidden items-center rounded-lg border bg-popover p-0.5 shadow-sm group-hover:flex">

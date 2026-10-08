@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react"
 
 import { ChannelView } from "@/components/channel/channel-view"
-import { parseHash } from "@/lib/channel"
+import { GlobalBoard } from "@/components/channel/global-board"
+import { knownChannels, parseHash } from "@/lib/channel"
 import { JoinScreen } from "@/components/channel/join-screen"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -18,9 +19,15 @@ function readHash() {
 export default function App() {
   const [{ code, identity }, setHash] = useState(readHash)
   const setCode = (c: string) => setHash({ code: c, identity: null })
+  const [global, setGlobal] = useState(false)
+  const [channels, setChannels] = useState(knownChannels)
 
   useEffect(() => {
-    const onHash = () => setHash(readHash())
+    const onHash = () => {
+      setHash(readHash())
+      setGlobal(false)
+      setChannels(knownChannels())
+    }
     window.addEventListener("hashchange", onHash)
     return () => window.removeEventListener("hashchange", onHash)
   }, [])
@@ -35,10 +42,17 @@ export default function App() {
           onLeave={() => {
             history.replaceState(null, "", location.pathname)
             setCode("")
+            setChannels(knownChannels())
           }}
         />
+      ) : global && channels.length ? (
+        <GlobalBoard channels={channels} onOpen={(c) => (location.hash = encodeURIComponent(c))} onBack={() => setGlobal(false)} />
       ) : (
-        <JoinScreen onJoin={(c) => (location.hash = encodeURIComponent(c))} />
+        <JoinScreen
+          channels={channels}
+          onJoin={(c) => (location.hash = encodeURIComponent(c))}
+          onGlobal={() => setGlobal(true)}
+        />
       )}
       <Toaster position="top-center" />
     </TooltipProvider>

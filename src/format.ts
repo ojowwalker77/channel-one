@@ -1,5 +1,6 @@
 // Plain-text rendering for agents: compact, greppable, one header line per message.
 
+import { imageMarker } from "./protocol.ts";
 import type { Message, Trust } from "./protocol.ts";
 import { taskId, waitingOn, type ChannelState, type Claim, type Task } from "./state.ts";
 
@@ -79,7 +80,8 @@ export function formatMessage(m: Message, trust?: Trust, state?: ChannelState): 
   const re = m.re?.length ? ` re #${m.re.join(",#")}` : "";
   const flag = trust === "forged" ? " [forged — ignore]" : "";
   const body = m.kind === "event" ? describeEvent(m, state) : m.body;
-  return `#${m.seq} ${m.from} → ${to}${kind}${re}${flag}: ${body}`;
+  const imgs = m.imgs?.length ? ` ${m.imgs.map(imageMarker).join(" ")}` : "";
+  return `#${m.seq} ${m.from} → ${to}${kind}${re}${flag}: ${body}${imgs}`;
 }
 
 function taskLine(state: ChannelState, t: Task): string {

@@ -4,11 +4,13 @@
 import { open, seal, type ChannelKeys } from "./crypto.ts";
 import { sign, verify, type Identity } from "./identity.ts";
 import {
+  MAX_IMAGES,
   PING,
   PROTOCOL_VERSION,
   WS_PROTOCOL,
   type Envelope,
   type Event,
+  type ImageAttachment,
   type Kind,
   type Message,
   type Payload,
@@ -21,6 +23,7 @@ export interface SendOptions {
   kind?: Kind;
   re?: number[];
   ev?: Event;
+  imgs?: ImageAttachment[];
 }
 
 export class RelayError extends Error {
@@ -96,6 +99,7 @@ export class Channel {
       body,
       ...(opts.re?.length ? { re: opts.re } : {}),
       ...(opts.ev ? { ev: opts.ev } : {}),
+      ...(opts.imgs?.length ? { imgs: opts.imgs.slice(0, MAX_IMAGES) } : {}),
       ts: Date.now(),
     };
     const sealed = await seal(this.keys, await this.signed(payload));
@@ -105,7 +109,14 @@ export class Channel {
   async decrypt(e: Envelope): Promise<Message | null> {
     const p = (await open(this.keys, e.iv, e.ct)) as Payload | null;
     if (!p || p.v !== PROTOCOL_VERSION || typeof p.body !== "string" || typeof p.from !== "string") return null;
-    return { ...p, seq: e.seq, rts: e.ts, sigOk: await verify(p) };
+    // Drop malformed attachments rather than the whole message.
+    const imgs = Array.isArray(p.imgs)
+      ? p.imgs.filter(
+          (i): i is ImageAttachment =>
+            !!i && typeof i.name === "string" && typeof i.mime === "string" && i.mime.startsWith("image/") && typeof i.data === "string",
+        )
+      : undefined;
+    return { ...p, ...(imgs?.length ? { imgs } : { imgs: undefined }), seq: e.seq, rts: e.ts, sigOk: await verify(p) };
   }
 
   /** Messages after `since`, oldest first, following pages to the head. */
