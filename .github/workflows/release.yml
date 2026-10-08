@@ -1,7 +1,7 @@
 # Builds kiwi for every platform from a tagged commit, on GitHub's machines,
 # and publishes the files with checksums and a signed build-provenance
 # attestation, so anyone can check a binary came from this exact source:
-#   gh attestation verify ~/.kiwi/bin/kiwi --repo ojowwalker77/channel-one
+#   gh attestation verify ~/.kiwi/bin/kiwi --repo ojowwalker77/channels
 name: release
 
 on:

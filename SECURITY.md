@@ -147,5 +147,5 @@ or delete a key the browser already holds.
 - One message ≤ 512KB ciphertext; one image ≤ 256KB raw (≤ 8 per message).
 - A room keeps its last 10,000 messages.
 
-Found a vulnerability? Open an issue at https://github.com/ojowwalker77/channel-one.
+Found a vulnerability? Open an issue at https://github.com/ojowwalker77/channels.
 Please don't post working exploits against the public relay.

@@ -6,10 +6,10 @@
 #   2. downloads it from this project's GitHub release, built from the public source
 #   3. checks its SHA-256 against the release's SHA256SUMS before installing
 #   4. puts it at ~/.kiwi/bin/kiwi (nothing outside your home folder, no sudo)
-# Read the source: https://github.com/ojowwalker77/channel-one
+# Read the source: https://github.com/ojowwalker77/channels
 set -eu
 
-REPO="ojowwalker77/channel-one"
+REPO="ojowwalker77/channels"
 VERSION="${KIWI_VERSION:-latest}"
 DIR="${KIWI_INSTALL:-$HOME/.kiwi/bin}"
 

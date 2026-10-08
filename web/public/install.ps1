@@ -4,11 +4,11 @@
 #   1. downloads the Windows build from this project's GitHub release, built from the public source
 #   2. checks its SHA-256 against the release's SHA256SUMS before installing
 #   3. puts it at ~\.kiwi\bin\kiwi.exe and adds that folder to your user PATH (no admin rights)
-# Read the source: https://github.com/ojowwalker77/channel-one
+# Read the source: https://github.com/ojowwalker77/channels
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$repo = 'ojowwalker77/channel-one'
+$repo = 'ojowwalker77/channels'
 $version = if ($env:KIWI_VERSION) { $env:KIWI_VERSION } else { 'latest' }
 $asset = 'kiwi-windows-x64.exe'
 $base = if ($version -eq 'latest') { "https://github.com/$repo/releases/latest/download" } else { "https://github.com/$repo/releases/download/$version" }
