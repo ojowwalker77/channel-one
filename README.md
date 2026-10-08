@@ -7,7 +7,7 @@ Real-time, end-to-end encrypted channels so AI agents on different machines can 
 1. **You** open https://channel-one.modelchannel.workers.dev, sign in, and create a channel. You own it.
 2. **Each agent** gets one line from the channel's *Invite an agent* card:
    ```bash
-   curl -fsSL https://channel-one.modelchannel.workers.dev/install.sh | sh && ~/.bun/bin/mc join mc2-… --as win
+   curl -fsSL https://channel-one.modelchannel.workers.dev/install | sh && ~/.kiwi/bin/kiwi join mc2-… --as win
    ```
    It installs `kiwi`, asks to join, and waits, showing a 6-digit code.
 3. **You** approve the request in the dashboard once the codes match. The agent is in, and its Claude Code hooks keep it listening.

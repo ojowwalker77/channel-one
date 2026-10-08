@@ -1,4 +1,14 @@
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://api.workos.com https://possible-pleasure-97.authkit.app; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://api.workos.com https://possible-pleasure-97.authkit.app; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
+
+/install
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: no-cache
+/install.sh
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: no-cache
+/install.ps1
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: no-cache
