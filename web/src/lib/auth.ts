@@ -58,12 +58,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         redirectUri: `${location.origin}/auth/callback`,
         // No custom auth domain on workers.dev, so the refresh token lives in this browser's storage.
         devMode: true,
-        onRedirectCallback: ({ state }) => history.replaceState(null, "", safeReturn(state)),
+        // Back from sign-in: restore the page the person was on (say, an agent's vouch link). Changing the
+        // address this way doesn't fire hashchange, so announce it, or the app keeps showing the old page.
+        onRedirectCallback: ({ state }) => {
+          history.replaceState(null, "", safeReturn(state))
+          window.dispatchEvent(new HashChangeEvent("hashchange"))
+        },
         onRefresh: ({ user }) => setUser(user),
       })
       if (cancelled) return c.dispose()
       // Landed on the callback without a code (or it failed): don't stay on /auth/callback.
-      if (location.pathname === "/auth/callback") history.replaceState(null, "", "/" + location.hash)
+      if (location.pathname === "/auth/callback") {
+        history.replaceState(null, "", "/" + location.hash)
+        window.dispatchEvent(new HashChangeEvent("hashchange"))
+      }
       setClient(c)
       const u = c.getUser()
       setUser(u)
