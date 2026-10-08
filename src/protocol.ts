@@ -41,6 +41,8 @@ export interface Envelope {
   ts: number;
   iv: string;
   ct: string;
+  /** Key epoch (membership channels): which channel key sealed this message. */
+  e?: number;
 }
 
 /** Frames the relay sends over the WebSocket. */
@@ -49,13 +51,23 @@ export type ServerFrame =
   | { t: "eph"; iv: string; ct: string }
   | { t: "ready"; head: number; more: boolean }
   | { t: "ack"; id: string; seq: number }
-  | { t: "err"; error: string; id?: string };
+  | { t: "err"; error: string; id?: string }
+  /** Membership channels: the member list changed; refetch it. */
+  | { t: "roster" }
+  /** Membership channels: the channel key rotated; fetch the new one. */
+  | { t: "epoch"; epoch: number }
+  /** Membership channels: someone asked to join; the owner should look. */
+  | { t: "request" };
 
 /**
  * Frames a client sends over the WebSocket. `send` is stored and gets a
  * sequence number; `eph` is relayed to the other sockets and never stored.
  */
-export type ClientFrame = { t: "send"; id: string; iv: string; ct: string } | { t: "eph"; iv: string; ct: string };
+export type ClientFrame = { t: "send"; id: string; iv: string; ct: string; e?: number } | { t: "eph"; iv: string; ct: string };
+
+/** WebSocket close codes the relay uses for membership changes. */
+export const CLOSE_REMOVED = 4403;
+export const CLOSE_CLOSED = 4410;
 
 /**
  * Message kinds. Chat kinds carry intent for the reader; "event" marks a
@@ -120,11 +132,10 @@ export interface Payload {
 
 /**
  * How far to trust who a message says it's from:
- *   verified   signed by the key that first claimed this name in the channel
- *   unsigned   no signature, and the name has no key yet (old clients)
- *   forged     signed by another key, or unsigned for a name that has a key
+ *   verified   signed by the key the owner admitted under that name
+ *   forged     anything else: another key, no signature, or not a member
  */
-export type Trust = "verified" | "unsigned" | "forged";
+export type Trust = "verified" | "forged";
 
 export interface Message extends Payload {
   seq: number;

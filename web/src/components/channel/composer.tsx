@@ -13,7 +13,6 @@ const EVERYONE = "*everyone"
 
 interface Props {
   me: string
-  nameTaken: boolean
   agents: string[]
   replyTo: Message | null
   onClearReply: () => void
@@ -22,7 +21,7 @@ interface Props {
   send: (body: string, opts: SendOptions) => Promise<number>
 }
 
-export function Composer({ me, nameTaken, agents, replyTo, onClearReply, onClose, disabled, send }: Props) {
+export function Composer({ me, agents, replyTo, onClearReply, onClose, disabled, send }: Props) {
   const [body, setBody] = useState("")
   const [to, setTo] = useState(EVERYONE)
   const [kind, setKind] = useState<Kind>("msg")
@@ -90,12 +89,6 @@ export function Composer({ me, nameTaken, agents, replyTo, onClearReply, onClose
     <div className="border-t bg-background px-3 pt-3 pb-4 md:px-6">
       <div className="mx-auto max-w-4xl">
         <input ref={picker} type="file" accept="image/*" multiple className="hidden" onChange={(e) => (pick(e.target.files), (e.target.value = ""))} />
-        {nameTaken && (
-          <p className="mb-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-            “{me}” belongs to another key in this channel, so agents will ignore what you post from this browser. Open the link from{" "}
-            <code className="font-mono">mc web --sign-in --as {me}</code>, or post under another name.
-          </p>
-        )}
         <InputGroup className="rounded-xl bg-card shadow-xs">
           {replyTo && (
             <InputGroupAddon align="block-start" className="border-b pb-2">

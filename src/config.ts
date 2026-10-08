@@ -1,30 +1,43 @@
 // Local state in ~/.modelchannel (override with MC_HOME):
-//   config.json            joined channels and their derived keys
+//   config.json            joined channels: room, pinned owner keys, channel keys by epoch
 //   identities/<agent>     each agent's Ed25519 signing key
 //   cursors/<ch>.<agent>   last sequence number each agent has consumed
 //   cache/<room>.jsonl     decrypted, verified messages (so state folds are fast)
 
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ChannelKeys } from "./crypto.ts";
-import { generateIdentity, type Identity } from "./identity.ts";
+import type { ChannelAccess } from "./crypto.ts";
+import { generateIdentity, withExchangeKey, type Identity } from "./identity.ts";
 import type { Message } from "./protocol.ts";
 
 /** Public relay used when neither --relay nor MC_RELAY is given. */
 export const DEFAULT_RELAY = "https://modelchannel-relay.modelchannel.workers.dev";
 
-export interface ChannelConfig extends ChannelKeys {
+export interface ChannelConfig extends ChannelAccess {
   relay: string;
-  /** The join code itself, kept so `mc web` can build a link. */
-  code?: string;
+  /** The join code (it only lets others *ask* to join). */
+  code: string;
   /** Default agent name for this channel on this machine. */
   as?: string;
+  /** This machine holds the owner key (the human who approves joins). */
+  owner?: string;
+}
+
+/** A join request this machine is waiting on. */
+export interface PendingJoin {
+  code: string;
+  relay: string;
+  as: string;
+  alias: string;
+  requestId: string;
+  verify: string;
 }
 
 export interface Config {
   default?: string;
   channels: Record<string, ChannelConfig>;
+  pending?: Record<string, PendingJoin>;
 }
 
 export function home(): string {
@@ -88,10 +101,42 @@ export function markSeen(channel: string, agent: string, seqs: number[]): void {
 
 export async function loadIdentity(name: string): Promise<Identity> {
   const path = join(home(), "identities", `${safe(name)}.json`);
-  if (existsSync(path)) return JSON.parse(readFileSync(path, "utf8")) as Identity;
+  if (existsSync(path)) {
+    const stored = JSON.parse(readFileSync(path, "utf8")) as Identity;
+    const id = await withExchangeKey(stored);
+    if (id !== stored) writePrivate(path, JSON.stringify(id, null, 2) + "\n");
+    return id;
+  }
   const id = await generateIdentity(name);
   writePrivate(path, JSON.stringify(id, null, 2) + "\n");
   return id;
+}
+
+/** Persist a channel's access after keys change (rotation). */
+export function saveAccess(alias: string, access: ChannelAccess): void {
+  const cfg = loadConfig();
+  const c = cfg.channels[alias];
+  if (!c) return;
+  cfg.channels[alias] = { ...c, epoch: access.epoch, keys: { ...c.keys, ...access.keys } };
+  saveConfig(cfg);
+}
+
+/**
+ * Forget a channel on this machine: config, keys, message cache, cursors and
+ * downloads. Used when leaving, when removed, and when the owner closes it.
+ */
+export function wipeChannel(alias: string): void {
+  const cfg = loadConfig();
+  const c = cfg.channels[alias];
+  delete cfg.channels[alias];
+  if (cfg.default === alias) cfg.default = Object.keys(cfg.channels)[0];
+  saveConfig(cfg);
+  if (c) {
+    rmSync(cachePath(c.roomId), { force: true });
+    rmSync(join(home(), "downloads", c.roomId), { recursive: true, force: true });
+  }
+  const dir = join(home(), "cursors");
+  if (existsSync(dir)) for (const f of readdirSync(dir)) if (f.startsWith(`${safe(alias)}.`)) rmSync(join(dir, f), { force: true });
 }
 
 function cachePath(roomId: string): string {

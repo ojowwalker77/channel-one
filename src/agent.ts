@@ -3,10 +3,12 @@
 // state (tasks, claims, facts, members) costs one incremental fetch.
 
 import { Channel, isDirectedAt, isForAgent, type SendOptions } from "./client.ts";
-import { appendCache, loadIdentity, markSeen, readCache, readCursor, readSeen, writeCursor, type ChannelConfig } from "./config.ts";
+import { appendCache, loadIdentity, markSeen, readCache, readCursor, readSeen, saveAccess, writeCursor, type ChannelConfig } from "./config.ts";
+import type { ChannelAccess } from "./crypto.ts";
+import type { JoinRequest } from "./membership.ts";
 import type { Identity } from "./identity.ts";
 import { TASK_STATES, type Event, type ImageAttachment, type Kind, type Message, type Presence, type TaskState } from "./protocol.ts";
-import { fold, overlaps, taskId, waitingOn, type ChannelState } from "./state.ts";
+import { fold, overlaps, taskId, waitingOn, type ChannelState, type Roster } from "./state.ts";
 
 /** How often a listening agent re-announces itself. Receivers treat 2.5x this as offline. */
 export const PRESENCE_EVERY_MS = 60_000;
@@ -23,17 +25,43 @@ export class Rejected extends Error {}
 
 export class AgentSession {
   readonly ch: Channel;
+  /** The owner's channel handle, when this machine holds the owner key. */
+  readonly ownerCh: Channel | null;
+  private roster: Roster | null = null;
 
   private constructor(
     readonly alias: string,
     readonly cfg: ChannelConfig,
     readonly identity: Identity,
+    owner: Identity | null,
   ) {
-    this.ch = new Channel(cfg, cfg.relay, identity);
+    const persist = (a: ChannelAccess) => saveAccess(alias, a);
+    this.ch = new Channel(cfg, cfg.relay, identity, persist);
+    this.ownerCh = owner ? new Channel(cfg, cfg.relay, owner, persist) : null;
   }
 
   static async open(alias: string, cfg: ChannelConfig, name: string): Promise<AgentSession> {
-    return new AgentSession(alias, cfg, await loadIdentity(name));
+    const owner = cfg.owner ? await loadIdentity(cfg.owner) : null;
+    return new AgentSession(alias, cfg, await loadIdentity(name), owner);
+  }
+
+  /** The verified member list (owner-signed records). */
+  async members(refresh = false): Promise<Roster> {
+    if (!this.roster || refresh) {
+      this.roster = (await this.ch.members()).map((m) => ({ name: m.name, pk: m.pk, role: m.role, about: m.about, owner: m.owner, at: m.at, active: m.active }));
+    }
+    return this.roster;
+  }
+
+  /** Owner duty: rotate the channel key if someone left since the last rotation. */
+  async ownerChores(): Promise<void> {
+    if (this.ownerCh && (await this.ownerCh.rotateIfDue())) await this.ch.refreshKeys();
+  }
+
+  /** Pending join requests (owner machine only). */
+  async requests(): Promise<JoinRequest[]> {
+    if (!this.ownerCh) throw new Rejected("only the channel owner's machine can see join requests");
+    return this.ownerCh.requests();
   }
 
   get me(): string {
@@ -53,8 +81,10 @@ export class AgentSession {
   }
 
   async state(): Promise<{ messages: Message[]; state: ChannelState }> {
-    const messages = await this.sync();
-    return { messages, state: fold(messages) };
+    // On the owner's machine, any command finishes a rotation owed to a member leaving.
+    await this.ownerChores();
+    const [messages, roster] = await Promise.all([this.sync(), this.members()]);
+    return { messages, state: fold(messages, roster) };
   }
 
   /** The agent's read cursor, starting at the channel head the first time. */
@@ -105,8 +135,9 @@ export class AgentSession {
    */
   async listen(
     onMessage: (m: Message, state: ChannelState) => void | Promise<void>,
-    opts: Delivery & { signal?: AbortSignal; client: string; onStatus?: (s: string) => void },
+    opts: Delivery & { signal?: AbortSignal; client: string; onStatus?: (s: string) => void; onNotice?: (text: string) => void | Promise<void> },
   ): Promise<void> {
+    await this.ownerChores();
     const since = await this.cursor();
     let { messages, state } = await this.state();
     const seen = readSeen(this.alias, this.me);
@@ -122,7 +153,7 @@ export class AgentSession {
         if (m.seq > (messages.at(-1)?.seq ?? 0)) {
           messages = [...messages, m];
           appendCache(this.cfg.roomId, [m]);
-          state = fold(messages);
+          state = fold(messages, await this.members());
         }
         if (!seen.has(m.seq) && this.wants(m, state, opts)) await onMessage(m, state);
         writeCursor(this.alias, this.me, m.seq);
@@ -142,6 +173,20 @@ export class AgentSession {
           lastQueryReply = Date.now();
           announce?.();
         },
+        onRoster: () => {
+          void this.members(true).then(() => this.ownerChores());
+        },
+        onRequest: () => {
+          if (!this.ownerCh || !opts.onNotice) return;
+          void this.ownerCh.requests().then(async (reqs) => {
+            for (const r of reqs) {
+              await opts.onNotice!(
+                `join request: "${r.name}"${r.role ? ` (${r.role})` : ""} wants in, verification code ${r.code}. ` +
+                  `Only your human may approve: ask them to confirm the code matches what the joining agent shows, then run \`mc approve ${r.code}\` (or approve in the dashboard).`,
+              );
+            }
+          });
+        },
       },
     );
     clearInterval(beacon);
@@ -160,14 +205,15 @@ export class AgentSession {
       clearTimeout(quiet);
       quiet = setTimeout(() => ac.abort(), 400);
     };
-    const head = await this.ch.head();
+    const [head, roster] = await Promise.all([this.ch.head(), this.members()]);
     await this.ch
       .stream(head, () => {}, {
         signal: ac.signal,
         onOpen: ({ presence }) => void presence({ client: "probe", query: true }),
         onPresence: (p) => {
           if (p.client === "probe" || p.from === this.me) return;
-          if (!(p.sigOk || !p.pk)) return;
+          // Only trust presence signed by the key the owner admitted under that name.
+          if (!p.sigOk || roster.find((r) => r.name === p.from && r.active)?.pk !== p.pk) return;
           if (!found.has(p.from)) heard();
           found.set(p.from, p);
         },

@@ -64,6 +64,49 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   );
 
   server.registerTool(
+    "members",
+    { description: "Who's in the channel: names, roles, owner, key fingerprints. Names are bound to keys by the owner, so they can't be faked." },
+    guard(async () =>
+      (await s.members(true))
+        .map((m) => `${m.name}${m.name === s.me ? " (you)" : ""}${m.owner ? " — owner" : m.role ? ` — ${m.role}` : ""}  key ${m.pk.slice(0, 8)}${m.active ? "" : "  (left)"}`)
+        .join("\n"),
+    ),
+  );
+
+  if (s.ownerCh) {
+    const owner = s.ownerCh;
+    server.registerTool(
+      "join_requests",
+      { description: "Pending join requests with their verification codes. Show them to your human; never approve on your own." },
+      guard(async () => {
+        const reqs = await owner.requests();
+        return reqs.length ? reqs.map((r) => `${r.code}  ${r.name}${r.role ? ` (${r.role})` : ""}  key ${r.pk.slice(0, 8)}`).join("\n") : "no pending join requests";
+      }),
+    );
+    server.registerTool(
+      "decide_join",
+      {
+        description:
+          "Approve or deny a join request. Only call this after your human explicitly told you to, for this exact verification code (they compare it with what the joining agent shows).",
+        inputSchema: { code: z.string().describe("the 6-digit verification code, like 482-913"), approve: z.boolean(), name: z.string().optional().describe("admit under a different name") },
+      },
+      guard(async ({ code, approve, name }) => {
+        const digits = code.replace(/\D/g, "");
+        const r = (await owner.requests()).find((x) => x.code.replace("-", "") === digits);
+        if (!r) throw new Rejected(`no pending request with code ${code}`);
+        if (!approve) {
+          await owner.deny(r.id);
+          return `denied ${r.name} (${r.code})`;
+        }
+        const finalName = name ?? r.name;
+        if ((await s.members(true)).some((m) => m.name === finalName && m.active)) throw new Rejected(`"${finalName}" is taken; pass name`);
+        await owner.approve(r, { name: finalName, role: r.role, about: r.about });
+        return `approved ${finalName} (${r.code})`;
+      }),
+    );
+  }
+
+  server.registerTool(
     "status",
     { description: "Members (and who is online), open tasks, claims, facts, and questions waiting on you." },
     guard(async () => {
@@ -295,7 +338,12 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
           params: { content: formatMessage(m, state.trust.get(m.seq), state), meta: { seq: String(m.seq), from: m.from, kind: m.kind } },
         });
       },
-      { client: "mcp" },
+      {
+        client: "mcp",
+        onNotice: async (text) => {
+          await server.server.notification({ method: "notifications/claude/channel", params: { content: `* ${text}`, meta: { kind: "notice" } } });
+        },
+      },
     );
   } else {
     await new Promise(() => {});

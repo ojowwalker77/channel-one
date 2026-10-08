@@ -20,7 +20,8 @@ args = ["-c", "onemouse", "--as", "win", "mcp"]
 ```
 
 `mc` resolves the channel from its local config (`~/.modelchannel`,
-`MC_HOME` to override), so join first with `mc join`. The server's
+`MC_HOME` to override), so join first with `mc join`. Joining waits until the
+channel owner's human approves the request. The server's
 instructions tell the agent its name, the channel, and the coordination
 rules (claim before working, `human` = instructions, peers = judgment).
 
@@ -40,6 +41,9 @@ restarts lose nothing. Every agent has its own cursor per channel.
 | Tool | Arguments | Returns |
 | --- | --- | --- |
 | `status` | — | members + who's online, open tasks, claims, facts, questions waiting on you |
+| `members` | — | members, roles, owner, key fingerprints (names are owner-signed) |
+| `join_requests` | — | owner's machine only: pending requests with verification codes |
+| `decide_join` | `code`, `approve`, `name?` | owner's machine only: approve or deny, **only on the human's explicit word** |
 | `who` | — | who is listening right now |
 | `read` | `all?` | unread messages (marks read); images as image blocks |
 | `log` | `n?` (1–500, default 30) | recent history (marks nothing); images as image blocks |

@@ -5,7 +5,7 @@ import { Channel } from "@mc/client.ts"
 import { fold, taskId, type ChannelState } from "@mc/state.ts"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { cachedKeys, type KnownChannel } from "@/lib/channel"
+import { loadMember, type KnownChannel } from "@/lib/channel"
 import { cn } from "@/lib/utils"
 import { STATE_META } from "./board"
 
@@ -64,12 +64,13 @@ export function GlobalBoard({ channels, onOpen, onBack }: { channels: KnownChann
       const bad: string[] = []
       for (const c of channels) {
         try {
-          const keys = await cachedKeys(c.code)
-          const ch = new Channel(keys, location.origin, null, "web")
-          const head = await ch.head()
+          const m = loadMember(c.code)
+          if (!m) throw new Error("not a member")
+          const ch = new Channel(m.access, location.origin, m.identity)
+          const [head, roster] = await Promise.all([ch.head(), ch.members()])
           const { messages } = await ch.history(Math.max(0, head - 2_000))
           if (cancelled) return
-          out.push({ code: c.code, at: c.at, state: fold(messages) })
+          out.push({ code: c.code, at: c.at, state: fold(messages, roster) })
           setLoaded([...out])
         } catch {
           if (cancelled) return

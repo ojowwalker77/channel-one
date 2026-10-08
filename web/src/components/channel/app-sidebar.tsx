@@ -4,12 +4,12 @@ import {
   KanbanSquareIcon,
   ChevronsUpDownIcon,
   CircleHelpIcon,
-  LinkIcon,
-  LogOutIcon,
+  ArrowLeftIcon,
+  CopyIcon,
   MonitorIcon,
   MoonIcon,
-  PencilIcon,
   SunIcon,
+  UsersIcon,
 } from "lucide-react"
 
 import { useTheme } from "@/components/theme-provider"
@@ -46,7 +46,7 @@ import { excerpt, formatAgo } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { AgentAvatar } from "./agent-avatar"
 
-export type View = { kind: "all" } | { kind: "board" } | { kind: "open" } | { kind: "mine" } | { kind: "agent"; name: string }
+export type View = { kind: "all" } | { kind: "board" } | { kind: "open" } | { kind: "mine" } | { kind: "members" } | { kind: "agent"; name: string }
 
 export interface AgentRow {
   name: string
@@ -57,11 +57,9 @@ export interface AgentRow {
 }
 
 const CONNECTION: Record<Connection, { label: string; dot: string }> = {
-  unlocking: { label: "Unlocking", dot: "bg-muted-foreground/50" },
   connecting: { label: "Connecting", dot: "bg-amber-500 animate-pulse" },
   live: { label: "Live", dot: "bg-emerald-500" },
   reconnecting: { label: "Reconnecting", dot: "bg-amber-500 animate-pulse" },
-  error: { label: "Disconnected", dot: "bg-red-500" },
 }
 
 interface Props {
@@ -69,17 +67,17 @@ interface Props {
   connection: Connection
   view: View
   onView: (v: View) => void
-  counts: { all: number; board: number; open: number; mine: number }
+  counts: { all: number; board: number; open: number; mine: number; members: number }
   agents: AgentRow[]
   online: Map<string, Online>
   now: number
   me: string
-  onRename: () => void
-  onCopyLink: () => void
-  onLeave: () => void
+  isOwner: boolean
+  onCopyCode: () => void
+  onBack: () => void
 }
 
-export function AppSidebar({ channelId, connection, view, onView, counts, agents, online, now, me, onRename, onCopyLink, onLeave }: Props) {
+export function AppSidebar({ channelId, connection, view, onView, counts, agents, online, now, me, isOwner, onCopyCode, onBack }: Props) {
   const { theme, setTheme } = useTheme()
   const { isMobile, setOpenMobile } = useSidebar()
   const select = (v: View) => {
@@ -95,6 +93,7 @@ export function AppSidebar({ channelId, connection, view, onView, counts, agents
     { view: { kind: "board" } as const, label: "Task board", icon: KanbanSquareIcon, count: counts.board },
     { view: { kind: "open" } as const, label: "Open questions", icon: CircleHelpIcon, count: counts.open },
     { view: { kind: "mine" } as const, label: `For ${me}`, icon: AtSignIcon, count: counts.mine },
+    { view: { kind: "members" } as const, label: isOwner ? "Members & requests" : "Members", icon: UsersIcon, count: counts.members },
   ]
 
   return (
@@ -129,7 +128,7 @@ export function AppSidebar({ channelId, connection, view, onView, counts, agents
                     <span>{v.label}</span>
                   </SidebarMenuButton>
                   {v.count > 0 && (
-                    <SidebarMenuBadge className={cn(v.view.kind === "open" && "text-sky-600 dark:text-sky-400")}>
+                    <SidebarMenuBadge className={cn(v.view.kind === "open" && "text-sky-600 dark:text-sky-400", v.view.kind === "members" && "text-amber-600 dark:text-amber-400")}>
                       {v.count}
                     </SidebarMenuBadge>
                   )}
@@ -188,19 +187,15 @@ export function AppSidebar({ channelId, connection, view, onView, counts, agents
                   <AgentAvatar name={me} />
                   <div className="grid flex-1 text-left leading-tight">
                     <span className="truncate text-sm font-medium">{me}</span>
-                    <span className="truncate text-xs text-muted-foreground">Posting as</span>
+                    <span className="truncate text-xs text-muted-foreground">{isOwner ? "Owner" : "Member"}</span>
                   </div>
                   <ChevronsUpDownIcon className="ml-auto" />
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent side={isMobile ? "bottom" : "right"} align="end" className="min-w-56">
                 <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                  Agents treat messages from “human” as your instructions.
+                  {isOwner ? "You approve everyone who joins, and only you can close the channel." : "Your name is bound to this browser’s key by the owner."}
                 </DropdownMenuLabel>
-                <DropdownMenuItem onSelect={onRename}>
-                  <PencilIcon />
-                  Change name
-                </DropdownMenuItem>
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
                     {theme === "dark" ? <MoonIcon /> : theme === "light" ? <SunIcon /> : <MonitorIcon />}
@@ -215,13 +210,13 @@ export function AppSidebar({ channelId, connection, view, onView, counts, agents
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={onCopyLink}>
-                  <LinkIcon />
-                  Copy invite link
+                <DropdownMenuItem onSelect={onCopyCode}>
+                  <CopyIcon />
+                  Copy join code
                 </DropdownMenuItem>
-                <DropdownMenuItem variant="destructive" onSelect={onLeave}>
-                  <LogOutIcon />
-                  Leave channel
+                <DropdownMenuItem onSelect={onBack}>
+                  <ArrowLeftIcon />
+                  All channels
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

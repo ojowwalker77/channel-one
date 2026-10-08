@@ -1,50 +1,71 @@
 // Self-hosted relay on Bun: same protocol as the Cloudflare relay, one SQLite
-// file per room. Usage: bun src/relay/bun.ts [--port 8787] [--data .relay-data]
+// file per room, created only when the room is and deleted when it closes.
+// Usage: bun src/relay/bun.ts [--port 8787] [--data .relay-data]
 
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { PING, PONG } from "../protocol.ts";
+import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import {
   HttpError,
   RoomStore,
+  authenticateSocket,
   errorResponse,
   onClientFrame,
   onHttp,
   parseRoomPath,
-  requestToken,
   welcomeFrames,
   wsHeaders,
+  type Effects,
 } from "./room.ts";
 
 interface SocketData {
   roomId: string;
+  pk: string;
   since: number;
 }
 
 export function startRelay(opts: { port?: number; hostname?: string; dataDir?: string } = {}) {
   const dataDir = opts.dataDir ?? ".relay-data";
   mkdirSync(dataDir, { recursive: true });
-  const stores = new Map<string, RoomStore>();
+  const dbs = new Map<string, Database>();
   const sockets = new Map<string, Set<ServerWebSocket<SocketData>>>();
+  const file = (roomId: string) => join(dataDir, `${roomId}.sqlite`);
 
-  const storeFor = (roomId: string) => {
-    let s = stores.get(roomId);
-    if (!s) {
-      const db = new Database(join(dataDir, `${roomId}.sqlite`), { create: true });
-      db.run("PRAGMA journal_mode = WAL");
-      s = new RoomStore({
-        run: (q, ...p) => void db.query(q).run(...p),
-        all: <T>(q: string, ...p: (string | number | null)[]) => db.query(q).all(...p) as T[],
-      });
-      stores.set(roomId, s);
+  /** A store for the room; rooms that don't exist get a throwaway in-memory DB (so no file appears). */
+  const storeFor = (roomId: string, creating: boolean): RoomStore => {
+    let db = dbs.get(roomId);
+    if (!db) {
+      if (!creating && !existsSync(file(roomId))) db = new Database(":memory:");
+      else {
+        db = new Database(file(roomId), { create: true });
+        db.run("PRAGMA journal_mode = WAL");
+        dbs.set(roomId, db);
+      }
     }
-    return s;
+    const d = db;
+    return new RoomStore(
+      {
+        run: (q, ...p) => void d.query(q).run(...p),
+        all: <T>(q: string, ...p: (string | number | null)[]) => d.query(q).all(...p) as T[],
+      },
+      roomId,
+    );
   };
 
-  const broadcast = (roomId: string, frame: string, except?: ServerWebSocket<SocketData>) => {
-    for (const ws of sockets.get(roomId) ?? []) if (ws !== except) ws.send(frame);
+  const apply = (roomId: string, fx: Effects, sender?: ServerWebSocket<SocketData>) => {
+    const room = sockets.get(roomId) ?? new Set();
+    for (const f of fx.broadcast ?? []) for (const ws of room) ws.send(f);
+    if (fx.others) for (const ws of room) if (ws !== sender) ws.send(fx.others);
+    if (fx.disconnect) for (const ws of room) if (ws.data.pk === fx.disconnect) ws.close(CLOSE_REMOVED, "removed from channel");
+    if (fx.wipe) {
+      dbs.get(roomId)?.close();
+      dbs.delete(roomId);
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(file(roomId) + suffix, { force: true });
+      for (const ws of room) ws.close(CLOSE_CLOSED, "channel closed");
+      sockets.delete(roomId);
+    }
   };
 
   return Bun.serve<SocketData>({
@@ -54,18 +75,18 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
     async fetch(req, server) {
       try {
         const url = new URL(req.url);
-        if (url.pathname === "/") return new Response("modelchannel relay v1 (bun)\n");
+        if (url.pathname === "/") return new Response("modelchannel relay (bun)\n");
         const route = parseRoomPath(url.pathname);
         if (!route) throw new HttpError(404, "not found");
-        const store = storeFor(route.roomId);
+        const store = storeFor(route.roomId, route.rest === "/create");
         if (route.rest === "/ws") {
-          await store.authorize(requestToken(req), url.searchParams.get("create") === "1");
+          const pk = await authenticateSocket(store, req);
           const since = Number(url.searchParams.get("since") ?? 0) || 0;
-          if (server.upgrade(req, { data: { roomId: route.roomId, since }, headers: wsHeaders(req) })) return undefined;
+          if (server.upgrade(req, { data: { roomId: route.roomId, pk, since }, headers: wsHeaders(req) })) return undefined;
           throw new HttpError(426, "expected websocket");
         }
-        const { res, broadcast: frame } = await onHttp(store, req, route.rest);
-        if (frame) broadcast(route.roomId, frame);
+        const { res, fx } = await onHttp(store, req, route.rest);
+        if (fx) apply(route.roomId, fx);
         return res;
       } catch (err) {
         return errorResponse(err);
@@ -77,15 +98,14 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
         let set = sockets.get(ws.data.roomId);
         if (!set) sockets.set(ws.data.roomId, (set = new Set()));
         set.add(ws);
-        for (const f of welcomeFrames(storeFor(ws.data.roomId), ws.data.since)) ws.send(f);
+        for (const f of welcomeFrames(storeFor(ws.data.roomId, false), ws.data.since)) ws.send(f);
       },
       message(ws, data) {
         const raw = typeof data === "string" ? data : new TextDecoder().decode(data);
         if (raw === PING) return void ws.send(PONG);
-        const { broadcast: frame, others, reply } = onClientFrame(storeFor(ws.data.roomId), raw);
-        if (reply) ws.send(reply);
-        if (frame) broadcast(ws.data.roomId, frame);
-        if (others) broadcast(ws.data.roomId, others, ws);
+        const fx = onClientFrame(storeFor(ws.data.roomId, false), raw);
+        if (fx.reply) ws.send(fx.reply);
+        apply(ws.data.roomId, fx, ws);
       },
       close(ws) {
         sockets.get(ws.data.roomId)?.delete(ws);

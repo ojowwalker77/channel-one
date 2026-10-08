@@ -1,13 +1,31 @@
 // Room logic shared by the Cloudflare Durable Object and the self-hosted Bun
 // relay. Both back a room with SQLite; each adapter supplies the SQL calls and
-// the WebSocket fan-out.
+// applies the returned effects (fan-out, disconnects, wiping the room).
+//
+// Every channel is owner-gated:
+//   - the owner creates the room and is its first member;
+//   - anyone holding the join code may *ask* to join (a pending request);
+//   - only the owner can approve, which enrolls the requester's key and hands
+//     it the channel keys, wrapped so only that key can open them;
+//   - every request and socket is signed by a member key; no shared secret
+//     ever reaches the relay;
+//   - leaving or being removed revokes access at once, and the owner rotates
+//     the channel key so the departed key can't read anything newer;
+//   - closing deletes the room outright: no tombstone, nothing to recover.
+//
+// The relay stores public keys, opaque sealed blobs and ciphertext. Member
+// names, roles and every message stay end-to-end encrypted.
 
+import { verifyRequest } from "../auth.ts";
+import { verify } from "../identity.ts";
 import {
-  WS_PROTOCOL,
+  CLOSE_CLOSED,
+  CLOSE_REMOVED,
   MAX_CT_LENGTH,
   MAX_EPH_LENGTH,
   PAGE_LIMIT,
   ROOM_RETENTION,
+  WS_PROTOCOL,
   type ClientFrame,
   type Envelope,
   type ServerFrame,
@@ -27,12 +45,28 @@ export class HttpError extends Error {
   }
 }
 
-async function sha256Hex(s: string): Promise<string> {
-  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
-  return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
+/** What an adapter must do after handling a request or frame. */
+export interface Effects {
+  /** Send to every socket. */
+  broadcast?: string[];
+  /** Send to every socket except the sender. */
+  others?: string;
+  /** Send to the sender only. */
+  reply?: string;
+  /** Disconnect every socket authenticated as this key. */
+  disconnect?: string;
+  /** Delete the room's storage, then disconnect everyone. */
+  wipe?: boolean;
 }
 
-/** Extract the token from the Authorization header or, for WebSockets, the subprotocol list. */
+/** Most join requests a room holds at once; stops request spam. */
+const MAX_PENDING = 20;
+/** Pending requests expire after this long. */
+const REQUEST_TTL_MS = 60 * 60_000;
+
+const frame = (f: ServerFrame) => JSON.stringify(f);
+
+/** The signed token from the Authorization header or, for WebSockets, the subprotocol list. */
 export function requestToken(req: Request): string {
   const auth = req.headers.get("authorization");
   if (auth?.startsWith("Bearer ")) return auth.slice(7);
@@ -46,56 +80,232 @@ export function wsHeaders(req: Request): Record<string, string> {
   return req.headers.get("sec-websocket-protocol")?.includes(WS_PROTOCOL) ? { "sec-websocket-protocol": WS_PROTOCOL } : {};
 }
 
+interface Meta {
+  ownerPk: string;
+  ownerXpk: string;
+  ownerSig: string;
+  epoch: number;
+  rotate: boolean;
+}
+
 export class RoomStore {
-  constructor(private readonly sql: Sql) {
-    sql.run("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
-    sql.run(
-      "CREATE TABLE IF NOT EXISTS msgs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, iv TEXT NOT NULL, ct TEXT NOT NULL)",
+  constructor(
+    private readonly sql: Sql,
+    readonly roomId: string,
+  ) {}
+
+  /** Tables exist only once a room is created, so a closed room leaves nothing behind. */
+  exists(): boolean {
+    return this.sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").length > 0;
+  }
+
+  private init(): void {
+    this.sql.run("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
+    this.sql.run("CREATE TABLE msgs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, iv TEXT NOT NULL, ct TEXT NOT NULL, e INTEGER NOT NULL)");
+    // Former members keep their sealed record (so their history still verifies) but lose every key.
+    this.sql.run(
+      "CREATE TABLE members (pk TEXT PRIMARY KEY, xpk TEXT NOT NULL, rec TEXT NOT NULL, rec_e INTEGER NOT NULL, since INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1)",
+    );
+    this.sql.run("CREATE TABLE keys (pk TEXT NOT NULL, e INTEGER NOT NULL, wrapped TEXT NOT NULL, PRIMARY KEY (pk, e))");
+    this.sql.run(
+      "CREATE TABLE requests (id TEXT PRIMARY KEY, pk TEXT NOT NULL UNIQUE, xpk TEXT NOT NULL, box TEXT NOT NULL, sig TEXT NOT NULL, ts INTEGER NOT NULL, status TEXT NOT NULL)",
     );
   }
 
-  /**
-   * Check a token. The first client to connect with create=true claims the
-   * room by storing the token's hash; everyone after must present the same token.
-   */
-  async authorize(token: string, create: boolean): Promise<void> {
-    if (!token) throw new HttpError(401, "missing token");
-    const hash = await sha256Hex(token);
-    const row = this.sql.all<{ v: string }>("SELECT v FROM meta WHERE k = 'verifier'")[0];
-    if (!row) {
-      if (!create) throw new HttpError(404, "no such channel");
-      this.sql.run("INSERT INTO meta (k, v) VALUES ('verifier', ?)", hash);
-      return;
-    }
-    if (row.v !== hash) throw new HttpError(403, "wrong token");
+  private get(k: string): string | undefined {
+    return this.sql.all<{ v: string }>("SELECT v FROM meta WHERE k = ?", k)[0]?.v;
+  }
+
+  private set(k: string, v: string | number): void {
+    this.sql.run("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v", k, String(v));
+  }
+
+  meta(): Meta {
+    if (!this.exists()) throw new HttpError(404, "no such channel");
+    return {
+      ownerPk: this.get("owner_pk")!,
+      ownerXpk: this.get("owner_xpk")!,
+      ownerSig: this.get("owner_sig")!,
+      epoch: Number(this.get("epoch") ?? 0),
+      rotate: this.get("rotate") === "1",
+    };
+  }
+
+  isMember(pk: string): boolean {
+    return this.sql.all("SELECT 1 FROM members WHERE pk = ? AND active = 1", pk).length > 0;
+  }
+
+  /** The member key that signed this request, or a 401/403. */
+  async authenticate(req: Request, method: string, path: string, body: string): Promise<string> {
+    const pk = await verifyRequest(requestToken(req), this.roomId, method, path, body);
+    if (!pk) throw new HttpError(401, "bad or expired signature");
+    if (!this.isMember(pk)) throw new HttpError(403, "not a member of this channel");
+    return pk;
   }
 
   head(): number {
     return this.sql.all<{ s: number | null }>("SELECT MAX(seq) AS s FROM msgs")[0]?.s ?? 0;
   }
 
-  append(iv: string, ct: string): Envelope {
+  append(iv: string, ct: string, e: number): Envelope {
     if (typeof iv !== "string" || typeof ct !== "string" || !iv || !ct) throw new HttpError(400, "bad envelope");
     if (ct.length > MAX_CT_LENGTH) throw new HttpError(413, "message too large");
+    const epoch = this.meta().epoch;
+    // Sealed with a retired key: the sender must fetch the new one and resend.
+    if (e !== epoch) throw new HttpError(409, `stale key epoch ${e}; current is ${epoch}`);
     const ts = Date.now();
-    this.sql.run("INSERT INTO msgs (ts, iv, ct) VALUES (?, ?, ?)", ts, iv, ct);
+    this.sql.run("INSERT INTO msgs (ts, iv, ct, e) VALUES (?, ?, ?, ?)", ts, iv, ct, e);
     const seq = this.head();
     // Prune in batches so retention costs one extra write pass per 100 messages.
     if (seq % 100 === 0) this.sql.run("DELETE FROM msgs WHERE seq <= ?", seq - ROOM_RETENTION);
-    return { seq, ts, iv, ct };
+    return { seq, ts, iv, ct, e };
   }
 
   since(seq: number, limit = PAGE_LIMIT): Envelope[] {
-    return this.sql.all<Envelope>(
-      "SELECT seq, ts, iv, ct FROM msgs WHERE seq > ? ORDER BY seq LIMIT ?",
-      seq,
-      Math.min(Math.max(limit, 1), PAGE_LIMIT),
+    return this.sql.all<Envelope>("SELECT seq, ts, iv, ct, e FROM msgs WHERE seq > ? ORDER BY seq LIMIT ?", seq, Math.min(Math.max(limit, 1), PAGE_LIMIT));
+  }
+
+  // ---------- lifecycle ----------
+
+  /**
+   * Create the room. The owner signs its own public keys; the request itself
+   * must be signed by the owner. `members` must include the owner and may
+   * include the creating agent.
+   */
+  async create(signer: string | null, body: CreateBody): Promise<void> {
+    if (this.exists()) throw new HttpError(409, "channel already exists");
+    const { owner, members } = body;
+    if (!owner || signer !== owner.pk) throw new HttpError(401, "create must be signed by the owner");
+    if (!(await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, sig: owner.sig }))) throw new HttpError(400, "bad owner signature");
+    if (!members?.some((m) => m.pk === owner.pk)) throw new HttpError(400, "the owner must be a member");
+    this.init();
+    this.set("owner_pk", owner.pk);
+    this.set("owner_xpk", owner.xpk);
+    this.set("owner_sig", owner.sig);
+    this.set("epoch", 0);
+    for (const m of members) this.putMember(m, 0);
+  }
+
+  private putMember(m: MemberBody, epoch: number): void {
+    if (typeof m.pk !== "string" || typeof m.xpk !== "string" || typeof m.rec !== "string") throw new HttpError(400, "bad member");
+    this.sql.run(
+      "INSERT INTO members (pk, xpk, rec, rec_e, since, active) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT (pk) DO UPDATE SET xpk = excluded.xpk, rec = excluded.rec, rec_e = excluded.rec_e, active = 1",
+      m.pk,
+      m.xpk,
+      m.rec,
+      epoch,
+      Date.now(),
     );
+    for (const [e, wrapped] of Object.entries(m.keys ?? {})) {
+      this.sql.run("INSERT OR REPLACE INTO keys (pk, e, wrapped) VALUES (?, ?, ?)", m.pk, Number(e), wrapped);
+    }
+  }
+
+  // ---------- join requests ----------
+
+  async request(body: RequestBody): Promise<{ id: string; fresh: boolean }> {
+    this.meta();
+    const { pk, xpk, box, ts, sig } = body ?? ({} as RequestBody);
+    if (![pk, xpk, box, sig].every((x) => typeof x === "string") || typeof ts !== "number") throw new HttpError(400, "bad request");
+    if (box.length > 4096) throw new HttpError(413, "request too large");
+    if (!(await verify({ room: this.roomId, pk, xpk, box, ts, sig }))) throw new HttpError(400, "bad request signature");
+    if (Math.abs(Date.now() - ts) > REQUEST_TTL_MS) throw new HttpError(400, "request timestamp out of range");
+    if (this.isMember(pk)) throw new HttpError(409, "already a member");
+    this.sql.run("DELETE FROM requests WHERE status = 'pending' AND ts < ?", Date.now() - REQUEST_TTL_MS);
+    const existing = this.sql.all<{ id: string; status: string }>("SELECT id, status FROM requests WHERE pk = ?", pk)[0];
+    if (existing?.status === "denied") throw new HttpError(403, "this key was denied");
+    if (this.sql.all("SELECT 1 FROM members WHERE pk = ? AND active = 0", pk).length) throw new HttpError(403, "this key was removed; join with a new identity");
+    if (existing) return { id: existing.id, fresh: false };
+    const pending = this.sql.all<{ n: number }>("SELECT COUNT(*) AS n FROM requests WHERE status = 'pending'")[0]!.n;
+    if (pending >= MAX_PENDING) throw new HttpError(429, "too many pending join requests");
+    const id = crypto.randomUUID();
+    this.sql.run("INSERT INTO requests (id, pk, xpk, box, sig, ts, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')", id, pk, xpk, box, sig, ts);
+    return { id, fresh: true };
+  }
+
+  requestStatus(id: string, pk: string): { status: string; epoch?: number; keys?: Record<string, string> } {
+    const r = this.sql.all<{ pk: string; status: string }>("SELECT pk, status FROM requests WHERE id = ?", id)[0];
+    if (!r || r.pk !== pk) throw new HttpError(404, "no such request");
+    if (r.status !== "approved" || !this.isMember(pk)) return { status: r.status };
+    return { status: "approved", ...this.keysFor(pk) };
+  }
+
+  pendingRequests(): RequestBody[] {
+    return this.sql.all<RequestBody & { id: string }>("SELECT id, pk, xpk, box, sig, ts FROM requests WHERE status = 'pending' ORDER BY ts");
+  }
+
+  deny(id: string): void {
+    this.sql.run("UPDATE requests SET status = 'denied' WHERE id = ?", id);
+  }
+
+  // ---------- members & keys ----------
+
+  approve(body: MemberBody & { request?: string }): void {
+    const { epoch } = this.meta();
+    for (let e = 0; e <= epoch; e++) {
+      if (!body.keys?.[String(e)]) throw new HttpError(400, `missing wrapped key for epoch ${e}`);
+    }
+    this.putMember(body, epoch);
+    if (body.request) this.sql.run("UPDATE requests SET status = 'approved' WHERE id = ? AND pk = ?", body.request, body.pk);
+  }
+
+  members(): { pk: string; xpk: string; rec: string; e: number; active: number }[] {
+    return this.sql.all("SELECT pk, xpk, rec, rec_e AS e, active FROM members ORDER BY since");
+  }
+
+  keysFor(pk: string): { epoch: number; keys: Record<string, string> } {
+    const rows = this.sql.all<{ e: number; wrapped: string }>("SELECT e, wrapped FROM keys WHERE pk = ?", pk);
+    return { epoch: this.meta().epoch, keys: Object.fromEntries(rows.map((r) => [String(r.e), r.wrapped])) };
+  }
+
+  remove(pk: string): void {
+    const { ownerPk } = this.meta();
+    if (pk === ownerPk) throw new HttpError(400, "the owner can't leave; close the channel instead");
+    if (!this.isMember(pk)) throw new HttpError(404, "not a member");
+    this.sql.run("UPDATE members SET active = 0 WHERE pk = ?", pk);
+    this.sql.run("DELETE FROM keys WHERE pk = ?", pk);
+    this.sql.run("DELETE FROM requests WHERE pk = ?", pk);
+    // Its keys are revoked at the relay; the owner rotates so they also can't decrypt anything newer.
+    this.set("rotate", 1);
+  }
+
+  rotate(epoch: number, keys: Record<string, string>): void {
+    const meta = this.meta();
+    if (epoch !== meta.epoch + 1) throw new HttpError(409, `next epoch is ${meta.epoch + 1}`);
+    const members = this.members().filter((m) => m.active);
+    for (const m of members) if (!keys[m.pk]) throw new HttpError(400, `missing wrapped key for ${m.pk.slice(0, 8)}`);
+    for (const m of members) this.sql.run("INSERT OR REPLACE INTO keys (pk, e, wrapped) VALUES (?, ?, ?)", m.pk, epoch, keys[m.pk]!);
+    this.set("epoch", epoch);
+    this.set("rotate", 0);
   }
 }
 
+export interface MemberBody {
+  pk: string;
+  xpk: string;
+  /** Owner-signed member record, sealed with the channel key (the relay can't read names). */
+  rec: string;
+  /** Channel keys by epoch, each sealed to this member's `xpk`. */
+  keys?: Record<string, string>;
+}
+
+export interface CreateBody {
+  owner: { pk: string; xpk: string; sig: string };
+  members: MemberBody[];
+}
+
+export interface RequestBody {
+  id?: string;
+  pk: string;
+  xpk: string;
+  /** Name/role/about, sealed to the owner's xpk. */
+  box: string;
+  ts: number;
+  sig: string;
+}
+
 export function msgFrame(e: Envelope): string {
-  return JSON.stringify({ t: "msg", ...e } satisfies ServerFrame);
+  return frame({ t: "msg", ...e });
 }
 
 /** Frames to send a newly connected socket: the backlog after `since`, then ready. */
@@ -103,65 +313,151 @@ export function welcomeFrames(store: RoomStore, since: number): string[] {
   const backlog = store.since(since);
   const head = store.head();
   const last = backlog.at(-1)?.seq ?? since;
-  return [...backlog.map(msgFrame), JSON.stringify({ t: "ready", head, more: last < head } satisfies ServerFrame)];
+  return [...backlog.map(msgFrame), frame({ t: "ready", head, more: last < head })];
 }
 
-/**
- * Handle one client frame. Returns what to send: `broadcast` to every socket,
- * `others` to every socket except the sender, `reply` to the sender alone.
- */
-export function onClientFrame(store: RoomStore, raw: string): { broadcast?: string; others?: string; reply?: string } {
-  let frame: ClientFrame;
+/** Handle one frame from an authenticated socket. */
+export function onClientFrame(store: RoomStore, raw: string): Effects {
+  let f: ClientFrame;
   try {
-    frame = JSON.parse(raw);
+    f = JSON.parse(raw);
   } catch {
-    return { reply: JSON.stringify({ t: "err", error: "bad json" } satisfies ServerFrame) };
+    return { reply: frame({ t: "err", error: "bad json" }) };
   }
-  if (frame.t === "eph") {
+  if (f.t === "eph") {
     // Presence and other ephemeral signals: relayed, never stored, never acked.
-    if (typeof frame.iv !== "string" || typeof frame.ct !== "string" || frame.ct.length > MAX_EPH_LENGTH) {
-      return { reply: JSON.stringify({ t: "err", error: "bad ephemeral frame" } satisfies ServerFrame) };
+    if (typeof f.iv !== "string" || typeof f.ct !== "string" || f.ct.length > MAX_EPH_LENGTH) {
+      return { reply: frame({ t: "err", error: "bad ephemeral frame" }) };
     }
-    return { others: JSON.stringify({ t: "eph", iv: frame.iv, ct: frame.ct } satisfies ServerFrame) };
+    return { others: frame({ t: "eph", iv: f.iv, ct: f.ct }) };
   }
-  if (frame.t !== "send") return { reply: JSON.stringify({ t: "err", error: "unknown frame" } satisfies ServerFrame) };
+  if (f.t !== "send") return { reply: frame({ t: "err", error: "unknown frame" }) };
   try {
-    const e = store.append(frame.iv, frame.ct);
-    return { broadcast: msgFrame(e), reply: JSON.stringify({ t: "ack", id: frame.id, seq: e.seq } satisfies ServerFrame) };
+    const e = store.append(f.iv, f.ct, Number(f.e ?? 0));
+    return { broadcast: [msgFrame(e)], reply: frame({ t: "ack", id: f.id, seq: e.seq }) };
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    return { reply: JSON.stringify({ t: "err", error, id: frame.id } satisfies ServerFrame) };
+    return { reply: frame({ t: "err", error: err instanceof Error ? err.message : String(err), id: f.id }) };
   }
 }
 
 /**
- * The HTTP API, minus WebSocket upgrades:
- *   POST /messages          {iv, ct}  -> {seq, ts}      (create=1 allowed)
- *   GET  /messages?since=N&limit=M    -> {head, messages}
- * Returns the response plus a frame to broadcast, if a message was stored.
+ * The HTTP API (all under /v1/rooms/<room>):
+ *   GET    /info                      public: owner keys, epoch, whether a rotation is due
+ *   POST   /create                    owner: create the room
+ *   POST   /requests                  anyone with the code: ask to join (self-signed)
+ *   GET    /requests/<id>             the requester: status, and wrapped keys once approved
+ *   GET    /requests                  owner: pending requests
+ *   POST   /requests/<id>/deny        owner
+ *   POST   /members                   owner: approve (enroll a key, hand it wrapped keys)
+ *   GET    /members                   member: the sealed member records
+ *   DELETE /members/me                member: leave
+ *   DELETE /members/<pk>              owner: remove
+ *   GET    /keys                      member: my wrapped channel keys
+ *   POST   /epochs                    owner: rotate the channel key
+ *   DELETE /                          owner: close and delete everything
+ *   GET    /                          member: {head}
+ *   GET    /messages?since=N          member
+ *   POST   /messages                  member: {iv, ct, e}
  */
-export async function onHttp(store: RoomStore, req: Request, path: string): Promise<{ res: Response; broadcast?: string }> {
+export async function onHttp(store: RoomStore, req: Request, path: string): Promise<{ res: Response; fx?: Effects }> {
   const url = new URL(req.url);
-  await store.authorize(requestToken(req), url.searchParams.get("create") === "1");
-  if (path === "/messages" && req.method === "POST") {
-    const body = (await req.json().catch(() => null)) as { iv?: string; ct?: string } | null;
-    const e = store.append(body?.iv as string, body?.ct as string);
-    return { res: Response.json({ seq: e.seq, ts: e.ts }), broadcast: msgFrame(e) };
+  const method = req.method.toUpperCase();
+  const body = method === "GET" || method === "DELETE" ? "" : await req.text();
+  const json = <T>() => {
+    try {
+      return JSON.parse(body) as T;
+    } catch {
+      throw new HttpError(400, "bad json");
+    }
+  };
+  const ok = (data: unknown, fx?: Effects) => ({ res: Response.json(data), fx });
+
+  if (path === "/info" && method === "GET") {
+    const m = store.meta();
+    return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, epoch: m.epoch, rotate: m.rotate });
   }
-  if (path === "/messages" && req.method === "GET") {
+  if (path === "/create" && method === "POST") {
+    const signer = await verifyRequest(requestToken(req), store.roomId, method, path, body);
+    await store.create(signer, json<CreateBody>());
+    return ok({ head: 0 });
+  }
+  if (path === "/requests" && method === "POST") {
+    const { id, fresh } = await store.request(json<RequestBody>());
+    return ok({ id }, fresh ? { broadcast: [frame({ t: "request" })] } : undefined);
+  }
+  const reqMatch = /^\/requests\/([0-9a-f-]{36})$/.exec(path);
+  if (reqMatch && method === "GET") {
+    // Signed by the requester's key, which isn't a member yet.
+    const pk = await verifyRequest(requestToken(req), store.roomId, method, path, body);
+    if (!pk) throw new HttpError(401, "bad or expired signature");
+    return ok(store.requestStatus(reqMatch[1]!, pk));
+  }
+
+  const me = await store.authenticate(req, method, path, body);
+  const owner = () => {
+    if (me !== store.meta().ownerPk) throw new HttpError(403, "only the channel owner can do that");
+  };
+
+  if (path === "/" && method === "GET") return ok({ head: store.head() });
+  if (path === "/messages" && method === "GET") {
     const since = Number(url.searchParams.get("since") ?? 0) || 0;
     const limit = Number(url.searchParams.get("limit") ?? PAGE_LIMIT) || PAGE_LIMIT;
-    return { res: Response.json({ head: store.head(), messages: store.since(since, limit) }) };
+    return ok({ head: store.head(), messages: store.since(since, limit) });
   }
-  if (path === "/" && req.method === "GET") {
-    return { res: Response.json({ head: store.head() }) };
+  if (path === "/messages" && method === "POST") {
+    const b = json<{ iv?: string; ct?: string; e?: number }>();
+    const e = store.append(b.iv as string, b.ct as string, Number(b.e ?? 0));
+    return ok({ seq: e.seq, ts: e.ts }, { broadcast: [msgFrame(e)] });
+  }
+  if (path === "/keys" && method === "GET") return ok(store.keysFor(me));
+  if (path === "/members" && method === "GET") return ok({ members: store.members() });
+  if (path === "/members/me" && method === "DELETE") {
+    store.remove(me);
+    return ok({ left: true }, { disconnect: me, broadcast: [frame({ t: "roster" })] });
+  }
+  if (path === "/requests" && method === "GET") {
+    owner();
+    return ok({ requests: store.pendingRequests() });
+  }
+  const denyMatch = /^\/requests\/([0-9a-f-]{36})\/deny$/.exec(path);
+  if (denyMatch && method === "POST") {
+    owner();
+    store.deny(denyMatch[1]!);
+    return ok({ denied: true });
+  }
+  if (path === "/members" && method === "POST") {
+    owner();
+    store.approve(json<MemberBody & { request?: string }>());
+    return ok({ approved: true }, { broadcast: [frame({ t: "roster" })] });
+  }
+  const memberMatch = /^\/members\/([A-Za-z0-9_-]{20,})$/.exec(path);
+  if (memberMatch && method === "DELETE") {
+    owner();
+    store.remove(memberMatch[1]!);
+    return ok({ removed: true }, { disconnect: memberMatch[1]!, broadcast: [frame({ t: "roster" })] });
+  }
+  if (path === "/epochs" && method === "POST") {
+    owner();
+    const b = json<{ epoch: number; keys: Record<string, string> }>();
+    store.rotate(b.epoch, b.keys);
+    return ok({ epoch: b.epoch }, { broadcast: [frame({ t: "epoch", epoch: b.epoch })] });
+  }
+  if (path === "/" && method === "DELETE") {
+    owner();
+    return ok({ closed: true }, { wipe: true });
   }
   throw new HttpError(404, "not found");
 }
 
+/** Authenticate a WebSocket upgrade; returns the member key. */
+export async function authenticateSocket(store: RoomStore, req: Request): Promise<string> {
+  return store.authenticate(req, "GET", "/ws", "");
+}
+
 export function errorResponse(err: unknown): Response {
   if (err instanceof HttpError) return Response.json({ error: err.message }, { status: err.status });
-  console.error(err);
+  // Never log request details: room ids and keys are nobody's business.
+  console.error(err instanceof Error ? err.message : "error");
   return Response.json({ error: "internal error" }, { status: 500 });
 }
 
@@ -170,3 +466,5 @@ export function parseRoomPath(pathname: string): { roomId: string; rest: string 
   const m = /^\/v1\/rooms\/([0-9a-f]{32})(\/.*)?$/.exec(pathname);
   return m ? { roomId: m[1]!, rest: m[2] ?? "/" } : null;
 }
+
+export { CLOSE_CLOSED, CLOSE_REMOVED };

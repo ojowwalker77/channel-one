@@ -10,23 +10,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentSession } from "../src/agent.ts";
 import { Channel } from "../src/client.ts";
-import { DEFAULT_RELAY, saveConfig, type ChannelConfig } from "../src/config.ts";
-import { deriveChannel, generateCode } from "../src/crypto.ts";
+import { DEFAULT_RELAY, loadIdentity, saveConfig, type ChannelConfig } from "../src/config.ts";
+import { b64url } from "../src/crypto.ts";
 
 process.env.MC_HOME ??= mkdtempSync(join(tmpdir(), "mc-demo-"));
 const relay = (process.env.MC_RELAY ?? DEFAULT_RELAY).replace(/\/+$/, "");
 const pace = Number(process.env.DEMO_PACE ?? 250);
-const code = generateCode();
-const keys = await deriveChannel(code);
-await new Channel(keys, relay, null, "demo").create();
-const cfg: ChannelConfig = { ...keys, relay, code };
+// The demo's human owns the channel and admits every agent up front.
+const names = ["lead", "mac", "win", "reviewer"] as const;
+const owner = await loadIdentity("human");
+const ids = await Promise.all(names.map((n) => loadIdentity(n)));
+const { code, access } = await Channel.create(relay, owner, { name: "human", role: "owner" }, ids.map((id) => ({ ...id, info: { name: id.name } })));
+const cfg: ChannelConfig = { ...access, relay, code, owner: "human" };
 saveConfig({ default: "demo", channels: { demo: cfg } });
 
 const agent = (name: string) => AgentSession.open("demo", cfg, name);
 const [lead, mac, win, review] = await Promise.all([agent("lead"), agent("mac"), agent("win"), agent("reviewer")]);
 const beat = () => Bun.sleep(pace);
 
-console.log(`watch: ${relay}/#${encodeURIComponent(code)}\n`);
+console.log(`owner dashboard: ${relay}/#${encodeURIComponent(code)}&id=${b64url(new TextEncoder().encode(JSON.stringify(owner)))}\n`);
 
 await lead.hello("planner", "breaks work down and unblocks people");
 await mac.hello("macos", "input capture and edge switching on the Mac");

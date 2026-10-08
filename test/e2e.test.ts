@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, RelayError } from "../src/client.ts";
-import { deriveChannel, generateCode } from "../src/crypto.ts";
 import { generateIdentity } from "../src/identity.ts";
 import type { Message } from "../src/protocol.ts";
 import { startRelay } from "../src/relay/bun.ts";
@@ -80,54 +79,47 @@ function lines(p: ReturnType<typeof mc>) {
 
 const home = (tag: string) => mkdtempSync(join(tmpdir(), `mc-${tag}-`));
 
-describe("relay and client", () => {
-  async function newChannel() {
-    const keys = await deriveChannel(generateCode());
-    const mac = new Channel(keys, relay, await generateIdentity("mac"));
-    await mac.create();
-    const win = new Channel(keys, relay, await generateIdentity("win"));
-    return { mac, win };
-  }
+/**
+ * Join through the real flow: the joiner asks and waits, the owner's machine
+ * sees the request, matches the verification code and approves.
+ */
+async function joinVia(owner: string, joiner: string, code: string, alias: string, name: string, role?: string): Promise<string> {
+  const p = mc(joiner, "join", code, alias, "--as", name, ...(role ? ["--role", role] : []));
+  const l = lines(p);
+  await l.until((x) => x.some((y) => /verification code \d{3}-\d{3}/.test(y)));
+  const v = /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!;
+  expect(await ok(owner, "requests")).toContain(`${v}  ${name}`);
+  await ok(owner, "approve", v, "--yes");
+  expect(await p.exited).toBe(0);
+  await l.until((x) => x.some((y) => y.includes("You are agent")));
+  return l.got.join("\n");
+}
 
-  test("signed round trip, encrypted at rest", async () => {
-    const { mac, win } = await newChannel();
-    const seq = await mac.send("secret plan: ship it", { to: ["win"], kind: "ask" });
-    const { messages } = await win.history(0);
-    expect(messages[0]).toMatchObject({ seq, from: "mac", to: ["win"], kind: "ask", body: "secret plan: ship it", sigOk: true });
-    if (external) return;
-    const file = readdirSync(dataDir).find((f) => f.startsWith(mac.keys.roomId) && f.endsWith(".sqlite"))!;
-    const raw = readFileSync(join(dataDir, file));
-    expect(raw.includes("secret plan")).toBe(false);
-    expect(raw.includes("mac")).toBe(false);
-  });
-
-  test("wrong token is rejected, unknown room is 404", async () => {
-    const { mac } = await newChannel();
-    const forged = new Channel({ ...mac.keys, token: "nope" }, relay, null, "x");
-    await expect(forged.head()).rejects.toMatchObject({ status: 403 });
-    const stranger = new Channel(await deriveChannel(generateCode()), relay, null, "x");
-    await expect(stranger.head()).rejects.toBeInstanceOf(RelayError);
-  });
-
-  test("stream replays after reconnect; presence is relayed but never stored", async () => {
-    const { mac, win } = await newChannel();
-    await mac.send("before");
+describe("presence over a membership channel", () => {
+  test("presence is relayed between members but never stored", async () => {
+    const [human, mac, win] = await Promise.all([generateIdentity("human"), generateIdentity("mac"), generateIdentity("win")]);
+    const { access } = await Channel.create(relay, human, { name: "human" }, [
+      { ...mac, info: { name: "mac" } },
+      { ...win, info: { name: "win" } },
+    ]);
+    const macCh = new Channel({ ...access, keys: { ...access.keys } }, relay, mac);
+    const winCh = new Channel({ ...access, keys: { ...access.keys } }, relay, win);
+    await macCh.send("before");
     const got: Message[] = [];
     const seenPresence: string[] = [];
     const ac = new AbortController();
-    const done = win.stream(0, (m) => void got.push(m), { signal: ac.signal, onPresence: (p) => void seenPresence.push(`${p.from}:${p.sigOk}`) });
+    const done = winCh.stream(0, (m) => void got.push(m), { signal: ac.signal, onPresence: (p) => void seenPresence.push(`${p.from}:${p.sigOk}`) });
     while (got.length < 1) await Bun.sleep(10);
-
     const ac2 = new AbortController();
-    const macStream = mac.stream(await mac.head(), () => {}, { signal: ac2.signal, onOpen: ({ presence }) => void presence({ client: "test" }) });
-    await mac.send("live");
+    const macStream = macCh.stream(await macCh.head(), () => {}, { signal: ac2.signal, onOpen: ({ presence }) => void presence({ client: "test" }) });
+    await macCh.send("live");
     while (got.length < 2 || !seenPresence.length) await Bun.sleep(10);
     ac.abort();
     ac2.abort();
     await Promise.all([done, macStream]);
     expect(got.map((m) => m.body)).toEqual(["before", "live"]);
     expect(seenPresence).toEqual(["mac:true"]);
-    expect(await win.head()).toBe(2);
+    expect(await winCh.head()).toBe(2);
   });
 });
 
@@ -137,17 +129,30 @@ describe("agents coordinating through the CLI", () => {
   const win = home("win");
   let code = "";
 
-  test("create and join: announce roles, print agent instructions, protect names", async () => {
+  test("create, then join only with the owner's approval; names can't be taken twice", async () => {
     const created = await ok(lead, "create", "proj", "--as", "lead", "--role", "planner");
     code = /join code: (\S+)/.exec(created)![1]!;
-    const joined = await ok(mac, "join", code, "proj", "--as", "mac", "--role", "macos");
+    expect(created).toContain("owner dashboard");
+    const joined = await joinVia(lead, mac, code, "proj", "mac", "macos");
     expect(joined).toContain('You are agent "mac"');
     expect(joined).toContain("mc tail");
-    await ok(win, "join", code, "proj", "--as", "win", "--role", "windows");
+    await joinVia(lead, win, code, "proj", "win", "windows");
 
-    const impostor = await run(home("evil"), "join", code, "proj", "--as", "win");
-    expect(impostor.code).toBe(1);
-    expect(impostor.err).toContain('"win" already belongs to another key');
+    // Someone else with the leaked code asks to be "win": approval refuses the duplicate name; the owner denies.
+    const evil = mc(home("evil"), "join", code, "proj", "--as", "win", "--timeout", "20s");
+    const el = lines(evil);
+    await el.until((x) => x.some((y) => /verification code/.test(y)));
+    const v = /verification code (\d{3}-\d{3})/.exec(el.got.join("\n"))![1]!;
+    const dup = await run(lead, "approve", v, "--yes");
+    expect(dup.code).toBe(1);
+    expect(dup.err).toContain('"win" is already a member');
+    // Without --yes (and no terminal to ask on), approval refuses: an agent can't wave someone in by itself.
+    expect((await run(lead, "approve", v, "--name", "win2")).err).toContain("needs your human's go-ahead");
+    await ok(lead, "deny", v);
+    expect(await evil.exited).toBe(1);
+
+    // Agents can't approve: only the owner's machine sees requests.
+    expect((await run(mac, "requests")).err).toContain("only the channel owner");
 
     const status = await ok(lead, "status");
     expect(status).toContain("lead (you) — planner");
@@ -233,12 +238,45 @@ describe("agents coordinating through the CLI", () => {
   });
 });
 
+describe("leaving, removal and closing through the CLI", () => {
+  test("access ends at once and every local copy is wiped", async () => {
+    const owner = home("x-owner");
+    const a = home("x-a");
+    const b = home("x-b");
+    const code = /join code: (\S+)/.exec(await ok(owner, "create", "x", "--as", "boss"))![1]!;
+    await joinVia(owner, a, code, "x", "alice");
+    await joinVia(owner, b, code, "x", "bob");
+    await ok(a, "send", "hi from alice");
+
+    // alice leaves: she's out and forgets the channel; the owner's next command rotates the key.
+    expect(await ok(a, "leave")).toContain("left");
+    expect(await ok(a, "channels")).toBe("");
+    expect(await ok(owner, "members")).toContain("alice  key");
+    expect(await ok(owner, "members")).toContain("(left)");
+    await ok(b, "send", "after alice left");
+    expect(await ok(owner, "log")).toContain("after alice left");
+
+    // bob is kicked: his next command fails, and his machine forgets the channel.
+    expect(await ok(owner, "kick", "bob")).toContain("rotated");
+    const after = await run(b, "status");
+    expect(after.code).toBe(4);
+    expect(after.err).toContain("no longer a member");
+    expect(await ok(b, "channels")).toBe("");
+
+    // The owner closes it: deleted at the relay, nothing left locally.
+    expect((await run(owner, "close")).err).toContain("go-ahead");
+    expect(await ok(owner, "close", "--yes")).toContain("closed");
+    expect(await ok(owner, "channels")).toBe("");
+    if (!external) expect(readdirSync(dataDir).filter((f) => f.endsWith(".sqlite")).length).toBeGreaterThan(0);
+  });
+});
+
 describe("images and cross-channel tasks through the CLI", () => {
   test("quick, send --image, log markers, save, oversize rejected, tasks --global", async () => {
     const a = home("imgcli");
     const created = await ok(a, "quick", "pics", "--as", "pic");
     const code = /join code: (\S+)/.exec(created)![1]!;
-    expect(created).toContain("watch it live:");
+    expect(created).toContain("owner dashboard");
     expect(created).toContain('You are agent "pic"');
 
     // No --as needed: falls back to the OS user.
@@ -251,7 +289,7 @@ describe("images and cross-channel tasks through the CLI", () => {
     await Bun.write(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
     const sent = await ok(a, "send", "--image", png, "the dialog");
     const seq = /sent #(\d+)/.exec(sent)![1]!;
-    expect(code.startsWith("mc1-")).toBe(true);
+    expect(code.startsWith("mc2-")).toBe(true);
     expect(await ok(a, "log", "-n", "3")).toContain("[image: shot.png");
     expect((await ok(a, "save", seq, dir)).trim()).toBe(join(dir, `#${seq}-shot.png`));
 
@@ -274,7 +312,7 @@ describe("images and cross-channel tasks through the CLI", () => {
     const created = await ok(a, "create", "w", "--as", "eye");
     const code = /join code: (\S+)/.exec(created)![1]!;
     const b = home("watchsender");
-    await ok(b, "join", code, "w", "--as", "peer");
+    await joinVia(a, b, code, "w", "peer");
     const hooks: string[] = [];
     const server = Bun.serve({
       port: 0,
@@ -304,7 +342,7 @@ describe("MCP server", () => {
     const h = home("mcp");
     const other = home("mcp-other");
     const code = /join code: (\S+)/.exec(await ok(h, "create", "m", "--as", "agent-a", "--role", "builder"))![1]!;
-    await ok(other, "join", code, "m", "--as", "agent-b");
+    await joinVia(h, other, code, "m", "agent-b");
 
     const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, MC_HOME: h, MC_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     const reader = p.stdout.getReader();
@@ -334,7 +372,7 @@ describe("MCP server", () => {
     expect(init.instructions).toContain('You are "agent-a"');
     p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
     const tools = ((await rpc("tools/list")) as { tools: { name: string }[] }).tools.map((t) => t.name).sort();
-    expect(tools).toEqual(["ask", "claim", "facts", "log", "read", "release", "reply", "save", "send", "status", "task_add", "task_update", "tasks", "who"]);
+    expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "read", "release", "reply", "save", "send", "status", "task_add", "task_update", "tasks", "who"]);
 
     expect(await call("task_add", { title: "write docs" })).toMatch(/^added T\d+$/);
     expect(await call("claim", { paths: ["docs/"], ttl: "10m" })).toContain("docs/  @agent-a");

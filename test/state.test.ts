@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { canonical, generateIdentity, sign, verify, type Identity } from "../src/identity.ts";
 import type { Event, Kind, Message } from "../src/protocol.ts";
-import { fold, overlaps, parseTaskId } from "../src/state.ts";
+import { fold as foldWith, overlaps, parseTaskId, type Roster } from "../src/state.ts";
+
+/** Everyone a test identity was generated for is a member, unless dropped. */
+const roster: Roster = [];
+async function member(name: string): Promise<Identity> {
+  const id = await generateIdentity(name);
+  roster.push({ name, pk: id.pk, owner: false, at: 0, active: true });
+  return id;
+}
+const fold = (ms: Message[], now?: number) => foldWith(ms, roster, now);
 
 let seq = 0;
 const T0 = 1_700_000_000_000;
@@ -40,25 +49,33 @@ describe("identity", () => {
 });
 
 describe("fold", () => {
-  test("first signed key owns a name; later impostors are forged and ignored", async () => {
-    const mac = await generateIdentity("mac");
-    const evil = await generateIdentity("mac");
+  test("names are bound by the owner's roster: other keys, unsigned and non-members are forged", async () => {
+    const mac = await member("mac");
+    const evil = await member("evil");
+    const outsider = await generateIdentity("ghost");
     const ms = [
       await msg(mac, "mac", { ev: { op: "hello", role: "capture" } }),
       await msg(evil, "mac", { ev: { op: "fact.set", key: "ip", value: "6.6.6.6" } }),
-      await msg(null, "mac", { body: "unsigned, but the name has a key" }),
+      await msg(null, "mac", { body: "unsigned, claiming mac" }),
+      await msg(outsider, "ghost", { body: "not a member" }),
     ];
     const s = fold(ms);
-    expect(s.trust.get(ms[0]!.seq)).toBe("verified");
-    expect(s.trust.get(ms[1]!.seq)).toBe("forged");
-    expect(s.trust.get(ms[2]!.seq)).toBe("forged");
+    expect(ms.map((m) => s.trust.get(m.seq))).toEqual(["verified", "forged", "forged", "forged"]);
     expect(s.facts.size).toBe(0);
     expect(s.members.get("mac")?.role).toBe("capture");
+    expect(s.members.has("ghost")).toBe(false);
+  });
+
+  test("former members' history still verifies", async () => {
+    const gone = await generateIdentity("gone");
+    const r: Roster = [{ name: "gone", pk: gone.pk, owner: false, at: 0, active: false }];
+    const m = await msg(gone, "gone", { body: "said before leaving" });
+    expect(foldWith([m], r).trust.get(m.seq)).toBe("verified");
   });
 
   test("task claim race: the earlier claim wins", async () => {
-    const a = await generateIdentity("a");
-    const b = await generateIdentity("b");
+    const a = await member("a");
+    const b = await member("b");
     const add = await msg(a, "a", { ev: { op: "task.add", title: "ship it" } });
     const claimB = await msg(b, "b", { ev: { op: "task.claim", task: add.seq } });
     const claimA = await msg(a, "a", { ev: { op: "task.claim", task: add.seq } });
@@ -68,7 +85,7 @@ describe("fold", () => {
   });
 
   test("tasks: dependencies, handoff, done", async () => {
-    const a = await generateIdentity("a");
+    const a = await member("a");
     const t1 = await msg(a, "a", { ev: { op: "task.add", title: "protocol" } });
     const t2 = await msg(a, "a", { ev: { op: "task.add", title: "client", after: [t1.seq], owner: "b" } });
     const drop = await msg(a, "a", { ev: { op: "task.update", task: t2.seq, owner: null, note: "free for anyone" } });
@@ -80,8 +97,8 @@ describe("fold", () => {
   });
 
   test("claims: overlapping paths conflict, expire, and release", async () => {
-    const a = await generateIdentity("a");
-    const b = await generateIdentity("b");
+    const a = await member("a");
+    const b = await member("b");
     const ca = await msg(a, "a", { ev: { op: "claim", paths: ["src/net"], ttl: 600 } });
     const cb = await msg(b, "b", { ev: { op: "claim", paths: ["src/net/tcp.rs"], ttl: 600 } });
     const cb2 = await msg(b, "b", { ev: { op: "claim", paths: ["src/ui"], ttl: 600 } });
@@ -98,8 +115,8 @@ describe("fold", () => {
   });
 
   test("open asks close when someone else replies", async () => {
-    const a = await generateIdentity("a");
-    const b = await generateIdentity("b");
+    const a = await member("a");
+    const b = await member("b");
     const q1 = await msg(a, "a", { kind: "ask", to: ["b"], body: "ip?" });
     const q2 = await msg(a, "a", { kind: "blocking", body: "need review" });
     const selfReply = await msg(a, "a", { re: [q2.seq], body: "bump" });

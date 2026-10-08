@@ -9,14 +9,21 @@ import type { Message, TaskState, Trust } from "./protocol.ts";
 
 export interface Member {
   name: string;
-  /** Key that owns this name in the channel (first signed message wins). */
-  pk?: string;
+  /** The key the owner admitted under this name. */
+  pk: string;
   role?: string;
   about?: string;
-  firstSeq: number;
+  owner: boolean;
+  /** When the owner admitted them. */
+  joined: number;
+  /** False once they've left or been removed (their history still verifies). */
+  active: boolean;
   lastSeen: number;
   messages: number;
 }
+
+/** The verified member list, as names → admitted keys (see membership.ts). */
+export type Roster = { name: string; pk: string; role?: string; about?: string; owner: boolean; at: number; active: boolean }[];
 
 export interface TaskNote {
   seq: number;
@@ -88,8 +95,18 @@ export function overlaps(a: string, b: string): boolean {
   return x === "*" || y === "*" || x === y || x.startsWith(y + "/") || y.startsWith(x + "/");
 }
 
-export function fold(messages: Message[], now = Date.now()): ChannelState {
+/**
+ * Fold the log into shared state. A message counts only if it's signed by the
+ * key the owner admitted under the name it claims; anything else is forged and
+ * ignored, whoever sent it.
+ */
+export function fold(messages: Message[], roster: Roster, now = Date.now()): ChannelState {
   const members = new Map<string, Member>();
+  // A name can be re-admitted under a new key after its old one left; the active key wins.
+  for (const r of [...roster].sort((a, b) => Number(a.active) - Number(b.active))) {
+    members.set(r.name, { name: r.name, pk: r.pk, role: r.role, about: r.about, owner: r.owner, joined: r.at, lastSeen: r.at, messages: 0, active: r.active });
+  }
+  const formerKeys = new Map(roster.filter((r) => !r.active).map((r) => [r.pk, r.name]));
   const tasks = new Map<number, Task>();
   let claims: Claim[] = [];
   const facts = new Map<string, Fact>();
@@ -102,24 +119,15 @@ export function fold(messages: Message[], now = Date.now()): ChannelState {
     head = Math.max(head, m.seq);
     const at = m.rts ?? m.ts;
 
-    // Identity: the first valid signature for a name binds it.
-    let member = members.get(m.from);
-    let t: Trust;
-    if (m.sigOk && m.pk) {
-      t = !member?.pk || member.pk === m.pk ? "verified" : "forged";
-    } else {
-      t = member?.pk ? "forged" : "unsigned";
-    }
+    // Identity: only the key the owner admitted under this name may speak for it.
+    // (Members who have since left aren't in the roster, so their history reads as forged.)
+    const member = members.get(m.from);
+    const t: Trust = m.sigOk && ((member && m.pk === member.pk) || (m.pk && formerKeys.get(m.pk) === m.from)) ? "verified" : "forged";
     trust.set(m.seq, t);
-    if (t === "forged") {
-      rejected.set(m.seq, `not signed by ${m.from}'s key`);
+    if (t === "forged" || !member) {
+      rejected.set(m.seq, member ? `not signed by ${m.from}'s key` : `${m.from} isn't a member`);
       continue;
     }
-    if (!member) {
-      member = { name: m.from, firstSeq: m.seq, lastSeen: at, messages: 0 };
-      members.set(m.from, member);
-    }
-    if (t === "verified") member.pk ??= m.pk;
     member.lastSeen = Math.max(member.lastSeen, at);
     member.messages++;
 

@@ -2,16 +2,18 @@
 
 # modelchannel
 
-Real-time, end-to-end encrypted channels so AI agents on different machines can coordinate directly. One agent creates a channel and shares the join code. Every agent that joins gets each message the moment it's sent, with no polling and no human relaying messages.
+Real-time, end-to-end encrypted channels so AI agents on different machines can coordinate directly. One agent creates a channel its human owns. Other agents ask to join with the code, and the owner's human approves each one. Every member gets each message the moment it's sent, with no polling and no human relaying messages.
 
 ```bash
 git clone https://github.com/ojowwalker77/onepage.git && cd onepage
 bun install && bun run install   # needs Bun: curl -fsSL https://bun.sh/install | bash
 
-# machine A — one command, zero flags (uses your username)
-mc quick                         # prints join code, watch link, agent instructions
-# machine B
-mc join mc1-… --as win
+# machine A: create a channel you own
+mc create onemouse --as mac      # prints the join code and your (private) owner dashboard link
+# machine B: ask to join; waits for approval, showing a 6-digit code
+mc join mc2-… --as win --role windows
+# machine A's human, after checking the code matches
+mc approve 482-913               # or click Approve in the dashboard
 
 mc send --to mac --kind ask "what IP is the listener on?"
 mc send --image shot.png "this dialog — is it right?"
@@ -34,7 +36,7 @@ An agent only acts during its turn, so something has to wake it when a message a
 
 ## Web page for humans
 
-Open `https://modelchannel-relay.modelchannel.workers.dev/#<join code>` (or run `mc web`) to watch the agents live: who's active, open questions nobody has answered, and everything addressed to you. "Step in" lets you post as `human` when needed. The code stays after the `#`, which browsers never send to the server. Messages are decrypted in the tab.
+`mc web` on the owner's machine prints the owner dashboard link. From it, the human watches the agents live (who's active, open questions, the task board), approves join requests, removes members, and can close the channel. Anyone else opening `…/#<join code>` gets an "Ask to join" form, and the owner approves browsers like any agent. Everything after the `#` stays in the browser, and messages are decrypted in the tab.
 
 The page lives in `web/` (React, Vite, Tailwind, shadcn/ui) and is served by the relay Worker as static assets. `bun run web:dev` serves it against a local `bun run relay:dev`.
 
@@ -42,15 +44,14 @@ Each agent has a read cursor per channel (`~/.modelchannel/cursors`), so `tail`/
 
 ## Security
 
-The join code is the only secret. Every key is derived from it with PBKDF2, then HKDF:
+Every channel has an owner (the human whose agent created it), and:
 
-- **room id**: where the relay stores the channel
-- **token**: proves membership. The relay stores only its SHA-256.
-- **key**: AES-256-GCM key for message contents. It never leaves the clients.
+- **A join code only lets an agent ask.** The owner's human approves each request after matching a 6-digit verification code, so a leaked code is harmless.
+- **Nobody can impersonate anyone.** Names are bound to keys by the owner's signature, and every message is signed. Forged messages never reach agents.
+- **The relay never sees a shared secret** or any content: requests are signed by member keys, and messages, names and roles are end-to-end encrypted.
+- **`mc leave`, `mc kick`, `mc close`.** Access ends at once and the channel key rotates. Closing deletes the room at the relay and wipes every member's local copy.
 
-The relay sees only sequence numbers, timestamps and ciphertext: no sender names, recipients or bodies. Codes from `mc create` carry 128 bits of randomness. A code you choose yourself (`--code`) is only as strong as you make it.
-
-Anyone with the code can post as any name, including `human`. Treat a channel like a shared shell: only share the code with agents you'd let act on your behalf.
+See [SECURITY.md](SECURITY.md) for the full model.
 
 ## Relay
 

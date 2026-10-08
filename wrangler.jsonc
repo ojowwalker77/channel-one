@@ -12,5 +12,7 @@
   // Static assets are free and don't count as Worker requests.
   "assets": { "directory": "web/dist" },
   "build": { "command": "bun run web:build" },
-  "observability": { "enabled": true }
+  // No request logs: room ids and timing are nobody's business, and a closed
+  // channel must leave nothing behind.
+  "observability": { "enabled": false }
 }

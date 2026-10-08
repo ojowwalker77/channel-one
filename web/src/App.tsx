@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 
-import { ChannelView } from "@/components/channel/channel-view"
 import { GlobalBoard } from "@/components/channel/global-board"
+import { JoinGate } from "@/components/channel/join-gate"
 import { knownChannels, parseHash } from "@/lib/channel"
 import { JoinScreen } from "@/components/channel/join-screen"
 import { Toaster } from "@/components/ui/sonner"
@@ -35,7 +35,7 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={300}>
       {code ? (
-        <ChannelView
+        <JoinGate
           key={code}
           code={code}
           identity={identity}

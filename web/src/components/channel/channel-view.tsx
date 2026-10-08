@@ -1,27 +1,22 @@
-import { MessageSquarePlusIcon, SearchIcon, TriangleAlertIcon } from "lucide-react"
+import { MessageSquarePlusIcon, SearchIcon, ShieldOffIcon } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
-import type { Identity } from "@mc/identity.ts"
 import type { Message } from "@mc/protocol.ts"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
-import { Input } from "@/components/ui/input"
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
-import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
-import { rememberChannel, useChannel } from "@/lib/channel"
+import { forgetChannel, useChannel, type StoredMember } from "@/lib/channel"
 import { AgentAvatar } from "./agent-avatar"
 import { AppSidebar, type AgentRow, type View } from "./app-sidebar"
 import { Board } from "./board"
 import { Composer } from "./composer"
+import { MembersPanel } from "./members-panel"
 import { MessageList } from "./message-list"
 import { SidePanels } from "./side-panels"
 import { TaskSheet } from "./task-sheet"
-
-const NAME_KEY = "mc.as"
 
 function useNow(intervalMs = 30_000): number {
   const [now, setNow] = useState(Date.now())
@@ -47,9 +42,9 @@ function useTitleBadge(count: number) {
   }, [count, base])
 }
 
-export function ChannelView({ code, identity: imported, onLeave }: { code: string; identity: Identity | null; onLeave: () => void }) {
-  const [me, setMe] = useState(() => imported?.name || localStorage.getItem(NAME_KEY) || "human")
-  const { keys, connection, error, messages, state, online, identity, send } = useChannel(code, me, imported)
+export function ChannelView({ member, onLeave }: { member: StoredMember; onLeave: () => void }) {
+  const me = member.identity.name
+  const { ch, connection, gone, messages, roster, state, online, isOwner, requests, send, refreshRequests, refreshRoster } = useChannel(member)
   const openAsks = state.openAsks
   const now = useNow()
   const [openTask, setOpenTask] = useState<number | null>(null)
@@ -57,29 +52,21 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
   const agents = useMemo<AgentRow[]>(() => {
     const latest = new Map<string, string>()
     for (const m of messages) if ((m.kind === "status" || m.kind === "done") && state.trust.get(m.seq) !== "forged") latest.set(m.from, m.body)
-    const rows = [...state.members.values()].map((m) => ({
+    const rows = [...state.members.values()].filter((m) => m.active).map((m) => ({
       name: m.name,
       role: m.role,
       lastSeen: m.lastSeen,
       status: latest.get(m.name),
       verified: !!m.pk,
     }))
-    for (const [name, o] of online) if (!state.members.has(name)) rows.push({ name, role: o.role, lastSeen: o.at, status: undefined, verified: false })
     return rows.sort((a, b) => Number(online.has(b.name)) - Number(online.has(a.name)) || b.lastSeen - a.lastSeen)
   }, [state, messages, online])
 
-  // My name belongs to a different key in this channel: posts would show as forged.
-  const myKey = state.members.get(me)?.pk
-  const nameTaken = !!myKey && !!identity && myKey !== identity.pk
   const [view, setView] = useState<View>({ kind: "all" })
   const [query, setQuery] = useState("")
   const [replyTo, setReplyTo] = useState<Message | null>(null)
-  const [renaming, setRenaming] = useState(false)
   // Watching is the default; the composer only opens when the human steps in.
   const [composing, setComposing] = useState(false)
-  useEffect(() => {
-    rememberChannel(code)
-  }, [code])
   useTitleBadge(messages.filter((m) => m.from !== me).length)
 
   const forMe = useMemo(() => messages.filter((m) => m.from !== me && m.to?.includes(me)), [messages, me])
@@ -96,10 +83,15 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
 
   const openTasks = [...state.tasks.values()].filter((t) => t.state !== "done").length
   const title =
+    view.kind === "members" ? "Members" :
     view.kind === "board" ? "Task board" :
     view.kind === "all" ? "Activity" : view.kind === "open" ? "Open questions" : view.kind === "mine" ? `For ${me}` : view.name
   const subtitle =
-    view.kind === "open"
+    view.kind === "members"
+      ? isOwner
+        ? `${requests.length} waiting · you approve everyone who joins`
+        : "Names are bound to keys by the owner"
+      : view.kind === "open"
       ? "Asks and blockers nobody has replied to yet"
       : view.kind === "board"
         ? `${openTasks} open · ${state.tasks.size - openTasks} done`
@@ -114,24 +106,26 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
     setComposing(true)
   }, [])
 
-  const copyLink = () =>
+  const copyCode = () =>
     navigator.clipboard
-      .writeText(location.href)
-      .then(() => toast.success("Invite link copied", { description: "Anyone with this link can read and post. Share it like a password." }))
+      .writeText(member.code)
+      .then(() => toast.success("Join code copied", { description: "It only lets someone ask to join. You approve each request." }))
 
-  if (connection === "error") {
+  if (gone) {
     return (
       <div className="flex min-h-svh items-center justify-center p-6">
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
-              <TriangleAlertIcon />
+              <ShieldOffIcon />
             </EmptyMedia>
-            <EmptyTitle>Couldn’t open this channel</EmptyTitle>
-            <EmptyDescription>{error}</EmptyDescription>
+            <EmptyTitle>{gone === "closed" ? "This channel was closed" : "You’re no longer a member"}</EmptyTitle>
+            <EmptyDescription>
+              {gone === "closed" ? "The owner deleted it, and nothing is left at the relay." : "The owner removed this browser, or it left."} This browser has forgotten it too.
+            </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <Button onClick={onLeave}>Try another code</Button>
+            <Button onClick={onLeave}>Back</Button>
           </EmptyContent>
         </Empty>
       </div>
@@ -141,18 +135,18 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
   return (
     <SidebarProvider>
       <AppSidebar
-        channelId={keys ? keys.roomId.slice(0, 8) : "…"}
+        channelId={member.access.roomId.slice(0, 8)}
         connection={connection}
         view={view}
         onView={setView}
-        counts={{ all: messages.length, board: openTasks, open: openAsks.length, mine: forMe.length }}
+        counts={{ all: messages.length, board: openTasks, open: openAsks.length, mine: forMe.length, members: requests.length }}
         agents={agents}
         online={online}
         now={now}
         me={me}
-        onRename={() => setRenaming(true)}
-        onCopyLink={copyLink}
-        onLeave={onLeave}
+        isOwner={isOwner}
+        onCopyCode={copyCode}
+        onBack={onLeave}
       />
       <SidebarInset className="h-svh overflow-hidden">
         <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3 md:px-4">
@@ -171,7 +165,38 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
           </InputGroup>
         </header>
 
-        {view.kind === "board" ? (
+        {view.kind === "members" ? (
+          <MembersPanel
+            me={me}
+            isOwner={isOwner}
+            roster={roster}
+            requests={requests}
+            online={online}
+            now={now}
+            onApprove={async (r) => {
+              await ch.approve(r)
+              await Promise.all([refreshRequests(), refreshRoster()])
+            }}
+            onDeny={async (r) => {
+              await ch.deny(r.id)
+              await refreshRequests()
+            }}
+            onRemove={async (m) => {
+              await ch.remove(m.pk)
+              await refreshRoster()
+            }}
+            onClose={async () => {
+              await ch.close()
+              forgetChannel(member.code)
+              onLeave()
+            }}
+            onLeave={async () => {
+              await ch.leave()
+              forgetChannel(member.code)
+              onLeave()
+            }}
+          />
+        ) : view.kind === "board" ? (
           <Board state={state} now={now} onOpen={setOpenTask} />
         ) : (
           <div className="flex min-h-0 flex-1">
@@ -181,7 +206,7 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
                 all={messages}
                 me={me}
                 state={state}
-                loading={connection === "unlocking" || (connection === "connecting" && messages.length === 0)}
+                loading={connection === "connecting" && messages.length === 0}
                 empty={
                   query
                     ? { title: "No matches", description: `Nothing here mentions “${query}”.` }
@@ -200,7 +225,6 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
         {composing ? (
           <Composer
             me={me}
-            nameTaken={nameTaken}
             agents={agents.map((a) => a.name)}
             replyTo={replyTo}
             onClearReply={() => setReplyTo(null)}
@@ -208,7 +232,7 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
               setReplyTo(null)
               setComposing(false)
             }}
-            disabled={!keys}
+            disabled={false}
             send={send}
           />
         ) : (
@@ -217,7 +241,7 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
               <span className={connection === "live" ? "size-1.5 rounded-full bg-emerald-500" : "size-1.5 animate-pulse rounded-full bg-amber-500"} />
               {connection === "live" ? `Live · ${online.size} of ${agents.filter((a) => a.name !== me).length} agents online` : "Connecting…"}
             </span>
-            <Button variant="ghost" size="sm" onClick={() => setComposing(true)} disabled={!keys}>
+            <Button variant="ghost" size="sm" onClick={() => setComposing(true)}>
               <MessageSquarePlusIcon />
               Step in
             </Button>
@@ -227,69 +251,6 @@ export function ChannelView({ code, identity: imported, onLeave }: { code: strin
 
       <TaskSheet id={openTask} state={state} messages={messages} now={now} onClose={() => setOpenTask(null)} onOpen={setOpenTask} />
 
-      <RenameDialog
-        open={renaming}
-        current={me}
-        onOpenChange={setRenaming}
-        onSave={(name) => {
-          setMe(name)
-          localStorage.setItem(NAME_KEY, name)
-        }}
-      />
     </SidebarProvider>
-  )
-}
-
-function RenameDialog({
-  open,
-  current,
-  onOpenChange,
-  onSave,
-}: {
-  open: boolean
-  current: string
-  onOpenChange: (o: boolean) => void
-  onSave: (name: string) => void
-}) {
-  const [name, setName] = useState(current)
-  useEffect(() => {
-    if (open) setName(current)
-  }, [open, current])
-  const valid = /^[\p{L}\p{N}_.-]{1,32}$/u.test(name.trim())
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-sm">
-        <form
-          className="grid gap-4"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (!valid) return
-            onSave(name.trim())
-            onOpenChange(false)
-          }}
-        >
-          <DialogHeader>
-            <DialogTitle>Change your name</DialogTitle>
-            <DialogDescription>
-              Agents treat messages from <span className="font-medium text-foreground">human</span> as instructions from you. Other names are treated as peers.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-2">
-            <Label htmlFor="name">Name</Label>
-            <Input id="name" value={name} onChange={(e) => setName(e.target.value)} autoFocus aria-invalid={!valid} />
-            <p className="text-xs text-muted-foreground">Letters, digits, “_”, “.” or “-”, up to 32 characters.</p>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!valid}>
-              Save
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   )
 }

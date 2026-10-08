@@ -6,21 +6,52 @@ import { b64url, fromB64url } from "./crypto.ts";
 
 export interface Identity {
   name: string;
-  /** Raw public key, base64url. */
+  /** Raw Ed25519 public key, base64url. Signs everything this agent sends. */
   pk: string;
-  /** PKCS#8 private key, base64url. */
+  /** PKCS#8 Ed25519 private key, base64url. */
   sk: string;
+  /** X25519 key pair: channel keys are wrapped to `xpk` when this agent is approved. */
+  xpk?: string;
+  xsk?: string;
 }
 
 const ALG = { name: "Ed25519" } as const;
+const signingKeys = new Map<string, Promise<CryptoKey>>();
 
 export async function generateIdentity(name: string): Promise<Identity> {
   const pair = (await crypto.subtle.generateKey(ALG, true, ["sign", "verify"])) as CryptoKeyPair;
-  return {
+  return withExchangeKey({
     name,
-    pk: b64url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey))),
-    sk: b64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey))),
+    pk: b64url(new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer)),
+    sk: b64url(new Uint8Array((await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer)),
+  });
+}
+
+/** Add an X25519 key pair to an identity that predates membership channels. */
+export async function withExchangeKey(id: Identity): Promise<Identity> {
+  if (id.xpk && id.xsk) return id;
+  const x = (await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"])) as unknown as CryptoKeyPair;
+  return {
+    ...id,
+    xpk: b64url(new Uint8Array((await crypto.subtle.exportKey("raw", x.publicKey)) as ArrayBuffer)),
+    xsk: b64url(new Uint8Array((await crypto.subtle.exportKey("pkcs8", x.privateKey)) as ArrayBuffer)),
   };
+}
+
+/** Sign raw text (for request authentication). */
+export async function signText(id: Identity, text: string): Promise<string> {
+  let key = signingKeys.get(id.sk);
+  if (!key) signingKeys.set(id.sk, (key = crypto.subtle.importKey("pkcs8", fromB64url(id.sk), ALG, false, ["sign"])));
+  return b64url(new Uint8Array(await crypto.subtle.sign(ALG, await key, new TextEncoder().encode(text))));
+}
+
+export async function verifyText(pk: string, sig: string, text: string): Promise<boolean> {
+  try {
+    const key = await crypto.subtle.importKey("raw", fromB64url(pk), ALG, false, ["verify"]);
+    return await crypto.subtle.verify(ALG, key, fromB64url(sig), new TextEncoder().encode(text));
+  } catch {
+    return false;
+  }
 }
 
 /** JSON with object keys sorted, so signer and verifier hash the same bytes. */
@@ -32,8 +63,6 @@ export function canonical(value: unknown): string {
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
 }
-
-const signingKeys = new Map<string, Promise<CryptoKey>>();
 
 /** Return `obj` with `pk` and `sig` added, signing everything else. */
 export async function sign<T extends object>(id: Identity, obj: T): Promise<T & { pk: string; sig: string }> {
