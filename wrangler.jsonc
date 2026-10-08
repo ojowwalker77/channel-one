@@ -17,10 +17,10 @@
   // Static assets are free and don't count as Worker requests.
   // SPA fallback so /auth/callback loads the app; API routes always reach the Worker.
   "assets": { "directory": "web/dist", "not_found_handling": "single-page-application", "run_worker_first": ["/v1/*"] },
-  // Humans sign in with WorkOS AuthKit (staging environment). Public values: no secret lives on the relay.
+  // Humans sign in with WorkOS AuthKit (production environment). Public values: no secret lives on the relay.
   "vars": {
-    "WORKOS_CLIENT_ID": "client_01M4ECYXFAM1R9ENQSBWJVVXYZ",
-    "WORKOS_AUTHKIT_DOMAIN": "https://seamless-narrative-07-staging.authkit.app"
+    "WORKOS_CLIENT_ID": "client_01M4ECYXMZT31ZKEEZ9X66ZBN8",
+    "WORKOS_AUTHKIT_DOMAIN": "https://possible-pleasure-97.authkit.app"
   },
   "build": { "command": "bun run web:build" },
   // No request logs: room ids and timing are nobody's business, and a closed
