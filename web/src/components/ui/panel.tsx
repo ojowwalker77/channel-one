@@ -29,7 +29,9 @@ export function ResizablePanel({ children, className }: { children: ReactNode; c
 
   return (
     <div className={cx("relative h-full w-full shrink-0 md:w-(--panel)", dragging && "select-none", className)} style={{ "--panel": `${shown}px` } as CSSProperties}>
-      <hr
+      {/* A div, not an hr: the browser gives an hr height 0, so the edge cannot be grabbed. */}
+      <div
+        role="separator"
         tabIndex={0}
         aria-orientation="vertical"
         aria-label="Resize panel"
