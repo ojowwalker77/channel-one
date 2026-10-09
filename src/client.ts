@@ -92,7 +92,8 @@ async function call<T>(
   const method = (init.method ?? "GET").toUpperCase();
   const body = typeof init.body === "string" ? init.body : "";
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (init.identity) headers.authorization = `Bearer ${await signRequest(init.identity, roomId, method, path, body)}`;
+  // The signature covers the query too, so a captured token can't be replayed with other parameters.
+  if (init.identity) headers.authorization = `Bearer ${await signRequest(init.identity, roomId, method, path + u.search, body)}`;
   if (init.human) headers["x-human-token"] = init.human;
   const res = await fetch(u, { method, body: method === "GET" || method === "DELETE" ? undefined : body, headers });
   const json = (await res.json().catch(() => ({}))) as T & { error?: string };

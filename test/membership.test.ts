@@ -146,7 +146,7 @@ describe("membership channels", () => {
 async function rawLast(ch: Channel): Promise<{ iv: string; ct: string }> {
   const { signRequest } = await import("../src/auth.ts");
   const res = await fetch(new URL(`/v1/rooms/${ch.roomId}/messages?since=0`, ch.relay), {
-    headers: { authorization: `Bearer ${await signRequest(ch.identity, ch.roomId, "GET", "/messages")}` },
+    headers: { authorization: `Bearer ${await signRequest(ch.identity, ch.roomId, "GET", "/messages?since=0")}` },
   });
   const { messages } = (await res.json()) as { messages: { iv: string; ct: string }[] };
   return messages.at(-1)!;

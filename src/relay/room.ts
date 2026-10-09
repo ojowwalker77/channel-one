@@ -83,6 +83,24 @@ export interface DirectoryUpdate {
   entry: DirectoryEntry | null;
 }
 
+/** Messages one member may post per minute: plenty for real work, too few to flush a channel's history. */
+const MESSAGES_PER_MINUTE = 120;
+/** Presence and other ephemeral frames one member may send per minute. */
+const EPHEMERAL_PER_MINUTE = 60;
+const windows = new Map<string, { start: number; n: number }>();
+
+/** A fixed one-minute window per key; false once the key has used up its limit. */
+function allow(key: string, limit: number): boolean {
+  const now = Date.now();
+  const w = windows.get(key);
+  if (!w || now - w.start > 60_000) {
+    if (windows.size > 10_000) windows.clear();
+    windows.set(key, { start: now, n: 1 });
+    return true;
+  }
+  return ++w.n <= limit;
+}
+
 /** Most join requests a room holds at once; stops request spam. */
 const MAX_PENDING = 20;
 /** Pending requests expire after this long. */
@@ -465,7 +483,7 @@ export function welcomeFrames(store: RoomStore, since: number): string[] {
 }
 
 /** Handle one frame from an authenticated socket. */
-export function onClientFrame(store: RoomStore, raw: string): Effects {
+export function onClientFrame(store: RoomStore, raw: string, sender = ""): Effects {
   let f: ClientFrame;
   try {
     f = JSON.parse(raw);
@@ -474,12 +492,14 @@ export function onClientFrame(store: RoomStore, raw: string): Effects {
   }
   if (f.t === "eph") {
     // Presence and other ephemeral signals: relayed, never stored, never acked.
+    if (!allow(`eph:${store.roomId}:${sender}`, EPHEMERAL_PER_MINUTE)) return { reply: frame({ t: "err", error: "too many ephemeral frames; slow down" }) };
     if (typeof f.iv !== "string" || typeof f.ct !== "string" || f.ct.length > MAX_EPH_LENGTH) {
       return { reply: frame({ t: "err", error: "bad ephemeral frame" }) };
     }
     return { others: frame({ t: "eph", iv: f.iv, ct: f.ct }) };
   }
   if (f.t !== "send") return { reply: frame({ t: "err", error: "unknown frame" }) };
+  if (!allow(`${store.roomId}:${sender}`, MESSAGES_PER_MINUTE)) return { reply: frame({ t: "err", error: "too many messages; wait a minute", id: f.id }) };
   try {
     const e = store.append(f.iv, f.ct, Number(f.e ?? 0));
     return { broadcast: [msgFrame(e)], reply: frame({ t: "ack", id: f.id, seq: e.seq }) };
@@ -543,7 +563,7 @@ export async function onHttp(
     return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, epoch: m.epoch, rotate: m.rotate, title: store.title() });
   }
   if (path === "/create" && method === "POST") {
-    const signer = await verifyRequest(requestToken(req), store.roomId, method, path, body);
+    const signer = await verifyRequest(requestToken(req), store.roomId, method, path + url.search, body);
     const user = await signedIn();
     await store.create(signer, json<CreateBody>(), user);
     return ok({ head: 0 }, user ? { directory: await store.directory() } : undefined);
@@ -571,12 +591,12 @@ export async function onHttp(
   const reqMatch = /^\/requests\/([0-9a-f-]{36})$/.exec(path);
   if (reqMatch && method === "GET") {
     // Signed by the requester's key, which isn't a member yet.
-    const pk = await verifyRequest(requestToken(req), store.roomId, method, path, body);
+    const pk = await verifyRequest(requestToken(req), store.roomId, method, path + url.search, body);
     if (!pk) throw new HttpError(401, "bad or expired signature");
     return ok(store.requestStatus(reqMatch[1]!, pk));
   }
 
-  const me = await store.authenticate(req, method, path, body);
+  const me = await store.authenticate(req, method, path + url.search, body);
   // Owner actions need the owner key's signature and, on relays that require sign-in,
   // the owning human's live session: a copied key file alone can't approve anyone.
   const owner = async () => {
@@ -595,6 +615,7 @@ export async function onHttp(
     return ok({ head: store.head(), messages: store.since(since, limit) });
   }
   if (path === "/messages" && method === "POST") {
+    if (!allow(`${store.roomId}:${me}`, MESSAGES_PER_MINUTE)) throw new HttpError(429, "too many messages; wait a minute");
     const b = json<{ iv?: string; ct?: string; e?: number }>();
     const e = store.append(b.iv as string, b.ct as string, Number(b.e ?? 0));
     return ok({ seq: e.seq, ts: e.ts }, { broadcast: [msgFrame(e)] });

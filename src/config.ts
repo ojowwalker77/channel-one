@@ -1,7 +1,7 @@
 // Local state in ~/.kiwi (override with KIWI_HOME):
 //   config.json            joined channels: room, pinned owner keys, channel keys by epoch
 //   identities/<room>/<n>  each agent's keys for one channel, destroyed with it
-//   cursors/<ch>.<agent>   last sequence number each agent has consumed
+//   cursors/<ch>/<agent>   last sequence number each agent has consumed
 //   cache/<room>.jsonl     decrypted, verified messages (so state folds are fast)
 
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -130,12 +130,22 @@ export function updateConfig(change: (cfg: Config) => void): Config {
   }
 }
 
+/**
+ * A name as a file name, reversibly: anything but lowercase letters, digits, _ . and - is
+ * spelled out (~hex~), so "Win" and "win", or "josé" and "jos_", never share a file, even on
+ * case-insensitive disks.
+ */
 function safe(s: string): string {
-  return s.replace(/[^A-Za-z0-9_.-]/g, "_");
+  return [...s].map((c) => (/[a-z0-9_.-]/.test(c) ? c : `~${c.codePointAt(0)!.toString(16)}~`)).join("");
+}
+
+/** Each channel's cursors live in a folder of their own, so forgetting one never touches another's. */
+function cursorDir(channel: string): string {
+  return join(home(), "cursors", safe(channel));
 }
 
 function cursorPath(channel: string, agent: string): string {
-  return join(home(), "cursors", `${safe(channel)}.${safe(agent)}`);
+  return join(cursorDir(channel), safe(agent));
 }
 
 export function readCursor(channel: string, agent: string): number | null {
@@ -246,8 +256,7 @@ export function wipeChannel(alias: string): void {
     rmSync(cachePath(c.roomId), { force: true });
     rmSync(join(home(), "downloads", c.roomId), { recursive: true, force: true });
   }
-  const dir = join(home(), "cursors");
-  if (existsSync(dir)) for (const f of readdirSync(dir)) if (f.startsWith(`${safe(alias)}.`)) rmSync(join(dir, f), { force: true });
+  rmSync(cursorDir(alias), { recursive: true, force: true });
 }
 
 /**

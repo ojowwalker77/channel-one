@@ -93,8 +93,8 @@ export class Channel extends DurableObject<Env> {
   }
 
   override async webSocketMessage(ws: WebSocket, data: string | ArrayBuffer): Promise<void> {
-    const { room } = ws.deserializeAttachment() as { room: string };
-    const fx = onClientFrame(this.store(room), typeof data === "string" ? data : new TextDecoder().decode(data));
+    const { room, pk } = ws.deserializeAttachment() as { room: string; pk: string };
+    const fx = onClientFrame(this.store(room), typeof data === "string" ? data : new TextDecoder().decode(data), pk);
     if (fx.reply) ws.send(fx.reply);
     await this.apply(fx, ws);
   }

@@ -101,3 +101,14 @@ describe("messages", () => {
     expect(out.split("\n")[1]).toStartWith("  │ ");
   });
 });
+
+describe("limits", () => {
+  test("one member can't flood a channel", async () => {
+    const { memberAccess, agent } = await channelWithMember();
+    const ch = new Channel(memberAccess, relay, agent);
+    let refused = 0;
+    for (let i = 0; i < 130; i++) await ch.send(`m${i}`).catch(() => refused++);
+    expect(refused).toBeGreaterThan(0);
+    expect(refused).toBeLessThanOrEqual(10);
+  });
+});

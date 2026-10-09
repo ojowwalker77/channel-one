@@ -152,7 +152,7 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
       message(ws, data) {
         const raw = typeof data === "string" ? data : new TextDecoder().decode(data);
         if (raw === PING) return void ws.send(PONG);
-        const fx = onClientFrame(storeFor(ws.data.roomId, false), raw);
+        const fx = onClientFrame(storeFor(ws.data.roomId, false), raw, ws.data.pk);
         if (fx.reply) ws.send(fx.reply);
         apply(ws.data.roomId, fx, ws);
       },
