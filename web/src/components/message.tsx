@@ -1,12 +1,12 @@
-import { ArrowTurnBackwardIcon, CheckListIcon, Copy01Icon, Key01Icon, LockIcon, SquareUnlock02Icon } from "@hugeicons/core-free-icons"
-import { memo } from "react"
+import { ArrowTurnBackwardIcon, Copy01Icon } from "@hugeicons/core-free-icons"
+import { memo, useState } from "react"
 
 import { describeEvent } from "@mc/format.ts"
-import type { Event, Message, Trust } from "@mc/protocol.ts"
+import type { Message, Trust } from "@mc/protocol.ts"
 import type { ChannelState, Member } from "@mc/state.ts"
 import { excerpt, formatDay, formatFull, formatTime, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
-import { Icon, type IconSvgElement } from "./icon"
+import { Icon } from "./icon"
 import { IconButton, Monogram, toast } from "./kit"
 import { Markdown } from "./markdown"
 
@@ -26,40 +26,61 @@ export function DayMark({ ts }: { ts: number }) {
   )
 }
 
-const EVENT_ICON: Record<Event["op"], IconSvgElement> = {
-  hello: CheckListIcon,
-  "task.add": CheckListIcon,
-  "task.claim": CheckListIcon,
-  "task.update": CheckListIcon,
-  claim: LockIcon,
-  release: SquareUnlock02Icon,
-  "fact.set": Key01Icon,
-  "fact.del": Key01Icon,
-  "role.set": CheckListIcon,
-  "role.refuse": CheckListIcon,
-  "seat.reclaim": Key01Icon,
-}
-
-/** Coordination (tasks, claims, facts): one quiet line under the conversation. */
+/** Coordination (tasks, claims, facts): one centred, muted line. */
 export function EventRow({ m, state, onOpenTask }: { m: Message; state: ChannelState; onOpenTask: (id: number) => void }) {
   const taskRef = m.ev && "task" in m.ev ? m.ev.task : m.ev?.op === "task.add" ? m.seq : null
   const forged = state.trust.get(m.seq) === "forged"
   return (
-    <div id={`m${m.seq}`} className={cx("-mx-3 grid grid-cols-[28px_minmax(0,1fr)] gap-x-3 px-3 py-[3px]", forged && "line-through opacity-50")}>
-      <span className="flex justify-center pt-[3px] text-ink-3">
-        <Icon icon={m.ev ? EVENT_ICON[m.ev.op] : CheckListIcon} size={14} />
-      </span>
-      <p className="text-[12.5px] leading-[1.55] text-ink-2">
-        <span className="font-medium text-ink">{memberName(state.members.get(m.from), m.from)}</span> {describeEvent(m, state)}
-        <time className="ml-2 text-[11.5px] text-ink-3 tabular-nums" title={formatFull(m.ts)}>
+    <div id={`m${m.seq}`} className={cx("my-0.5 flex justify-center px-6", forged && "line-through opacity-50")}>
+      <p className="max-w-[36rem] text-center text-[12.5px] leading-[1.45] text-ink-3">
+        <span className="text-ink-2">{memberName(state.members.get(m.from), m.from)}</span> {describeEvent(m, state)}
+        <time className="ml-1.5 text-[11.5px] tabular-nums" title={formatFull(m.ts)}>
           {formatTime(m.ts)}
         </time>
         {taskRef !== null && (
-          <button type="button" onClick={() => onOpenTask(taskRef)} className="ml-2 text-[12px] font-medium text-accent hover:underline">
+          <button type="button" onClick={() => onOpenTask(taskRef)} className="ml-1.5 font-medium text-ink-2 hover:text-ink">
             Open task
           </button>
         )}
       </p>
+    </div>
+  )
+}
+
+/** Forged events, and events aimed at this member, stay on their own line. */
+export function standsAlone(m: Message, state: ChannelState, me: string): boolean {
+  if (state.trust.get(m.seq) === "forged") return true
+  const ev = m.ev
+  if (!ev) return false
+  if ((ev.op === "role.set" || ev.op === "role.refuse") && ev.member === me) return true
+  if (ev.op === "task.add" && ev.owner === me) return true
+  if (ev.op === "task.update" && ev.owner === me) return true
+  return false
+}
+
+function englishList(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? ""
+  if (names.length === 2) return `${names[0]} and ${names[1]}`
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
+}
+
+/** A same-day run. Three or more collapse; the latest line stays visible. */
+export function EventGroup({ messages, state, onOpenTask, highlight }: { messages: Message[]; state: ChannelState; onOpenTask: (id: number) => void; highlight: number | null }) {
+  const [open, setOpen] = useState(false)
+  const row = (m: Message) => <EventRow key={m.seq} m={m} state={state} onOpenTask={onOpenTask} />
+  if (messages.length < 3) return <>{messages.map(row)}</>
+  const forced = highlight !== null && messages.some((m) => m.seq === highlight)
+  const shown = open || forced
+  const earlier = messages.slice(0, -1)
+  const last = messages[messages.length - 1]!
+  const names = englishList([...new Set(earlier.map((m) => memberName(state.members.get(m.from), m.from)))])
+  const n = earlier.length
+  return (
+    <div className="my-1">
+      {shown ? messages.map(row) : row(last)}
+      <button type="button" aria-expanded={shown} onClick={() => setOpen(!shown)} className="mx-auto mt-0.5 block text-[12.5px] text-ink-3 hover:text-ink-2">
+        {shown ? "Hide earlier updates" : `${names}: ${n} earlier update${n === 1 ? "" : "s"}`}
+      </button>
     </div>
   )
 }
