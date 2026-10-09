@@ -24,6 +24,8 @@ export interface MachineRecord {
   user: string | null;
   created: number;
   linked?: number;
+  /** When it last vouched for an agent or checked its link (to the hour). */
+  used?: number;
 }
 
 export interface MachineStore {
@@ -35,13 +37,37 @@ export interface MachineStore {
 
 /** How long a pending link waits for its person to confirm. */
 const LINK_TTL_MS = 15 * 60_000;
+/** A linked computer nobody used for this long stops vouching: a forgotten laptop shouldn't speak for you forever. */
+export const UNUSED_LINK_TTL_MS = 30 * 86_400_000;
+/** Recording use costs a storage write, so it's kept to the hour. */
+const USE_PRECISION_MS = 3600_000;
+
+const lastUsed = (rec: MachineRecord) => rec.used ?? rec.linked ?? rec.created;
+
+/** The computer's record, unless its link went unused too long: then it's deleted, as if its person had removed it. */
+async function current(store: MachineStore, pk: string): Promise<MachineRecord | null> {
+  const rec = await store.get(pk);
+  if (rec?.user && Date.now() - lastUsed(rec) > UNUSED_LINK_TTL_MS) {
+    await store.remove(rec);
+    return null;
+  }
+  return rec;
+}
+
+/** The computer just proved it holds its key: note it, at most once an hour. */
+async function markUsed(store: MachineStore, rec: MachineRecord): Promise<void> {
+  if (rec.used === undefined || Date.now() - rec.used >= USE_PRECISION_MS) await store.put({ ...rec, used: Date.now() });
+}
+
 /** Who vouches for an agent key: the person its machine is linked to, if the machine's signature checks out. */
 export async function vouchedBy(store: MachineStore, roomId: string, agentPk: string, machine: unknown): Promise<string | null> {
   const m = machine as { pk?: unknown; sig?: unknown } | undefined;
   if (!m || typeof m.pk !== "string" || typeof m.sig !== "string") return null;
-  const rec = await store.get(m.pk);
+  const rec = await current(store, m.pk);
   if (!rec?.user) return null;
-  return (await verifyText(m.pk, m.sig, vouchStatement(roomId, agentPk))) ? rec.user : null;
+  if (!(await verifyText(m.pk, m.sig, vouchStatement(roomId, agentPk)))) return null;
+  await markUsed(store, rec);
+  return rec.user;
 }
 
 /** Routes under /v1/machines and /v1/me/machines; null when the path isn't one of them. */
@@ -72,7 +98,7 @@ export async function onMachineHttp(req: Request, store: MachineStore, human: Hu
     }
     if (typeof b.pk !== "string" || typeof b.ts !== "number" || !(await verify(b as object))) throw new HttpError(400, "bad signature");
     if (Math.abs(Date.now() - b.ts) > 5 * 60_000) throw new HttpError(400, "clock is off by more than 5 minutes");
-    const prior = await store.get(b.pk);
+    const prior = await current(store, b.pk);
     if (prior?.user) return Response.json({ status: "linked" });
     await store.put({ pk: b.pk, label: inlineText(b.label, 60) || "A computer", user: null, created: Date.now() });
     return Response.json({ status: "pending", code: await machineCode(b.pk) });
@@ -81,7 +107,7 @@ export async function onMachineHttp(req: Request, store: MachineStore, human: Hu
   const one = /^\/v1\/machines\/([A-Za-z0-9_-]{20,})(\/public|\/confirm)?$/.exec(path);
   if (one) {
     const pk = one[1]!;
-    const rec = await store.get(pk);
+    const rec = await current(store, pk);
     const fresh = rec && (rec.user || Date.now() - rec.created < LINK_TTL_MS);
     // What the confirm page shows. Nothing secret: the label the computer gave itself.
     if (one[2] === "/public" && method === "GET") {
@@ -100,6 +126,7 @@ export async function onMachineHttp(req: Request, store: MachineStore, human: Hu
     if (!one[2] && method === "GET") {
       await signedBy(pk);
       if (!fresh) return Response.json({ status: "expired" });
+      if (rec!.user) await markUsed(store, rec!);
       const name = rec!.user ? ((await human.profile?.(rec!.user).catch(() => null))?.name ?? null) : null;
       return Response.json({ status: rec!.user ? "linked" : "pending", name });
     }
@@ -111,7 +138,15 @@ export async function onMachineHttp(req: Request, store: MachineStore, human: Hu
   }
 
   // A person's computers, and removing one from the web.
-  if (path === "/v1/me/machines" && method === "GET") return Response.json({ machines: await store.listFor(await person()) });
+  if (path === "/v1/me/machines" && method === "GET") {
+    // The list holds labels only; each computer's own record knows when it was last used (a person has a handful).
+    const user = await person();
+    const records = await Promise.all((await store.listFor(user)).map((m) => current(store, m.pk)));
+    const machines = records
+      .filter((r): r is MachineRecord => r?.user === user)
+      .map((r) => ({ pk: r.pk, label: r.label, linked: r.linked ?? r.created, used: r.used ?? null, expires: lastUsed(r) + UNUSED_LINK_TTL_MS }));
+    return Response.json({ machines });
+  }
   const mine = /^\/v1\/me\/machines\/([A-Za-z0-9_-]{20,})$/.exec(path);
   if (mine && method === "DELETE") {
     const user = await person();

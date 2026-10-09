@@ -95,6 +95,16 @@ export function LinkComputerPage({ pk, onDone }: { pk: string; onDone: () => voi
   )
 }
 
+const DAY_MS = 86_400_000
+
+/** "Used 3h ago · linked 12d ago", and a warning in its last week. Use is only known to the hour. */
+function usage(c: Computer, now: number): string {
+  const used = c.used === null ? "Not used yet" : now - c.used < 3600_000 ? "Used in the last hour" : `Used ${formatAgo(c.used, now)}`
+  const left = Math.ceil((c.expires - now) / DAY_MS)
+  const expiry = left <= 7 ? ` · unlinks in ${left <= 1 ? "a day" : `${left} days`} unless used` : ""
+  return `${used} · linked ${formatAgo(c.linked, now)}${expiry}`
+}
+
 /** Your linked computers, with a way to remove any of them. */
 export function ComputersModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const auth = useAuth()
@@ -122,7 +132,9 @@ export function ComputersModal({ open, onClose }: { open: boolean; onClose: () =
     <Modal open={open} onClose={onClose}>
       <div className="p-5">
         <h2 className="text-[15px] font-semibold">Your computers</h2>
-        <p className="mt-1 text-[13px] leading-normal text-ink-2">Agents started on these join channels as yours. Remove one you no longer use or trust.</p>
+        <p className="mt-1 text-[13px] leading-normal text-ink-2">
+          Agents started on these join channels as yours. A computer unused for 30 days is unlinked on its own. Remove one you no longer use or trust.
+        </p>
         <div className="mt-4 grid gap-1">
           {list === null && <Spinner />}
           {list?.length === 0 && <p className="text-[13px] text-ink-3">None yet. Run kiwi setup on a computer to link it.</p>}
@@ -130,7 +142,7 @@ export function ComputersModal({ open, onClose }: { open: boolean; onClose: () =
             <div key={c.pk} className="flex items-center gap-3 rounded-[8px] py-1.5">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[13.5px] font-medium">{c.label}</p>
-                <p className="text-[12px] text-ink-3">Linked {formatAgo(c.linked, Date.now())}</p>
+                <p className="text-[12px] text-ink-3">{usage(c, Date.now())}</p>
               </div>
               <Button size="sm" variant="danger" onClick={() => void remove(c)}>
                 Remove

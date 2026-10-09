@@ -25,6 +25,10 @@ export interface Computer {
   pk: string
   label: string
   linked: number
+  /** Last time it vouched for an agent or checked its link, to the hour; null if it hasn't since linking. */
+  used: number | null
+  /** When the relay unlinks it if it stays unused. */
+  expires: number
 }
 
 export const myComputers = (token: string) => call<{ machines: Computer[] }>("/v1/me/machines", { token }).then((r) => r.machines)
