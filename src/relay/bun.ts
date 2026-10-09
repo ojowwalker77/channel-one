@@ -22,13 +22,13 @@ import {
   myChannels,
   myUsage,
   onClientFrame,
-  onHttp,
   parseRoomPath,
   welcomeFrames,
   wsHeaders,
   type DirectoryEntry,
   type Effects,
 } from "./room.ts";
+import { onHttp } from "./route.ts";
 
 interface SocketData {
   roomId: string;

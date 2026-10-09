@@ -116,13 +116,13 @@ function formatBytes(n: number): string {
 }
 
 /** Messages one member may post per minute: plenty for real work, too few to flush a channel's history. */
-const MESSAGES_PER_MINUTE = 120;
+export const MESSAGES_PER_MINUTE = 120;
 /** Presence and other ephemeral frames one member may send per minute. */
 const EPHEMERAL_PER_MINUTE = 60;
 const windows = new Map<string, { start: number; n: number }>();
 
 /** A fixed one-minute window per key; false once the key has used up its limit. */
-function allow(key: string, limit: number): boolean {
+export function allow(key: string, limit: number): boolean {
   const now = Date.now();
   const w = windows.get(key);
   if (!w || now - w.start > 60_000) {
@@ -138,9 +138,9 @@ const MAX_PENDING = 20;
 /** Pending requests expire after this long. */
 const REQUEST_TTL_MS = 60 * 60_000;
 /** What clients from before the join check (kiwi 0.4.x) are told. */
-const UPDATE_KIWI = "update kiwi to join or approve here: curl -fsSL https://channels.kiwiinit.com/install | sh (Windows: irm https://channels.kiwiinit.com/install.ps1 | iex)";
+export const UPDATE_KIWI = "update kiwi to join or approve here: curl -fsSL https://channels.kiwiinit.com/install | sh (Windows: irm https://channels.kiwiinit.com/install.ps1 | iex)";
 
-const frame = (f: ServerFrame) => JSON.stringify(f);
+export const frame = (f: ServerFrame) => JSON.stringify(f);
 
 /** The signed token from the Authorization header or, for WebSockets, the subprotocol list. */
 export function requestToken(req: Request): string {
@@ -778,197 +778,6 @@ export function onClientFrame(store: RoomStore, raw: string, sender = ""): Effec
  *   POST   /messages                  member: {iv, ct, e}
  */
 /** What an adapter hands the room logic besides the request: sign-in, vouching, and the relay's policy. */
-export interface RelayContext {
-  human?: HumanAuth | null;
-  /** Who vouches for an agent key, from its computer's signature (see machines.ts). */
-  vouch?: ((agentPk: string, machine: unknown) => Promise<string | null>) | null;
-  policy?: RelayPolicy;
-  /** How many channels a signed-in person owns now (from the adapter's per-person lists). */
-  ownedChannels?: (user: string) => Promise<number>;
-}
-
-export async function onHttp(store: RoomStore, req: Request, path: string, ctx: RelayContext = {}): Promise<{ res: Response; fx?: Effects }> {
-  const human = ctx.human ?? null;
-  const vouch = ctx.vouch ?? null;
-  const policy = ctx.policy ?? OPEN_POLICY;
-  const url = new URL(req.url);
-  const method = req.method.toUpperCase();
-  const body = method === "GET" || method === "DELETE" ? "" : await req.text();
-  const json = <T>() => {
-    try {
-      return JSON.parse(body) as T;
-    } catch {
-      throw new HttpError(400, "bad json");
-    }
-  };
-  const ok = (data: unknown, fx?: Effects) => ({ res: Response.json(data), fx });
-
-  // Shared-code rooms from before owners existed: delete them outright the first time anything touches them.
-  if (store.isLegacy()) return { res: Response.json({ error: "no such channel", tag: "ChannelGone" }, { status: 404 }), fx: { wipe: true } };
-
-  /** The signed-in human behind this request, when the relay requires sign-in. */
-  const signedIn = async (): Promise<string | null> => {
-    if (!human) return null;
-    const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
-    if (!user) throw new HttpError(401, "sign in required: channels on this relay are owned and run by a signed-in human (use the dashboard)", "SignInRequired");
-    return user;
-  };
-
-  if (path === "/info" && method === "GET") {
-    const m = store.meta();
-    // Who invited you, as sign-in knows them: anyone holding the code may see the owner's name.
-    const owner = store.ownerUser();
-    const ownerName = owner && human?.profile ? ((await human.profile(owner).catch(() => null))?.name ?? null) : null;
-    return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, titlesSig: store.getTitlesSig(), epoch: m.epoch, rotate: m.rotate, title: store.title(), ownerName, iconAt: store.iconAt() });
-  }
-  if (path === "/create" && method === "POST") {
-    const signer = await verifyRequest(requestToken(req), store.roomId, method, path + url.search, body);
-    const user = await signedIn();
-    // During a private beta only listed people create channels; anyone may still join one.
-    if (user && !(await inBeta(policy, user, human))) throw new HttpError(403, betaMessage(policy));
-    const most = policy.channelsPerOwner;
-    if (user && most && ctx.ownedChannels && (await ctx.ownedChannels(user)) >= most) {
-      throw new HttpError(429, `you own ${most} channels, the most this relay allows per person; close one to create another`);
-    }
-    await store.create(signer, json<CreateBody>(), user);
-    return ok({ head: 0 }, { ...(user ? { directory: await store.directory() } : {}), expireAt: store.touch() ?? undefined });
-  }
-  /** The signed-in human behind a request, with their name as WorkOS knows it. */
-  const person = async (): Promise<{ user: string; name: string } | null> => {
-    if (!human) return null;
-    const token = req.headers.get(HUMAN_HEADER);
-    if (!token) return null;
-    const user = await human.verify(token);
-    if (!user) throw new HttpError(401, "sign in again: that session isn't valid", "SignInRequired");
-    const profile = (await human.profile?.(user).catch(() => null)) ?? null;
-    return { user, name: profile?.name ?? user };
-  };
-
-  if (path === "/requests" && method === "POST") {
-    const b = json<RequestBody & { machine?: unknown }>();
-    const who = await person();
-    const vouchUser = !who && vouch && typeof b?.pk === "string" ? await vouch(b.pk, b.machine) : null;
-    // On a relay with sign-in, every agent arrives vouched for by its person's linked computer.
-    if (human && !who && !vouchUser) throw new HttpError(403, "this computer isn't set up: its person runs `kiwi setup` once, then agents can join from it");
-    const { id, fresh } = await store.request(b, who, vouchUser);
-    return ok({ id }, fresh ? { broadcast: [frame({ t: "request" })] } : undefined);
-  }
-  // A channel's counts, for its owning person only (the relay's own usage page asks for them).
-  if (path === "/usage" && method === "GET") {
-    const user = await signedIn();
-    if (!user || user !== store.ownerUser()) throw new HttpError(403, "only the person who owns this channel can see its usage");
-    return ok(store.usage());
-  }
-  // The joiner reveals its half of the code, signed by the key that's asking.
-  const revealMatch = /^\/requests\/([0-9a-f-]{36})\/reveal$/.exec(path);
-  if (revealMatch && method === "POST") {
-    const pk = await verifyRequest(requestToken(req), store.roomId, method, path + url.search, body);
-    if (!pk) throw new HttpError(401, "bad or expired signature");
-    const fresh = await store.reveal(revealMatch[1]!, pk, json<{ nonce?: unknown }>().nonce);
-    return ok({ revealed: true }, fresh ? { broadcast: [frame({ t: "request" })] } : undefined);
-  }
-  const reqMatch = /^\/requests\/([0-9a-f-]{36})$/.exec(path);
-  if (reqMatch && method === "GET") {
-    // Signed by the requester's key, which isn't a member yet.
-    const pk = await verifyRequest(requestToken(req), store.roomId, method, path + url.search, body);
-    if (!pk) throw new HttpError(401, "bad or expired signature");
-    return ok(store.requestStatus(reqMatch[1]!, pk));
-  }
-
-  const me = await store.authenticate(req, method, path + url.search, body);
-  // Owner actions need the owner key's signature and, on relays that require sign-in,
-  // the owning human's live session: a copied key file alone can't approve anyone.
-  const owner = async () => {
-    if (me !== store.meta().ownerPk) throw new HttpError(403, "only the channel owner can do that", "NotOwner");
-    const want = store.ownerUser();
-    if (human && want) {
-      const user = await signedIn();
-      if (user !== want) throw new HttpError(403, "only the human who owns this channel can do that", "NotOwner");
-    }
-  };
-
-  if (path === "/" && method === "GET") return ok({ head: store.head() });
-  if (path === "/messages" && method === "GET") {
-    const since = Number(url.searchParams.get("since") ?? 0) || 0;
-    const limit = Number(url.searchParams.get("limit") ?? PAGE_LIMIT) || PAGE_LIMIT;
-    return ok({ head: store.head(), messages: store.since(since, limit) });
-  }
-  if (path === "/messages" && method === "POST") {
-    if (!allow(`${store.roomId}:${me}`, MESSAGES_PER_MINUTE)) throw new HttpError(429, "too many messages; wait a minute");
-    const b = json<{ iv?: string; ct?: string; e?: number }>();
-    const e = store.append(b.iv as string, b.ct as string, Number(b.e ?? 0));
-    return ok({ seq: e.seq, ts: e.ts }, { broadcast: [msgFrame(e)], expireAt: store.touch() ?? undefined });
-  }
-  if (path === "/keys" && method === "GET") return ok(store.keysFor(me));
-  if (path === "/icon" && method === "GET") return ok({ icon: store.icon(), at: store.iconAt() });
-  if (path === "/icon" && method === "PUT") {
-    await owner();
-    const at = store.setIcon(json<{ icon?: unknown }>().icon ?? null);
-    return ok({ at }, { broadcast: [frame({ t: "info" })] });
-  }
-  if (path === "/title" && method === "PUT") {
-    await owner();
-    store.setTitle(json<{ title?: unknown }>().title);
-    return ok({ ok: true }, { broadcast: [frame({ t: "info" })] });
-  }
-  if (path === "/members" && method === "GET") return ok({ members: store.members() });
-  if (path === "/members/me" && method === "DELETE") {
-    store.remove(me);
-    return ok({ left: true }, { disconnect: me, broadcast: [frame({ t: "roster" })], directory: await store.directory() });
-  }
-  if (path === "/requests" && method === "GET") {
-    // Clients from before the join check would show requests without a code they can trust.
-    if (url.searchParams.get("v") !== "2") throw new HttpError(426, UPDATE_KIWI);
-    await owner();
-    // Names and emails come from sign-in at read time, for the owner only; the relay doesn't keep them.
-    const requests = await Promise.all(
-      store.pendingRequests().map(async (r) => {
-        const p = r.sponsorUser ? ((await human?.profile?.(r.sponsorUser).catch(() => null)) ?? null) : null;
-        return { ...r, sponsorName: p?.name ?? r.sponsorName ?? r.sponsorUser, sponsorEmail: p?.email ?? null };
-      }),
-    );
-    return ok({ requests });
-  }
-  const nonceMatch = /^\/requests\/([0-9a-f-]{36})\/nonce$/.exec(path);
-  if (nonceMatch && method === "POST") {
-    await owner();
-    await store.setOwnerNonce(nonceMatch[1]!, json<{ nonce?: unknown }>().nonce);
-    return ok({ set: true });
-  }
-  const denyMatch = /^\/requests\/([0-9a-f-]{36})\/deny$/.exec(path);
-  if (denyMatch && method === "POST") {
-    await owner();
-    store.deny(denyMatch[1]!);
-    return ok({ denied: true });
-  }
-  if (path === "/members" && method === "POST") {
-    await owner();
-    const b = json<MemberBody & { request?: string; replaces?: string }>();
-    store.requireChecked(b.request, b.pk);
-    if (human && store.ownerUser()) store.requireSponsor(b.request, b.pk);
-    store.approve(b);
-    // A reclaimed seat's old key is cut off at once, like a removed member.
-    return ok({ approved: true }, { ...(b.replaces ? { disconnect: b.replaces } : {}), broadcast: [frame({ t: "roster" })], directory: await store.directory() });
-  }
-  const memberMatch = /^\/members\/([A-Za-z0-9_-]{20,})$/.exec(path);
-  if (memberMatch && method === "DELETE") {
-    await owner();
-    store.remove(memberMatch[1]!);
-    return ok({ removed: true }, { disconnect: memberMatch[1]!, broadcast: [frame({ t: "roster" })], directory: await store.directory() });
-  }
-  if (path === "/epochs" && method === "POST") {
-    await owner();
-    const b = json<{ epoch: number; keys: Record<string, string> }>();
-    store.rotate(b.epoch, b.keys);
-    return ok({ epoch: b.epoch }, { broadcast: [frame({ t: "epoch", epoch: b.epoch })] });
-  }
-  if (path === "/" && method === "DELETE") {
-    await owner();
-    return ok({ closed: true }, { directory: store.unlinkAll(), wipe: true });
-  }
-  throw new HttpError(404, "not found");
-}
-
 /** Authenticate a WebSocket upgrade; returns the member key. */
 export async function authenticateSocket(store: RoomStore, req: Request): Promise<string> {
   return store.authenticate(req, "GET", "/ws", "");
