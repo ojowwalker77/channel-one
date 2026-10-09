@@ -15,7 +15,14 @@ import { Alert, Button, IconButton, Monogram, TextField, errorText, toast } from
 
 export type Filter = { kind: "from"; name: string } | { kind: "open" } | { kind: "mine" }
 
-type Confirm = { kind: "approve"; req: JoinRequest } | { kind: "remove"; member: RosterMember } | { kind: "role"; member: RosterMember } | { kind: "close" } | { kind: "leave" } | null
+type Confirm =
+  | { kind: "approve"; req: JoinRequest }
+  | { kind: "reclaim"; req: JoinRequest; online: boolean }
+  | { kind: "remove"; member: RosterMember }
+  | { kind: "role"; member: RosterMember }
+  | { kind: "close" }
+  | { kind: "leave" }
+  | null
 
 interface Props {
   code: string
@@ -31,6 +38,8 @@ interface Props {
   now: number
   onFilter: (f: Filter) => void
   onApprove: (r: JoinRequest) => Promise<void>
+  /** Owner: move a member's seat to the key in a RECLAIM request. `force` is the second confirm when the old key is online. */
+  onReclaim: (r: JoinRequest, opts: { online: boolean; force?: boolean }) => Promise<void>
   onDeny: (r: JoinRequest) => Promise<void>
   /** Sign this browser's half of a request's code check, at the person's click. */
   onCheck: (r: JoinRequest) => Promise<void>
@@ -144,6 +153,10 @@ export function Details(p: Props) {
   const facts = [...p.state.facts.values()].sort((a, b) => a.key.localeCompare(b.key))
   const inviteLink = `${location.origin}/#${p.code}`
   const taken = confirm?.kind === "approve" && active.some((m) => m.name === confirm.req.name)
+  // A seat in use: seen in the last ten minutes or listening right now (the same rule as kiwi approve).
+  const lastSeenOf = (name: string) => p.state.members.get(name)?.lastSeen || null
+  const onlineNow = (name: string) => p.online.has(name) || p.now - (lastSeenOf(name) ?? 0) < 10 * 60_000
+  const [sure, setSure] = useState(false)
 
   const run = async (fn: () => Promise<void>, done: string) => {
     setBusy(true)
@@ -187,10 +200,21 @@ export function Details(p: Props) {
                   <div className="flex items-start gap-3">
                     <Monogram name={r.name} agent={r.kind !== "human"} size={28} />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-[13.5px] font-medium">
-                        {r.name}
-                        {r.role && <span className="font-normal text-ink-2">, {r.role}</span>}
-                      </p>
+                      {r.reclaims ? (
+                        <>
+                          <p className="truncate text-[13.5px] font-medium">Takes back {r.reclaims.name}’s seat</p>
+                          <p className="text-[12px] leading-snug text-ink-2">
+                            Old key {r.reclaims.pk.slice(0, 8)}
+                            {lastSeenOf(r.reclaims.name) ? `, last seen ${formatAgo(lastSeenOf(r.reclaims.name)!, p.now)}` : ""} · new key {r.pk.slice(0, 8)}
+                          </p>
+                          {onlineNow(r.reclaims.name) && <p className="text-[12px] leading-snug font-medium text-alert">{r.reclaims.name} is online now with its current key</p>}
+                        </>
+                      ) : (
+                        <p className="truncate text-[13.5px] font-medium">
+                          {r.name}
+                          {r.role && <span className="font-normal text-ink-2">, {r.role}</span>}
+                        </p>
+                      )}
                       <p className="text-[12px] leading-snug text-ink-2">
                         {r.kind === "human" ? `Signed in as ${r.sponsoredBy?.name ?? "someone"}` : r.sponsoredBy ? `Agent for ${r.sponsoredBy.name}, from their computer` : "Agent"}
                       </p>
@@ -203,7 +227,7 @@ export function Details(p: Props) {
                       Decline
                     </Button>
                     {r.check === "ready" ? (
-                      <Button size="sm" onClick={() => setConfirm({ kind: "approve", req: r })}>
+                      <Button size="sm" onClick={() => setConfirm(r.reclaims ? { kind: "reclaim", req: r, online: onlineNow(r.reclaims.name) } : { kind: "approve", req: r })}>
                         Review and approve
                       </Button>
                     ) : r.check === "unchecked" ? (
@@ -429,6 +453,46 @@ export function Details(p: Props) {
         {confirm?.kind === "approve" && (
           <Button disabled={busy || taken} onClick={() => run(() => p.onApprove(confirm.req), `${confirm.req.name} joined`)}>
             {taken ? "That name is taken" : "Approve"}
+          </Button>
+        )}
+      </Alert>
+
+      <Alert
+        open={confirm?.kind === "reclaim"}
+        onClose={() => (setConfirm(null), setSure(false))}
+        title={confirm?.kind === "reclaim" ? `Move ${confirm.req.reclaims!.name}’s seat to the new key?` : ""}
+        message={
+          confirm?.kind === "reclaim" && (
+            <>
+              Approve only if its terminal shows this exact code.
+              <span className="mt-4 mb-3 block text-[34px] leading-none font-semibold tracking-[0.04em] text-ink tabular-nums">{confirm.req.code}</span>
+              The old key {confirm.req.reclaims!.pk.slice(0, 8)} is out for good and the channel key changes. {confirm.req.reclaims!.name} keeps its name, role, tasks and claims.
+              {confirm.online && (
+                <span className="mt-3 block rounded-[10px] bg-[color-mix(in_srgb,var(--alert)_10%,transparent)] p-3 text-alert">
+                  <span className="block font-semibold">{confirm.req.reclaims!.name} is online now with its current key.</span>
+                  This may be someone else taking its seat. Go on only if you know the old key is lost.
+                  <label className="mt-2 flex items-center gap-2 font-medium">
+                    <input type="checkbox" checked={sure} onChange={(e) => setSure(e.target.checked)} className="size-4 accent-[var(--alert)]" />
+                    I’m sure the old key is lost
+                  </label>
+                </span>
+              )}
+            </>
+          )
+        }
+      >
+        <Button variant="secondary" onClick={() => (setConfirm(null), setSure(false))}>
+          Cancel
+        </Button>
+        {confirm?.kind === "reclaim" && (
+          <Button
+            variant={confirm.online ? "danger" : "primary"}
+            disabled={busy || (confirm.online && !sure)}
+            onClick={() =>
+              run(() => p.onReclaim(confirm.req, { online: confirm.online, force: confirm.online && sure }), `${confirm.req.reclaims!.name}’s seat moved to the new key`).then(() => setSure(false))
+            }
+          >
+            Move seat
           </Button>
         )}
       </Alert>

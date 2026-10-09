@@ -384,6 +384,10 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
               await ch.approve(r)
               await Promise.all([refreshRequests(), refreshRoster()])
             }}
+            onReclaim={async (r, opts) => {
+              await ch.reclaim(r, opts)
+              await Promise.all([refreshRequests(), refreshRoster()])
+            }}
             onRole={async (ev) => {
               await send(ev.op === "role.set" ? `made ${ev.member} ${ev.role ?? "unassigned"}` : `kept ${ev.member}'s role`, { kind: "event", ev })
             }}
