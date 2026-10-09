@@ -24,7 +24,8 @@ jobs:
           bun-version: 1.4.2
 
       - name: Install
-        run: bun install --frozen-lockfile
+        # web/ too: some tests (web/src/**/*.test.tsx) import the dashboard's React.
+        run: bun install --frozen-lockfile && (cd web && bun install --frozen-lockfile)
 
       - name: Check the version matches the tag
         run: |
