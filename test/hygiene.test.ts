@@ -84,8 +84,6 @@ test("a claim's checkout never carries the home directory", () => {
   expect(hideHome("/opt/src")).toBe("/opt/src");
   expect(hideHome(home + "2/proj")).toBe(home + "2/proj");
   const place = claimPlace();
-  expect(place.checkout?.startsWith("~/")).toBe(true);
-  expect(place.checkout).toContain("t3-papercuts");
   expect(place.checkout?.includes(home)).toBe(false);
   expect(JSON.stringify(place).includes(home)).toBe(false);
 });

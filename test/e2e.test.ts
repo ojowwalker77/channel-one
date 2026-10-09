@@ -254,7 +254,7 @@ describe("agents coordinating through the CLI", () => {
     await ok(mac, "set", "mac.ip", "192.168.1.20");
     await ok(win, "set", "mac.ip", "192.168.1.21");
     expect((await ok(lead, "get", "mac.ip")).trim()).toBe("192.168.1.21");
-    expect(await ok(lead, "facts")).toContain("mac.ip = 192.168.1.21  (win)");
+    expect(await ok(lead, "facts")).toContain("mac.ip = 192.168.1.21  (win, ");
     expect((await run(lead, "get", "nope")).code).toBe(2);
   });
 
