@@ -9,6 +9,7 @@ import { Icon } from "./icon"
 // react-markdown never renders raw HTML. urlTransform also drops any scheme outside the allowlist.
 const components: Components = {
   p: ({ children }) => <p className="[&:not(:first-child)]:mt-2">{children}</p>,
+  // Links in messages only ever open elsewhere: never an in-app address (those can carry keys).
   a: ({ children, href }) => {
     const safe = typeof href === "string" ? sanitizeMarkdownUrl(href) : undefined
     if (!safe) return <span className="underline decoration-dotted underline-offset-2">{children}</span>
@@ -59,7 +60,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
       <button
         type="button"
         aria-label={copied ? "Copied" : "Copy code"}
-        className="absolute top-1.5 right-1.5 inline-flex size-7 items-center justify-center rounded-[7px] text-ink-3 hover:bg-wash-2 hover:text-ink"
+        className="absolute top-1.5 right-1.5 inline-flex size-7 items-center justify-center rounded-[7px] text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:bg-wash-2 hover:text-ink"
         onClick={() => {
           const text = preRef.current?.innerText ?? ""
           if (!text || !navigator.clipboard) return
@@ -102,7 +103,7 @@ function MarkdownTable({ children }: { children?: ReactNode }) {
               const label = cellText(header) || `column ${index + 1}`
               return (
                 <th key={index} scope="col" aria-sort={direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none"}>
-                  <button type="button" className="inline-flex items-center gap-1 text-left font-semibold hover:text-ink" aria-label={`Sort by ${label}`} onClick={() => setSort((current) => nextSort(current, index))}>
+                  <button type="button" className="inline-flex items-center gap-1 text-left font-semibold hover:text-ink focus-visible:[outline-offset:-2px]" aria-label={`Sort by ${label}`} onClick={() => setSort((current) => nextSort(current, index))}>
                     {header}
                     <span aria-hidden className="text-[10px] text-ink-3">
                       {direction === "asc" ? "↑" : direction === "desc" ? "↓" : ""}
