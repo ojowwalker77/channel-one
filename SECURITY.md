@@ -87,6 +87,49 @@ the channels you own, and leave the ones you don't. A transfer is one-off:
 channels joined later on either device stay there until you add the device
 again, which adds what's new and never replaces a key a device already holds.
 
+### The vault: every channel, on any device you sign in to
+
+A person can also keep their channels in a **vault** at the relay, so a new
+browser or phone opens all of them after sign-in and a passkey touch, with no
+QR code, and channels joined later reach their other devices on their own.
+
+- The vault is encrypted on the person's devices (`src/vault.ts`) under a
+  random 256-bit vault key. The relay stores one opaque blob per signed-in
+  person and never parses it (`src/relay/vault.ts`): it only orders saves by
+  version, refusing a stale one (409) so two devices merge instead of
+  overwriting each other.
+- **Every save is signed by the vault's writer key**, an Ed25519 key kept only
+  inside the encrypted vault; the relay takes no write or delete without it.
+  So a stolen sign-in can't overwrite or delete the vault either. Someone who
+  lost every passkey and the recovery code can only ask for a reset: it waits
+  a day, and any device that still opens the vault cancels it with a signed
+  save as soon as it sees it, then tells the person loudly: a reset they didn't
+  ask for means someone has their sign-in.
+- A session thief could also create a vault first, before the person's first
+  device does. Nothing of theirs goes into it (a device never seals into a vault
+  its passkey doesn't open), so this only blocks the vault: the device says
+  "this vault wasn't made with your passkeys" and offers the reset.
+- The vault key is sealed once per passkey, under a key derived from that
+  passkey's WebAuthn PRF output, and once under a 160-bit recovery code. The
+  PRF output and the code never leave the person's device. **A stolen sign-in
+  alone yields ciphertext.**
+- Each sealed box is bound to the person, and the body to its version and to
+  every passkey's public record (id, kind, label, credential). So a relay
+  can't move a box between people or versions, add a passkey of its own, strip
+  one, or relabel one so the person removes the wrong passkey: the list a
+  device shows comes from inside the vault.
+- A relay *can* withhold the vault, refuse saves, or serve an old copy. Each
+  device remembers the highest version it has opened and refuses anything
+  older, loudly. Channels already on a device keep working either way.
+- Removing a passkey **rotates the vault key and the writer key**: a device
+  that held the old ones can't open anything saved after that, or save. This device's passkey and a new
+  recovery code open the new vault; other passkeys are added again. Lost a
+  device? Rotate the vault, then close or leave its channels as below. The
+  vault doesn't change what a lost device already had.
+- A seat taken over under a new key (a rejoin, a reclaim) leaves a tombstone
+  for the old key, so no device brings it back. One join code never holds two
+  live keys.
+
 ## No impersonation
 
 Names are bound to keys by the **owner's signature**, not by whoever speaks
