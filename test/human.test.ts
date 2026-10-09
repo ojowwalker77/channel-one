@@ -29,8 +29,9 @@ async function token(sub: string, opts: { exp?: number; key?: CryptoKey; kid?: s
   return `${head}.${body}.${b64url(new Uint8Array(sig))}`;
 }
 
-const names: Record<string, string> = { user_alice: "Alice Owner", user_bob: "Bob Builder" };
-const human = { ...workosHumanAuth("client_test", `${jwks.url.origin}/jwks`), profile: async (u: string) => (names[u] ? { name: names[u]! } : null) };
+const names: Record<string, string> = { user_alice: "Alice Owner", user_bob: "Bob Builder", user_carol: "Carol Coder" };
+const emails: Record<string, string> = { user_carol: "carol@example.com" };
+const human = { ...workosHumanAuth("client_test", `${jwks.url.origin}/jwks`), profile: async (u: string) => (names[u] ? { name: names[u]!, email: emails[u] } : null) };
 const dataDir = mkdtempSync(join(tmpdir(), "mc-relay-"));
 let server: ReturnType<typeof startRelay>;
 let relay: string;
@@ -212,5 +213,42 @@ describe("names", () => {
     await expect(ownerCh.approve((await ownerCh.requests())[0]!)).rejects.toThrow(/already someone's name/);
     expect((await ownerCh.members()).filter((m) => m.active).map((m) => m.name).sort()).toEqual(["alice", "bob-builder", "bob-builder-2"]);
     await ownerCh.close();
+  });
+});
+
+describe("private beta", () => {
+  test("only listed people create channels; anyone can still ask to join", async () => {
+    const { OPEN_POLICY } = await import("../src/relay/policy.ts");
+    const betaDir = mkdtempSync(join(tmpdir(), "mc-beta-"));
+    const beta = startRelay({
+      port: 0,
+      hostname: "127.0.0.1",
+      dataDir: betaDir,
+      human,
+      policy: { ...OPEN_POLICY, betaUsers: ["user_alice", "@example.com"], waitlistUrl: "https://kiwiinit.com/waitlist" },
+    });
+    const at = beta.url.origin;
+    try {
+      const [a, b, c, guest] = await Promise.all([generateIdentity("a"), generateIdentity("b"), generateIdentity("c"), generateIdentity("g")]);
+      // Listed by id: yes. Listed by email domain: yes. Not listed: a clear 403 with the waitlist.
+      const { code } = await Channel.create(at, a, { name: "alice-owner", kind: "human" }, [], undefined, await token("user_alice"));
+      await Channel.create(at, c, { name: "carol", kind: "human" }, [], undefined, await token("user_carol"));
+      await expect(Channel.create(at, b, { name: "bob", kind: "human" }, [], undefined, await token("user_bob"))).rejects.toMatchObject({
+        status: 403,
+        message: expect.stringContaining("https://kiwiinit.com/waitlist"),
+      });
+      // Bob isn't in the beta, but he can ask to join Alice's channel.
+      expect((await Channel.requestJoin(at, code, guest, { name: "bob" }, await token("user_bob"))).requestId).toBeTruthy();
+    } finally {
+      beta.stop(true);
+      rmSync(betaDir, { recursive: true, force: true });
+    }
+  });
+
+  test("with no list configured, anyone signed in creates channels", async () => {
+    // The shared relay in this file has no beta list: Bob could create above too.
+    const owner = await generateIdentity("bob");
+    const { access } = await Channel.create(relay, owner, { name: "bob", kind: "human" }, [], undefined, await token("user_bob"));
+    await new Channel(access, relay, owner, undefined, () => token("user_bob")).close();
   });
 });

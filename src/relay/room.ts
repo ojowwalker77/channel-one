@@ -19,6 +19,7 @@
 import { verifyRequest } from "../auth.ts";
 import { encodeJoinCode, ownerFingerprint } from "../crypto.ts";
 import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
+import { betaMessage, inBeta, OPEN_POLICY, type RelayPolicy } from "./policy.ts";
 import { verify } from "../identity.ts";
 import {
   CLOSE_CLOSED,
@@ -527,14 +528,18 @@ export function onClientFrame(store: RoomStore, raw: string, sender = ""): Effec
  *   GET    /messages?since=N          member
  *   POST   /messages                  member: {iv, ct, e}
  */
-export async function onHttp(
-  store: RoomStore,
-  req: Request,
-  path: string,
-  human: HumanAuth | null = null,
+/** What an adapter hands the room logic besides the request: sign-in, vouching, and the relay's policy. */
+export interface RelayContext {
+  human?: HumanAuth | null;
   /** Who vouches for an agent key, from its computer's signature (see machines.ts). */
-  vouch: ((agentPk: string, machine: unknown) => Promise<string | null>) | null = null,
-): Promise<{ res: Response; fx?: Effects }> {
+  vouch?: ((agentPk: string, machine: unknown) => Promise<string | null>) | null;
+  policy?: RelayPolicy;
+}
+
+export async function onHttp(store: RoomStore, req: Request, path: string, ctx: RelayContext = {}): Promise<{ res: Response; fx?: Effects }> {
+  const human = ctx.human ?? null;
+  const vouch = ctx.vouch ?? null;
+  const policy = ctx.policy ?? OPEN_POLICY;
   const url = new URL(req.url);
   const method = req.method.toUpperCase();
   const body = method === "GET" || method === "DELETE" ? "" : await req.text();
@@ -565,6 +570,8 @@ export async function onHttp(
   if (path === "/create" && method === "POST") {
     const signer = await verifyRequest(requestToken(req), store.roomId, method, path + url.search, body);
     const user = await signedIn();
+    // During a private beta only listed people create channels; anyone may still join one.
+    if (user && !(await inBeta(policy, user, human))) throw new HttpError(403, betaMessage(policy));
     await store.create(signer, json<CreateBody>(), user);
     return ok({ head: 0 }, user ? { directory: await store.directory() } : undefined);
   }

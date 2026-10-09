@@ -28,7 +28,12 @@
   // Humans sign in with WorkOS AuthKit (production environment). Public values: no secret lives on the relay.
   "vars": {
     "WORKOS_CLIENT_ID": "client_01M4ECYXMZT31ZKEEZ9X66ZBN8",
-    "WORKOS_AUTHKIT_DOMAIN": "https://possible-pleasure-97.authkit.app"
+    "WORKOS_AUTHKIT_DOMAIN": "https://possible-pleasure-97.authkit.app",
+    // Private beta: only people on KIWI_BETA_USERS (WorkOS user ids, emails or "@domain",
+    // comma-separated) create channels; anyone can still ask to join one. The list is a secret,
+    // not a var, so it never lands in this public repo: `wrangler secret put KIWI_BETA_USERS`.
+    // Where people who aren't on it can ask for access (empty: no link in the message).
+    "KIWI_BETA_WAITLIST_URL": ""
   },
   "build": { "command": "bun run web:build" },
   // No request logs: room ids and timing are nobody's business, and a closed

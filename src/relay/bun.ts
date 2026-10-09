@@ -9,6 +9,7 @@ import type { ServerWebSocket } from "bun";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import type { HumanAuth } from "./human.ts";
 import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
+import { policyFrom, type RelayPolicy } from "./policy.ts";
 import {
   HttpError,
   RoomStore,
@@ -31,8 +32,10 @@ interface SocketData {
   since: number;
 }
 
-export function startRelay(opts: { port?: number; hostname?: string; dataDir?: string; human?: HumanAuth | null } = {}) {
+export function startRelay(opts: { port?: number; hostname?: string; dataDir?: string; human?: HumanAuth | null; policy?: RelayPolicy } = {}) {
   const human = opts.human ?? null;
+  // Settings come from the caller, or else from the environment, the same keys the Worker reads.
+  const policy = opts.policy ?? policyFrom(process.env);
   const dataDir = opts.dataDir ?? ".relay-data";
   mkdirSync(dataDir, { recursive: true });
   const dbs = new Map<string, Database>();
@@ -125,7 +128,7 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
         }
         let result: Awaited<ReturnType<typeof onHttp>>;
         try {
-          result = await onHttp(store, req, route.rest, human, (pk, m) => vouchedBy(machines, route.roomId, pk, m));
+          result = await onHttp(store, req, route.rest, { human, vouch: (pk, m) => vouchedBy(machines, route.roomId, pk, m), policy });
         } catch (err) {
           // A create that failed leaves no file behind.
           if (route.rest === "/create" && !store.exists()) {

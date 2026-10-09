@@ -9,6 +9,7 @@ import { DurableObject } from "cloudflare:workers";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import { workosHumanAuth, workosProfiles, type HumanAuth } from "./human.ts";
 import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
+import { policyFrom } from "./policy.ts";
 import {
   HttpError,
   RoomStore,
@@ -84,7 +85,11 @@ export class Channel extends DurableObject<Env> {
         for (const f of welcomeFrames(store, Number(url.searchParams.get("since") ?? 0) || 0)) server.send(f);
         return new Response(null, { status: 101, webSocket: client, headers: wsHeaders(req) });
       }
-      const { res, fx } = await onHttp(store, req, route.rest, human(this.env), (pk, machine) => vouchedBy(machineStore(this.env), route.roomId, pk, machine));
+      const { res, fx } = await onHttp(store, req, route.rest, {
+        human: human(this.env),
+        vouch: (pk, machine) => vouchedBy(machineStore(this.env), route.roomId, pk, machine),
+        policy: policyFrom(this.env as unknown as Record<string, string | undefined>),
+      });
       if (fx) await this.apply(fx);
       return res;
     } catch (err) {
