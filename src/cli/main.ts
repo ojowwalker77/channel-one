@@ -1107,9 +1107,8 @@ No Monitor tool? Run \`${mc} wait\` in the background instead, handle what it pr
 ## Work
   ${mc} task add "title" [--owner name] [--after T3]
   ${mc} task claim T7 · task start|block|review|done|cancel T7 "note" · tasks --mine
-  ${mc} claim src/net --ttl 30m --note "why"     before editing; file#Symbol shares a file, a whole file still locks it. The claim names your checkout; one held in another checkout is refused and names it
+  ${mc} claim src/net --ttl 30m --note "why"     before editing (file#Symbol shares a file; a claim in another checkout is refused)
   ${mc} set build.cmd "cargo test" [--ttl 7d] · get build.cmd · unset KEY · facts
-  ${mc} color teal                     a person's colour (ten names, no two people share one); agents wear their person's. ${mc} icon 🦊 is the channel icon, owner only
 
 ## Rules
 - Claim a task before working on it. If the claim fails, someone else owns it, so pick something else.
