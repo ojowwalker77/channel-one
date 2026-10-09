@@ -397,6 +397,31 @@ export class RoomStore {
     for (const m of members) this.putMember(m, 0);
   }
 
+  /** The channel's sealed icon (owner-set; the relay can't read it), and when it last changed. */
+  icon(): { e: number; iv: string; ct: string } | null {
+    const t = this.get("icon");
+    return t ? (JSON.parse(t) as { e: number; iv: string; ct: string }) : null;
+  }
+
+  setIcon(icon: unknown): number {
+    const at = Date.now();
+    if (icon === null) this.set("icon", "");
+    else {
+      const i = icon as { e?: unknown; iv?: unknown; ct?: unknown };
+      // About a 32KB image, sealed and base64'd, with room to spare; nothing bigger.
+      if (!Number.isSafeInteger(i?.e) || (i.e as number) < 0 || (i.e as number) > this.meta().epoch || typeof i.iv !== "string" || typeof i.ct !== "string" || i.ct.length > 48 * 1024) {
+        throw new HttpError(400, "bad icon (at most 32KB, sealed with a channel key)");
+      }
+      this.set("icon", JSON.stringify({ e: i.e, iv: i.iv, ct: i.ct }));
+    }
+    this.set("icon_at", at);
+    return at;
+  }
+
+  iconAt(): number | null {
+    return Number(this.get("icon_at")) || null;
+  }
+
   /** The channel's sealed name, if its creator gave one. */
   title(): { iv: string; ct: string } | null {
     const t = this.get("title");
@@ -776,7 +801,7 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     // Who invited you, as sign-in knows them: anyone holding the code may see the owner's name.
     const owner = store.ownerUser();
     const ownerName = owner && human?.profile ? ((await human.profile(owner).catch(() => null))?.name ?? null) : null;
-    return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, epoch: m.epoch, rotate: m.rotate, title: store.title(), ownerName });
+    return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, epoch: m.epoch, rotate: m.rotate, title: store.title(), ownerName, iconAt: store.iconAt() });
   }
   if (path === "/create" && method === "POST") {
     const signer = await verifyRequest(requestToken(req), store.roomId, method, path + url.search, body);
@@ -857,6 +882,12 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     return ok({ seq: e.seq, ts: e.ts }, { broadcast: [msgFrame(e)], expireAt: store.touch() ?? undefined });
   }
   if (path === "/keys" && method === "GET") return ok(store.keysFor(me));
+  if (path === "/icon" && method === "GET") return ok({ icon: store.icon(), at: store.iconAt() });
+  if (path === "/icon" && method === "PUT") {
+    await owner();
+    const at = store.setIcon(json<{ icon?: unknown }>().icon ?? null);
+    return ok({ at }, { broadcast: [frame({ t: "info" })] });
+  }
   if (path === "/members" && method === "GET") return ok({ members: store.members() });
   if (path === "/members/me" && method === "DELETE") {
     store.remove(me);

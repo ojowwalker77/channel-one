@@ -170,6 +170,7 @@ list. Non-members can't read ciphertext, post, or see who's online.
 | Join requests (name, role) | sealed to the owner's X25519 key | ciphertext |
 | Channel keys | sealed to each member's X25519 key, signed by the owner | one signed, sealed box per member per epoch |
 | Channel name | the channel key | ciphertext |
+| Channel icon (one emoji, or a png/jpg/gif/webp image ≤32KB, never SVG) | signed by the owner, then sealed with the channel key; clients drop one the owner didn't sign | ciphertext, and when it last changed |
 
 Channel keys are random (256-bit), not derived from the code.
 

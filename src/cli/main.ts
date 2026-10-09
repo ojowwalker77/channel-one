@@ -77,6 +77,7 @@ Coordinate
 More
   kiwi hello [--role R] [--about "…"]            update your role/description
   kiwi color [COLOR | NAME COLOR|none]           the colours and who has them; pick yours; the owner sets anyone's
+  kiwi icon [EMOJI | --image f.png | --clear]    the channel's icon; the owner sets it (one emoji, or an image ≤32KB)
   kiwi mcp [--push]                              serve the channel as MCP tools (--push: Claude Code channel)
   kiwi channels    kiwi use ALIAS --as NAME (bind this directory)    kiwi web [--sign-in]    kiwi relay --help
 
@@ -118,6 +119,7 @@ const { values: opt, positionals: args } = parseArgs({
     name: { type: "string" },
     push: { type: "boolean" },
     reclaim: { type: "boolean" },
+    clear: { type: "boolean" },
     force: { type: "boolean" },
     n: { type: "string", short: "n" },
     help: { type: "boolean", short: "h" },
@@ -749,6 +751,26 @@ const commands: Record<string, () => Promise<void>> = {
     const color = pick === "none" ? null : isColor(pick) ? pick : die(`"${pick}" isn't a colour: ${COLORS.join(", ")} (or none)`);
     await s.setColor(member, color);
     out(color ? `${member}'s colour is ${color}` : `cleared ${member}'s colour`);
+  },
+
+  async icon() {
+    const s = await session();
+    const emoji = args[1];
+    const file = images()?.[0];
+    if (!emoji && !file && !opt.clear) {
+      const icon = await s.ch.icon();
+      if (!icon) return out("no icon (the owner sets one with: kiwi icon 🦊)");
+      if (icon.kind === "emoji") return out(icon.emoji);
+      const dir = joinPath(home(), "downloads", s.ch.roomId);
+      mkdirSync(dir, { recursive: true });
+      const path = joinPath(dir, `icon.${icon.mime.split("/")[1]}`);
+      writeFileSync(path, Buffer.from(icon.data, "base64"));
+      return out(`an image (${icon.mime}), saved at ${path}`);
+    }
+    if (!s.ownerCh) die("only the channel owner sets its icon");
+    const icon = opt.clear ? null : file ? { kind: "image" as const, mime: file.mime as "image/png", data: file.data } : { kind: "emoji" as const, emoji: emoji! };
+    await s.ownerCh.setIcon(icon);
+    out(icon === null ? "cleared the channel's icon" : icon.kind === "emoji" ? `the channel's icon is ${icon.emoji}` : "the channel's icon is that image");
   },
 
   async read() {

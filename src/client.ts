@@ -21,7 +21,10 @@ import { handleFor, inlineText, makeRecord, NAME_RE, nameKey, openRecord, RESERV
 import {
   CLOSE_CLOSED,
   CLOSE_REMOVED,
+  MAX_ICON_BYTES,
   MAX_IMAGES,
+  wellFormedIcon,
+  type ChannelIcon,
   PING,
   PROTOCOL_VERSION,
   WS_PROTOCOL,
@@ -67,6 +70,8 @@ export interface StreamOptions {
   /** Called on every (re)connect with a way to send ephemeral presence. */
   onOpen?: (live: { presence: (p: Omit<Presence, "v" | "type" | "from" | "ts">) => Promise<void> }) => void;
   onPresence?: (p: Presence & { sigOk: boolean }) => void;
+  /** The channel's info changed (its icon): refetch it. */
+  onInfo?: () => void;
   /** The member list changed. */
   onRoster?: () => void;
   /** Someone asked to join (owners act on it). */
@@ -111,6 +116,8 @@ export interface Info {
   title?: { iv: string; ct: string } | null;
   /** The owner's name from sign-in, vouched by the relay (null without sign-in). */
   ownerName?: string | null;
+  /** When the channel's icon last changed (null: never set): refetch icon() when this moves. */
+  iconAt?: number | null;
 }
 
 /**
@@ -332,6 +339,30 @@ export class Channel {
     if (!t || !key) return null;
     const opened = (await open(key, this.roomId, t.iv, t.ct).catch(() => null)) as { name?: unknown } | null;
     return typeof opened?.name === "string" ? opened.name.slice(0, 80) : null;
+  }
+
+  /** The channel's icon, if the owner set one (only members can read it). */
+  async icon(): Promise<ChannelIcon | null> {
+    const { icon } = await this.request<{ icon: { e: number; iv: string; ct: string } | null }>("/icon");
+    if (!icon) return null;
+    if (!this.access.keys[String(icon.e)]) await this.refreshKeys();
+    const key = this.access.keys[String(icon.e)];
+    if (!key) return null;
+    const opened = (await open(key, this.roomId, icon.iv, icon.ct).catch(() => null)) as { what?: unknown; room?: unknown; icon?: unknown; pk?: string; sig?: string } | null;
+    // Only an icon the owner signed, for this channel: a member holds the channel key too, and could
+    // otherwise seal one of their own for a colluding relay to serve. And only a sane emoji or raster image.
+    if (!opened || opened.what !== "channel-icon" || opened.room !== this.roomId || opened.pk !== this.access.ownerPk || !(await verify(opened))) return null;
+    return wellFormedIcon(opened.icon) ? opened.icon : null;
+  }
+
+  /** Owner only: set the channel's icon (null clears it), signed by the owner and sealed with the current channel key. */
+  async setIcon(icon: ChannelIcon | null): Promise<void> {
+    this.ownerOnly();
+    if (icon !== null && !wellFormedIcon(icon)) throw new Error(`an icon is one emoji, or a png, jpg, gif or webp image of at most ${MAX_ICON_BYTES / 1024}KB`);
+    const e = this.access.epoch;
+    const signed = icon ? await sign(this.identity, { what: "channel-icon", room: this.roomId, icon }) : null;
+    const sealed = signed ? { e, ...(await seal(this.access.keys[String(e)]!, this.roomId, signed)) } : null;
+    await this.request("/icon", { method: "PUT", body: JSON.stringify({ icon: sealed }) });
   }
 
   /** The verified member list. Records that fail verification are dropped. */
@@ -723,6 +754,8 @@ export class Channel {
               }
             } else if (f.t === "epoch") {
               await this.refreshKeys().catch(() => {});
+            } else if (f.t === "info") {
+              opts.onInfo?.();
             } else if (f.t === "roster") {
               opts.onRoster?.();
             } else if (f.t === "request") {

@@ -12,6 +12,19 @@ export const MAX_CT_LENGTH = 512 * 1024;
 /** Largest raw image (per file) a client will attach: must survive two base64 trips inside this budget. */
 export const MAX_IMAGE_BYTES = 256 * 1024;
 
+/** A channel's icon: an emoji, or a small image (never SVG, which can carry script). Sealed like the title. */
+export type ChannelIcon = { kind: "emoji"; emoji: string } | { kind: "image"; mime: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: string };
+export const MAX_ICON_BYTES = 32 * 1024;
+const ICON_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/** Whether a decrypted icon is one of the two shapes, within limits. */
+export function wellFormedIcon(x: unknown): x is ChannelIcon {
+  if (!x || typeof x !== "object") return false;
+  const i = x as Record<string, unknown>;
+  if (i.kind === "emoji") return typeof i.emoji === "string" && i.emoji.length > 0 && [...new Intl.Segmenter().segment(i.emoji)].length === 1 && i.emoji.length <= 16;
+  return i.kind === "image" && typeof i.mime === "string" && ICON_MIMES.includes(i.mime) && typeof i.data === "string" && Math.ceil((i.data.length * 3) / 4) <= MAX_ICON_BYTES;
+}
+
 /** Most images on one message. */
 export const MAX_IMAGES = 8;
 
@@ -57,7 +70,9 @@ export type ServerFrame =
   /** Membership channels: the channel key rotated; fetch the new one. */
   | { t: "epoch"; epoch: number }
   /** Membership channels: someone asked to join; the owner should look. */
-  | { t: "request" };
+  | { t: "request" }
+  /** The channel's info changed (its icon); refetch it. */
+  | { t: "info" };
 
 /**
  * Frames a client sends over the WebSocket. `send` is stored and gets a
