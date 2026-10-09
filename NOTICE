@@ -5,8 +5,7 @@ This product includes design and code adapted from Rakazo
 Version 2.0. A copy of that license is in licenses/rakazo-LICENSE.
 
 Adapted from Rakazo:
-- The colour palette in web/src/index.css (from packages/ui-tokens) and the
-  agent tints in web/src/components/kit.tsx.
+- The colour palette in web/src/index.css (from packages/ui-tokens).
 - The menu, tooltip, popover and dialog primitives in web/src/components/ui/
   and web/src/components/kit.tsx, following packages/ui-web/components/ui.
 

@@ -84,44 +84,27 @@ export function TextField({ className, ...props }: InputHTMLAttributes<HTMLInput
   )
 }
 
-/** Agent tints, from rakazo's bot palette. Picked by name, so an agent keeps its colour everywhere. */
-const TINTS = ["#3ec5a8", "#f5a03c", "#6a6bf5", "#9b5cf6", "#3b82f6", "#f2622a", "#d9508a"]
-
-export function tint(name: string): string {
-  let h = 0
-  for (const ch of name) h = (h * 31 + ch.codePointAt(0)!) >>> 0
-  return TINTS[h % TINTS.length]!
-}
-
 /**
- * A monogram. Agents are rounded squares in their own tint; people are
- * neutral circles. Shape alone tells a person from an agent.
+ * A monogram. Agents are rounded squares and people are circles, so you can
+ * tell who's a person at a glance without a single colour.
  */
 export function Monogram({ name, agent, size = 28, online, className }: { name: string; agent?: boolean; size?: number; online?: boolean; className?: string }) {
   const letters = initials(name)
   return (
     <span className={cx("relative inline-flex shrink-0", className)} style={{ width: size, height: size }}>
       <span
-        className={cx("flex size-full items-center justify-center font-semibold text-ink-2 select-none", !agent && "bg-[color-mix(in_srgb,var(--ink)_12%,var(--canvas))]")}
-        style={{
-          ...(agent && {
-            color: tint(name),
-            background: `color-mix(in srgb, ${tint(name)} 16%, var(--canvas))`,
-          }),
-          borderRadius: agent ? size * 0.28 : size / 2,
-          fontSize: Math.round(size * (letters.length > 1 ? 0.36 : 0.42)),
-          letterSpacing: "-0.01em",
-        }}
+        className={cx(
+          "flex size-full items-center justify-center font-semibold text-ink-2 select-none",
+          agent ? "bg-wash-2 shadow-[inset_0_0_0_0.5px_var(--line)]" : "bg-[color-mix(in_srgb,var(--ink)_12%,var(--canvas))]"
+        )}
+        style={{ borderRadius: agent ? size * 0.28 : size / 2, fontSize: Math.round(size * (letters.length > 1 ? 0.36 : 0.42)), letterSpacing: "-0.01em" }}
       >
         {letters}
       </span>
       {online && (
         <span
           className="absolute -right-0.5 -bottom-0.5 rounded-full bg-live shadow-[0_0_0_2px_var(--canvas)]"
-          style={{
-            width: Math.max(7, Math.round(size * 0.26)),
-            height: Math.max(7, Math.round(size * 0.26)),
-          }}
+          style={{ width: Math.max(7, Math.round(size * 0.26)), height: Math.max(7, Math.round(size * 0.26)) }}
           title="Online"
         />
       )}
