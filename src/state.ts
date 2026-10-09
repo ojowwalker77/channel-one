@@ -72,6 +72,10 @@ export interface Claim {
   since: number;
   expires: number;
   note?: string;
+  /** This computer's label, when the claim recorded one. */
+  machine?: string;
+  /** Git checkout the claim was made from, so another agent can see which tree it guards. */
+  checkout?: string;
 }
 
 export interface Fact {
@@ -80,6 +84,8 @@ export interface Fact {
   by: string;
   ts: number;
   seq: number;
+  /** When a --ttl fact stops being visible. Absent facts stay until unset. */
+  expires?: number;
 }
 
 export interface ChannelState {
@@ -106,12 +112,34 @@ export function parseTaskId(s: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
-/** Two claim paths overlap if one contains the other ("*" covers everything). */
+/** `file#Symbol` is a claim on one function. Anything else, including a trailing slash, is the whole path. */
+export function splitClaim(path: string): { file: string; symbol?: string } {
+  const hash = path.lastIndexOf("#");
+  if (hash > 0) {
+    const symbol = path.slice(hash + 1);
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(symbol)) return { file: path.slice(0, hash).replace(/\/+$/, ""), symbol };
+  }
+  return { file: path.replace(/\/+$/, "") };
+}
+
+/**
+ * Two claims overlap when one path contains the other ("*" covers everything).
+ * `file#A` and `file#B` do not: a symbol claim shares the file. A whole-file claim still locks every symbol in it.
+ */
 export function overlaps(a: string, b: string): boolean {
-  const norm = (p: string) => p.replace(/\/+$/, "");
-  const x = norm(a);
-  const y = norm(b);
-  return x === "*" || y === "*" || x === y || x.startsWith(y + "/") || y.startsWith(x + "/");
+  const ca = splitClaim(a);
+  const cb = splitClaim(b);
+  const x = ca.file;
+  const y = cb.file;
+  if (x === "*" || y === "*") return true;
+  if (x !== y) return x.startsWith(y + "/") || y.startsWith(x + "/");
+  if (!ca.symbol || !cb.symbol) return true;
+  return ca.symbol === cb.symbol;
+}
+
+/** Why a new claim lost: name the other checkout when the claim recorded one. */
+export function claimConflict(c: Claim): string {
+  return c.checkout ? `${c.path} is claimed by ${c.owner} in ${c.owner}'s checkout (${c.checkout})` : `${c.path} is claimed by ${c.owner}`;
 }
 
 /**
@@ -261,6 +289,7 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
           const task = tasks.get(ev.task);
           if (!task) reject(`no task ${taskId(ev.task)}`);
           else if (task.state === "done") reject(`${taskId(task.id)} is already done`);
+          else if (task.state === "cancelled") reject(`${taskId(task.id)} is cancelled`);
           else if (task.owner && task.owner !== m.from) reject(`${taskId(task.id)} is owned by ${task.owner}`);
           else {
             task.owner = m.from;
@@ -275,6 +304,13 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
           if (!task) {
             reject(`no task ${taskId(ev.task)}`);
             break;
+          }
+          if (ev.after?.length) {
+            const why = appendAfter(tasks, task, ev.after);
+            if (why) {
+              reject(why);
+              break;
+            }
           }
           if (ev.owner !== undefined) task.owner = ev.owner || undefined;
           if (ev.state) task.state = ev.state;
@@ -293,12 +329,13 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
             .map((p) => live.find((c) => c.owner !== m.from && overlaps(c.path, p)))
             .find(Boolean);
           if (conflict) {
-            reject(`${conflict.path} is claimed by ${conflict.owner}`);
+            reject(claimConflict(conflict));
             break;
           }
           claims = live.filter((c) => !(c.owner === m.from && ev.paths.includes(c.path)));
+          const place = { ...(ev.machine ? { machine: ev.machine } : {}), ...(ev.checkout ? { checkout: ev.checkout } : {}) };
           for (const path of ev.paths) {
-            claims.push({ owner: m.from, path, seq: m.seq, since: at, expires: at + ttl, note: ev.note });
+            claims.push({ owner: m.from, path, seq: m.seq, since: at, expires: at + ttl, note: ev.note, ...place });
           }
           break;
         }
@@ -307,9 +344,11 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
           claims = claims.filter((c) => c.owner !== m.from || (ev.paths?.length ? !ev.paths.includes(c.path) : false));
           break;
 
-        case "fact.set":
-          facts.set(ev.key, { key: ev.key, value: ev.value, by: m.from, ts: at, seq: m.seq });
+        case "fact.set": {
+          const ttl = ev.ttl === undefined ? undefined : Math.min(Math.max(Number(ev.ttl) || 0, 60), 30 * 24 * 3600) * 1000;
+          facts.set(ev.key, { key: ev.key, value: ev.value, by: m.from, ts: at, seq: m.seq, ...(ttl ? { expires: at + ttl } : {}) });
           break;
+        }
 
         case "fact.del":
           facts.delete(ev.key);
@@ -328,6 +367,8 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
     return !by || [...by].every((n) => n === m.from);
   });
 
+  for (const [key, fact] of facts) if (fact.expires !== undefined && fact.expires <= now) facts.delete(key);
+
   return {
     members,
     tasks,
@@ -340,9 +381,65 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
   };
 }
 
-/** Tasks still waiting on unfinished dependencies. */
+/** A dependency that no longer blocks: finished, in review, or cancelled. */
+export function depSatisfied(state: TaskState | undefined): boolean {
+  return state === "done" || state === "review" || state === "cancelled";
+}
+
+/** Tasks still waiting on unfinished dependencies. Review, done and cancelled count as ready. */
 export function waitingOn(state: ChannelState, task: Task): number[] {
-  return task.after.filter((d) => state.tasks.get(d)?.state !== "done");
+  return task.after.filter((d) => !depSatisfied(state.tasks.get(d)?.state));
+}
+
+/** True if making `task` wait on `dep` would loop (including waiting on itself). */
+export function wouldCycle(tasks: Map<number, Task>, task: number, dep: number): boolean {
+  if (dep === task) return true;
+  const seen = new Set<number>();
+  const stack = [dep];
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (id === task) return true;
+    if (!seen.add(id)) continue;
+    const next = tasks.get(id);
+    if (next) for (const d of next.after) stack.push(d);
+  }
+  return false;
+}
+
+function appendAfter(tasks: Map<number, Task>, task: Task, deps: number[]): string | undefined {
+  for (const d of deps) {
+    if (!tasks.has(d)) return `no task ${taskId(d)}`;
+    if (wouldCycle(tasks, task.id, d)) return `${taskId(task.id)} waiting on ${taskId(d)} would cycle`;
+  }
+  for (const d of deps) if (!task.after.includes(d)) task.after.push(d);
+  return undefined;
+}
+
+const OPEN_FOR_TITLE = new Set<TaskState>(["todo", "doing", "blocked", "review"]);
+
+function normTitle(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Equal, one title contains the other, or at least 60% of the shorter title's words (longer than 2 characters) overlap. */
+export function titlesLookAlike(a: string, b: string): boolean {
+  const na = normTitle(a);
+  const nb = normTitle(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const shorter = na.length <= nb.length ? na : nb;
+  const longer = shorter === na ? nb : na;
+  if (shorter.length >= 8 && longer.includes(shorter)) return true;
+  const wa = [...new Set(na.split(" ").filter((w) => w.length > 2))];
+  const wb = new Set(nb.split(" ").filter((w) => w.length > 2));
+  if (!wa.length || !wb.size) return false;
+  const shared = wa.filter((w) => wb.has(w)).length;
+  return shared / Math.min(wa.length, wb.size) >= 0.6;
+}
+
+/** Open tasks (not done, not cancelled) whose title looks like `title`. */
+export function similarOpenTasks(state: ChannelState, title: string): Task[] {
+  return [...state.tasks.values()].filter((t) => OPEN_FOR_TITLE.has(t.state) && titlesLookAlike(title, t.title)).sort((a, b) => a.id - b.id);
 }
 
 const isPerson = (m: { kind?: string; owner?: boolean }) => m.kind === "human" || !!m.owner;

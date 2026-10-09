@@ -3,8 +3,8 @@
 import { loadJson, loadSummary, memberLoad, showsLoad } from "./load.ts";
 import { inlineText } from "./membership.ts";
 import { imageMarker } from "./protocol.ts";
-import type { Message, Trust } from "./protocol.ts";
-import { colorOf, taskId, waitingOn, type ChannelState, type Claim, type Task } from "./state.ts";
+import type { Message, TaskState, Trust } from "./protocol.ts";
+import { colorOf, taskId, waitingOn, type ChannelState, type Claim, type Fact, type Task } from "./state.ts";
 
 export function ago(ts: number, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - ts) / 1000));
@@ -24,18 +24,43 @@ export function left(expires: number, now = Date.now()): string {
 export function parseDuration(s: string): number {
   if (/^\d+$/.test(s)) return Number(s);
   let total = 0;
-  for (const [, n, u] of s.matchAll(/(\d+)\s*([hms])/g)) total += Number(n) * (u === "h" ? 3600 : u === "m" ? 60 : 1);
-  if (!total) throw new Error(`bad duration "${s}" (try 30m, 2h, 90s)`);
+  for (const [, n, u] of s.matchAll(/(\d+)\s*([dhms])/g)) total += Number(n) * (u === "d" ? 86400 : u === "h" ? 3600 : u === "m" ? 60 : 1);
+  if (!total) throw new Error(`bad duration "${s}" (try 30m, 2h, 7d, 90s)`);
   return total;
 }
 
-const STATE_VERB: Record<string, string> = {
+const STATE_VERB: Record<TaskState, string> = {
   todo: "moved back to to-do",
   doing: "started",
   blocked: "is blocked on",
   review: "sent for review",
   done: "finished",
+  cancelled: "cancelled",
 };
+
+/** How a dependency reads in `waits on T27 (in review)`. */
+export function depPhrase(state: string): string {
+  return state === "review" ? "in review" : state;
+}
+
+/** `added T12; waits on T27 (in review)`. Done and cancelled deps are already satisfied, so they are left off. */
+export function formatAdded(state: ChannelState, id: number, after: number[]): string {
+  const open = after.filter((d) => {
+    const st = state.tasks.get(d)?.state;
+    return st !== "done" && st !== "cancelled";
+  });
+  if (!open.length) return `added ${taskId(id)}`;
+  return `added ${taskId(id)}; waits on ${open.map((d) => `${taskId(d)} (${depPhrase(state.tasks.get(d)?.state ?? "?")})`).join(", ")}`;
+}
+
+/** `T69 waits on T68 (todo)`. */
+export function formatAfter(state: ChannelState, id: number, deps: number[]): string {
+  return `${taskId(id)} waits on ${deps.map((d) => `${taskId(d)} (${depPhrase(state.tasks.get(d)?.state ?? "?")})`).join(", ")}`;
+}
+
+export function looksLikeLine(ids: number[]): string {
+  return `looks like ${ids.map(taskId).join(", ")}`;
+}
 
 /**
  * The one-line meaning of a coordination event. Pass `state` to name tasks
@@ -72,6 +97,7 @@ export function describeEvent(m: Message, state?: ChannelState): string {
       if (ev.owner) return `assigned ${task(ev.task)} to ${ev.owner}${note(ev.note)}`;
       if (ev.owner === null) return `unassigned ${task(ev.task)}${note(ev.note)}`;
       if (ev.title) return `renamed ${taskId(ev.task)} to “${ev.title}”`;
+      if (ev.after?.length) return `set ${task(ev.task)} to wait on ${ev.after.map(taskId).join(", ")}`;
       return `noted on ${task(ev.task)}${note(ev.note)}`;
     }
     case "claim":
@@ -122,7 +148,14 @@ function taskLine(state: ChannelState, t: Task): string {
 }
 
 function claimLine(c: Claim, now: number): string {
-  return `  ${c.path}  @${c.owner}, ${left(c.expires, now)}${c.note ? ` — ${c.note}` : ""}`;
+  const where = c.checkout ? ` in ${c.owner}'s checkout (${c.checkout}${c.machine ? `, on ${c.machine}` : ""})` : "";
+  return `  ${c.path}  @${c.owner}, ${left(c.expires, now)}${where}${c.note ? ` — ${c.note}` : ""}`;
+}
+
+/** `build.cmd = cargo test  (win, 2h ago, 5h left)`. */
+export function formatFact(f: Fact, now = Date.now()): string {
+  const remain = f.expires ? `, ${left(f.expires, now)}` : "";
+  return `${f.key} = ${f.value}  (${f.by}, ${ago(f.ts, now)}${remain})`;
 }
 
 export interface Snapshot {
@@ -195,9 +228,10 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
   }
 
   const tasks = [...state.tasks.values()];
-  const active = tasks.filter((t) => t.state !== "done");
-  const done = tasks.length - active.length;
-  out.push("", `tasks (${active.length} open${done ? `, ${done} done` : ""}):`);
+  const active = tasks.filter((t) => t.state !== "done" && t.state !== "cancelled");
+  const done = tasks.filter((t) => t.state === "done").length;
+  const cancelled = tasks.filter((t) => t.state === "cancelled").length;
+  out.push("", `tasks (${active.length} open${done ? `, ${done} done` : ""}${cancelled ? `, ${cancelled} cancelled` : ""}):`);
   if (!active.length) out.push("  none — add one with: kiwi task add \"…\"");
   const order = ["doing", "blocked", "review", "todo"];
   active.sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state) || a.id - b.id);
@@ -216,7 +250,7 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
 
 export function formatTasks(state: ChannelState, opts: { all?: boolean; owner?: string } = {}): string {
   let tasks = [...state.tasks.values()];
-  if (!opts.all) tasks = tasks.filter((t) => t.state !== "done");
+  if (!opts.all) tasks = tasks.filter((t) => t.state !== "done" && t.state !== "cancelled");
   if (opts.owner) tasks = tasks.filter((t) => t.owner === opts.owner);
   if (!tasks.length) return "no tasks";
   return tasks.map((t) => taskLine(state, t).trimStart()).join("\n");
@@ -225,7 +259,13 @@ export function formatTasks(state: ChannelState, opts: { all?: boolean; owner?: 
 export function formatTask(state: ChannelState, t: Task, now = Date.now()): string {
   const out = [`${taskId(t.id)} ${t.title}`, `  state: ${t.state}${t.owner ? ` · owner: ${t.owner}` : " · unassigned"} · created by ${t.createdBy} ${ago(t.createdAt, now)}`];
   const waits = waitingOn(state, t);
-  if (t.after.length) out.push(`  after: ${t.after.map((d) => `${taskId(d)} (${state.tasks.get(d)?.state ?? "?"})`).join(", ")}${waits.length ? "" : " — all done"}`);
+  if (t.after.length) {
+    const settled = t.after.every((d) => {
+      const st = state.tasks.get(d)?.state;
+      return st === "done" || st === "cancelled";
+    });
+    out.push(`  after: ${t.after.map((d) => `${taskId(d)} (${state.tasks.get(d)?.state ?? "?"})`).join(", ")}${waits.length ? "" : settled ? " — all done" : " — ready"}`);
+  }
   if (t.detail) out.push("", t.detail);
   if (t.notes.length) {
     out.push("", "notes:");

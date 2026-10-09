@@ -190,7 +190,9 @@ export async function runSh(files: Record<string, string>, script: string, opts:
     const timeout = new Promise<ShResult>((resolve) => {
       timer = setTimeout(() => (stop.abort(), resolve({ stdout: "", stderr: `kiwi sh: stopped after ${MAX_RUN_MS / 1000}s\n`, exitCode: 124 })), MAX_RUN_MS + 1_000);
     });
-    const run = bash.exec(script, { replaceEnv: false, signal: stop.signal }).then((r) => ({ stdout: r.stdout, stderr: r.stderr, exitCode: r.exitCode }));
+    // failglob names an unmatched pattern (`bash: no match: …`) and the script continues.
+    // just-bash leaves failglob off, which is why an empty glob used to pass through silently.
+    const run = bash.exec(`shopt -s failglob\n${script}`, { replaceEnv: false, signal: stop.signal }).then((r) => ({ stdout: r.stdout, stderr: r.stderr, exitCode: r.exitCode }));
     const r = await Promise.race([run, timeout]);
     return { stdout: cap(r.stdout), stderr: cap(r.stderr), exitCode: r.exitCode };
   } catch (err) {

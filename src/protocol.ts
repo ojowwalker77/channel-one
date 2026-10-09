@@ -92,7 +92,7 @@ export const KINDS = ["msg", "ask", "blocking", "ack", "status", "done", "event"
 export type Kind = (typeof KINDS)[number];
 export const CHAT_KINDS: readonly Kind[] = KINDS.filter((k) => k !== "event");
 
-export const TASK_STATES = ["todo", "doing", "blocked", "review", "done"] as const;
+export const TASK_STATES = ["todo", "doing", "blocked", "review", "done", "cancelled"] as const;
 
 /**
  * The colours a person can pick: ids, not values (the web app maps each to its
@@ -109,10 +109,10 @@ export type Event =
   | { op: "hello"; role?: string; about?: string }
   | { op: "task.add"; title: string; detail?: string; owner?: string; after?: number[] }
   | { op: "task.claim"; task: number }
-  | { op: "task.update"; task: number; state?: TaskState; owner?: string | null; title?: string; note?: string }
-  | { op: "claim"; paths: string[]; ttl: number; note?: string }
+  | { op: "task.update"; task: number; state?: TaskState; owner?: string | null; title?: string; note?: string; after?: number[] }
+  | { op: "claim"; paths: string[]; ttl: number; note?: string; machine?: string; checkout?: string }
   | { op: "release"; paths?: string[] }
-  | { op: "fact.set"; key: string; value: string }
+  | { op: "fact.set"; key: string; value: string; ttl?: number }
   | { op: "fact.del"; key: string }
   /** Owner only: set a member's role (and rules), or allow the one they asked for. */
   | { op: "role.set"; member: string; role: string | null; about?: string | null }
@@ -214,13 +214,13 @@ export function wellFormedEvent(ev: unknown): ev is Event {
     case "task.claim":
       return n(e.task);
     case "task.update":
-      return n(e.task) && opt(e.state, (x): x is string => typeof x === "string" && (TASK_STATES as readonly string[]).includes(x)) && (e.owner === undefined || e.owner === null || str(e.owner, 64)) && opt(e.title, (x): x is string => str(x, 500)) && opt(e.note, (x): x is string => str(x));
+      return n(e.task) && opt(e.state, (x): x is string => typeof x === "string" && (TASK_STATES as readonly string[]).includes(x)) && (e.owner === undefined || e.owner === null || str(e.owner, 64)) && opt(e.title, (x): x is string => str(x, 500)) && opt(e.note, (x): x is string => str(x)) && opt(e.after, (x): x is number[] => nums(x, 50));
     case "claim":
-      return strs(e.paths, 100) && (e.paths as string[]).length > 0 && Number.isFinite(e.ttl) && (e.ttl as number) > 0 && opt(e.note, (x): x is string => str(x, 500));
+      return strs(e.paths, 100) && (e.paths as string[]).length > 0 && Number.isFinite(e.ttl) && (e.ttl as number) > 0 && opt(e.note, (x): x is string => str(x, 500)) && opt(e.machine, (x): x is string => str(x, 80)) && opt(e.checkout, (x): x is string => str(x, 2000));
     case "release":
       return opt(e.paths, (x): x is string[] => strs(x, 100));
     case "fact.set":
-      return str(e.key, 200) && str(e.value, 10_000);
+      return str(e.key, 200) && str(e.value, 10_000) && opt(e.ttl, (x): x is number => typeof x === "number" && Number.isFinite(x) && x > 0);
     case "fact.del":
       return str(e.key, 200);
     case "role.set":

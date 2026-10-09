@@ -14,10 +14,11 @@ import { loadImages } from "./attach.ts";
 import { loadSummary, memberLoad, showsLoad } from "./load.ts";
 import { forgetMember, home, identitiesIn, loadConfig, signingBudget, wipeChannel } from "./config.ts";
 import { ChannelGone } from "./client.ts";
-import { formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "./format.ts";
+import { formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatStatus, formatTask, formatTasks, looksLikeLine, parseDuration } from "./format.ts";
 import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
 import { TOO_MANY_REQUESTS } from "./sas.ts";
-import { parseTaskId, taskId } from "./state.ts";
+import { parseTaskId, similarOpenTasks, taskId } from "./state.ts";
+import { claimPlace } from "./where.ts";
 import { VERSION } from "./version.ts";
 import { channelFiles, runSh, sessionViews } from "./sh.ts";
 
@@ -315,24 +316,32 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "task_add",
     {
-      description: "Add a task to the shared board. Returns its id (like T12).",
+      description: "Add a task to the shared board. Returns its id (like T12). Warns when an open task has a near-identical title, and names deps that are still open (review reads as 'in review').",
       inputSchema: { title: z.string(), detail: z.string().optional(), owner: z.string().optional(), after: z.array(z.string()).optional().describe("task ids that must be done first") },
     },
-    guard(async ({ title, detail, owner, after }) => `added ${taskId(await s.taskAdd(title, { detail, owner, after: after?.map(task) }))}`),
+    guard(async ({ title, detail, owner, after }) => {
+      const ids = after?.map(task);
+      const { state } = await s.state();
+      const id = await s.taskAdd(title, { detail, owner, after: ids });
+      const like = similarOpenTasks(state, title).map((t) => t.id);
+      const line = formatAdded(state, id, ids ?? []);
+      return like.length ? `${line}\n${looksLikeLine(like)}` : line;
+    }),
   );
 
   server.registerTool(
     "task_update",
     {
-      description: "Claim, progress, hand off or annotate a task. `claim` fails if someone else owns it.",
+      description: "Claim, progress, cancel, hand off or annotate a task. `claim` fails if someone else owns it. `after` appends dependencies. `cancel` is a distinct state, not an unassign.",
       inputSchema: {
         task: z.string().describe("task id, like T12"),
-        action: z.enum(["claim", "start", "block", "review", "done", "drop", "assign", "note", "show"]),
+        action: z.enum(["claim", "start", "block", "review", "done", "cancel", "drop", "assign", "note", "show", "after"]),
         note: z.string().optional(),
         owner: z.string().optional().describe("for assign"),
+        after: z.array(z.string()).optional().describe("for after: task ids this one waits on"),
       },
     },
-    guard(async ({ task: raw, action, note, owner }) => {
+    guard(async ({ task: raw, action, note, owner, after }) => {
       const id = task(raw);
       if (action === "show") {
         const { state } = await s.state();
@@ -340,7 +349,13 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
         if (!t) throw new Rejected(`no task ${taskId(id)}`);
         return formatTask(state, t);
       }
-      const states = { start: "doing", block: "blocked", review: "review", done: "done" } as const;
+      if (action === "after") {
+        const deps = (after ?? []).map(task);
+        if (!deps.length) throw new Rejected("after needs at least one task id");
+        const state = await s.taskAfter(id, deps);
+        return formatAfter(state, id, deps);
+      }
+      const states = { start: "doing", block: "blocked", review: "review", done: "done", cancel: "cancelled" } as const;
       const state =
         action === "claim"
           ? await s.taskClaim(id)
@@ -359,11 +374,11 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "claim",
     {
-      description: "Reserve paths (files, dirs, or any named resource) before editing them. Fails if another agent holds an overlapping claim.",
+      description: "Reserve paths before editing them. A path#Symbol claim shares the file; a whole-file claim still locks it. Records this machine and git checkout. Fails if another agent holds an overlapping claim, and names their checkout.",
       inputSchema: { paths: z.array(z.string()).min(1), ttl: z.string().optional().describe("like 30m or 2h (default 30m)"), note: z.string().optional() },
     },
     guard(async ({ paths, ttl, note }) => {
-      const state = await s.claim(paths, parseDuration(ttl ?? "30m"), note);
+      const state = await s.claim(paths, parseDuration(ttl ?? "30m"), note, claimPlace());
       return formatClaims({ ...state, claims: state.claims.filter((c) => c.owner === s.me) });
     }),
   );
@@ -379,12 +394,12 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
 
   server.registerTool(
     "facts",
-    { description: "Shared key/value facts: read all, or set/unset one.", inputSchema: { set: z.string().optional(), value: z.string().optional(), unset: z.string().optional() } },
-    guard(async ({ set, value, unset }) => {
-      if (set) await s.setFact(set, value ?? "");
+    { description: "Shared key/value facts: read all, or set/unset one. Anyone may set or unset a key. ttl (like 7d) makes a fact expire on its own.", inputSchema: { set: z.string().optional(), value: z.string().optional(), unset: z.string().optional(), ttl: z.string().optional() } },
+    guard(async ({ set, value, unset, ttl }) => {
+      if (set) await s.setFact(set, value ?? "", ttl ? parseDuration(ttl) : undefined);
       if (unset) await s.delFact(unset);
       const { facts } = (await s.state()).state;
-      return [...facts.values()].map((f) => `${f.key} = ${f.value}  (${f.by})`).join("\n") || "no facts";
+      return [...facts.values()].map((f) => formatFact(f)).join("\n") || "no facts";
     }),
   );
 

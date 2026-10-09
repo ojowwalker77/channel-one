@@ -9,7 +9,7 @@ import type { ChannelAccess } from "./crypto.ts";
 import type { JoinRequest } from "./membership.ts";
 import type { Identity } from "./identity.ts";
 import { TASK_STATES, type Color, type Event, type ImageAttachment, type Kind, type Message, type Presence, type TaskState } from "./protocol.ts";
-import { fold, overlaps, taskId, waitingOn, type ChannelState, type Roster } from "./state.ts";
+import { claimConflict, fold, overlaps, taskId, waitingOn, wouldCycle, type ChannelState, type Roster } from "./state.ts";
 
 /** How often a listening agent re-announces itself. Receivers treat 2.5x this as offline. */
 export const PRESENCE_EVERY_MS = 60_000;
@@ -381,6 +381,7 @@ export class AgentSession {
     const t = state.tasks.get(id);
     if (!t) throw new Rejected(`no task ${taskId(id)}`);
     if (t.state === "done") throw new Rejected(`${taskId(id)} is already done`);
+    if (t.state === "cancelled") throw new Rejected(`${taskId(id)} is cancelled`);
     if (t.owner && t.owner !== this.me) throw new Rejected(`${taskId(id)} is owned by ${t.owner}`);
     const waits = waitingOn(state, t);
     const seq = await this.event({ op: "task.claim", task: id }, `claimed ${taskId(id)}`);
@@ -389,18 +390,19 @@ export class AgentSession {
     return after;
   }
 
-  async taskUpdate(id: number, change: { state?: TaskState; owner?: string | null; title?: string; note?: string }): Promise<ChannelState> {
+  async taskUpdate(id: number, change: { state?: TaskState; owner?: string | null; title?: string; note?: string; after?: number[] }): Promise<ChannelState> {
     const { state } = await this.state();
     const t = state.tasks.get(id);
     if (!t) throw new Rejected(`no task ${taskId(id)}`);
     if (change.state && !TASK_STATES.includes(change.state)) throw new Rejected(`state must be one of ${TASK_STATES.join(", ")}`);
+    if (change.after?.length) this.checkAfter(state, id, change.after);
     const owner = change.owner ? (await this.resolveTo([change.owner], state))?.[0] : change.owner;
     // Tell whoever this concerns: the new owner, the current owner if it isn't
-    // us, the creator when it's done, and owners of tasks it unblocks.
+    // us, the creator when it's done or cancelled, and owners of tasks it unblocks.
     const notify: string[] = [];
     if (owner) notify.push(owner);
     if (t.owner && t.owner !== this.me) notify.push(t.owner);
-    if (change.state === "done") {
+    if (change.state === "done" || change.state === "cancelled") {
       notify.push(t.createdBy);
       for (const other of state.tasks.values()) if (other.after.includes(id) && other.owner) notify.push(other.owner);
     }
@@ -408,13 +410,33 @@ export class AgentSession {
     return this.confirm(seq);
   }
 
-  async claim(paths: string[], ttlSec: number, note?: string): Promise<ChannelState> {
+  /** Append dependencies. Missing ids, self-deps and cycles are refused. */
+  async taskAfter(id: number, deps: number[]): Promise<ChannelState> {
+    if (!deps.length) throw new Rejected("name at least one task to wait on");
+    const { state } = await this.state();
+    this.checkAfter(state, id, deps);
+    const seq = await this.event({ op: "task.update", task: id, after: deps }, `${taskId(id)} waits on ${deps.map(taskId).join(", ")}`);
+    return this.confirm(seq);
+  }
+
+  private checkAfter(state: ChannelState, id: number, deps: number[]): void {
+    if (!state.tasks.has(id)) throw new Rejected(`no task ${taskId(id)}`);
+    for (const d of deps) {
+      if (!state.tasks.has(d)) throw new Rejected(`no task ${taskId(d)}`);
+      if (wouldCycle(state.tasks, id, d)) throw new Rejected(`${taskId(id)} waiting on ${taskId(d)} would cycle`);
+    }
+  }
+
+  async claim(paths: string[], ttlSec: number, note?: string, place?: { machine?: string; checkout?: string }): Promise<ChannelState> {
     const { state } = await this.state();
     for (const p of paths) {
       const c = state.claims.find((x) => x.owner !== this.me && overlaps(x.path, p));
-      if (c) throw new Rejected(`${c.path} is claimed by ${c.owner}`);
+      if (c) throw new Rejected(claimConflict(c));
     }
-    const seq = await this.event({ op: "claim", paths, ttl: ttlSec, ...(note ? { note } : {}) }, `claimed ${paths.join(", ")}`);
+    const seq = await this.event(
+      { op: "claim", paths, ttl: ttlSec, ...(note ? { note } : {}), ...(place?.machine ? { machine: place.machine } : {}), ...(place?.checkout ? { checkout: place.checkout } : {}) },
+      `claimed ${paths.join(", ")}`,
+    );
     return this.confirm(seq);
   }
 
@@ -422,8 +444,8 @@ export class AgentSession {
     return this.event({ op: "release", ...(paths?.length ? { paths } : {}) }, paths?.length ? `released ${paths.join(", ")}` : "released all claims");
   }
 
-  async setFact(key: string, value: string): Promise<number> {
-    return this.event({ op: "fact.set", key, value }, `${key} = ${value}`);
+  async setFact(key: string, value: string, ttlSec?: number): Promise<number> {
+    return this.event({ op: "fact.set", key, value, ...(ttlSec ? { ttl: ttlSec } : {}) }, `${key} = ${value}`);
   }
 
   async delFact(key: string): Promise<number> {

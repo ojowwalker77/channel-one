@@ -10,8 +10,8 @@ import { Icon } from "./icon"
 import { IconButton, Modal } from "./kit"
 import { Markdown } from "./markdown"
 
-const LABEL: Record<TaskState, string> = { doing: "In progress", blocked: "Blocked", review: "In review", todo: "To do", done: "Done" }
-const ORDER: TaskState[] = ["blocked", "doing", "review", "todo", "done"]
+const LABEL: Record<TaskState, string> = { doing: "In progress", blocked: "Blocked", review: "In review", todo: "To do", done: "Done", cancelled: "Cancelled" }
+const ORDER: TaskState[] = ["blocked", "doing", "review", "todo", "done", "cancelled"]
 
 /** A task's state as a small circle: empty, half full, dashed, red, or checked. Ink only, except blocked. */
 function StateMark({ state }: { state: TaskState }) {
@@ -21,6 +21,9 @@ function StateMark({ state }: { state: TaskState }) {
         <Icon icon={Tick02Icon} size={11} strokeWidth={2.6} />
       </span>
     )
+  }
+  if (state === "cancelled") {
+    return <span title="Cancelled" className="block size-4 shrink-0 rounded-full border-[1.5px] border-ink-3 opacity-60" />
   }
   return (
     <span
@@ -44,7 +47,7 @@ function TaskRow({ task, state, now, onOpen }: { task: Task; state: ChannelState
         <StateMark state={task.state} />
       </span>
       <span className="min-w-0 flex-1">
-        <span className={cx("block text-[14px] leading-snug", task.state === "done" && "text-ink-2")}>{task.title}</span>
+        <span className={cx("block text-[14px] leading-snug", (task.state === "done" || task.state === "cancelled") && "text-ink-2")}>{task.title}</span>
         <span className="mt-0.5 flex items-center gap-3 text-[12px] text-ink-3">
           <span className="tabular-nums">{taskId(task.id)}</span>
           <span className="truncate">{task.owner ?? "Unassigned"}</span>
@@ -78,19 +81,19 @@ export function Tasks({ state, now, onOpen }: { state: ChannelState; now: number
         {ORDER.map((s) => {
           const list = all.filter((t) => t.state === s)
           if (!list.length) return null
-          const done = s === "done"
+          const closed = s === "done" || s === "cancelled"
           return (
             <section key={s} className="mb-7">
               <div className="mb-1 flex items-baseline gap-2">
                 <h3 className={cx("text-[13px] font-semibold", s === "blocked" ? "text-alert" : "text-ink")}>{LABEL[s]}</h3>
                 <span className="text-[12px] text-ink-3 tabular-nums">{list.length}</span>
-                {done && (
+                {closed && (
                   <button type="button" className="ml-auto text-[12px] font-medium text-accent hover:underline" onClick={() => setShowDone((v) => !v)}>
                     {showDone ? "Hide" : "Show"}
                   </button>
                 )}
               </div>
-              {(!done || showDone) && list.map((t) => <TaskRow key={t.id} task={t} state={state} now={now} onOpen={() => onOpen(t.id)} />)}
+              {(!closed || showDone) && list.map((t) => <TaskRow key={t.id} task={t} state={state} now={now} onOpen={() => onOpen(t.id)} />)}
             </section>
           )
         })}

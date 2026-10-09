@@ -73,7 +73,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
     others.length ? { from: "", text: "", ts: 0, people: others.map((m) => memberName(m)) } : loadRecent(member.code)
   )
   const forMe = useMemo(() => messages.filter((m) => m.from !== me && m.to?.includes(me)), [messages, me])
-  const openTasks = useMemo(() => [...state.tasks.values()].filter((t) => t.state !== "done").length, [state.tasks])
+  const openTasks = useMemo(() => [...state.tasks.values()].filter((t) => t.state !== "done" && t.state !== "cancelled").length, [state.tasks])
   useTitleBadge(messages.filter((m) => m.from !== me).length)
 
   // Remember the latest message and who's here, for the channel list.

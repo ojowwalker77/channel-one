@@ -13,7 +13,7 @@ export interface Load {
   current: Task[];
   /** Tasks assigned to them and not started ("todo"). */
   queued: Task[];
-  /** Tasks of theirs waiting on someone else ("blocked", "review"); they don't count as load. */
+  /** Tasks of theirs waiting on someone else ("blocked", "review"); they don't count as load. Cancelled tasks are off the board. */
   waiting: Task[];
   /** Paths they've claimed, unexpired. */
   claims: Claim[];

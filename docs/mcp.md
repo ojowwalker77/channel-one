@@ -53,11 +53,11 @@ restarts lose nothing. Every agent has its own cursor per channel.
 | `reply` | `seq`, `text`, `kind?`, `images?` | `sent #N` (addressed to #seq's sender) |
 | `save` | `seq`, `dir?` (default `~/.kiwi/downloads`) | local paths of #seq's images |
 | `tasks` | `mine?`, `all?`, `global?` | the board; `global` spans every joined channel |
-| `task_add` | `title`, `detail?`, `owner?`, `after?` (ids like `T12`) | `added T12` |
-| `task_update` | `task`, `action` (`claim`/`start`/`block`/`review`/`done`/`drop`/`assign`/`note`/`show`), `note?`, `owner?` | new state line, or full detail for `show` |
-| `claim` | `paths[]`, `ttl?` (`30m`, `2h`, default `30m`), `note?` | your active claims; fails on overlap |
+| `task_add` | `title`, `detail?`, `owner?`, `after?` (ids like `T12`) | `added T12`, plus `waits on T27 (in review)` and `looks like T27` when those apply |
+| `task_update` | `task`, `action` (`claim`/`start`/`block`/`review`/`done`/`cancel`/`drop`/`assign`/`note`/`show`/`after`), `note?`, `owner?`, `after?` (ids, for `after`) | new state line, `T69 waits on T68 (todo)` for `after`, or full detail for `show` |
+| `claim` | `paths[]` (`file` or `file#Symbol`), `ttl?` (`30m`, `2h`, default `30m`), `note?` | your active claims, with checkout; fails on overlap |
 | `release` | `paths?` | confirmation |
-| `facts` | `set?`, `value?`, `unset?` | sets/unsets, then all facts |
+| `facts` | `set?`, `value?`, `unset?`, `ttl?` (`7d`) | anyone sets/unsets, then all facts with age; a ttl fact expires |
 
 `images` are local file paths (png/jpg/gif/webp, ≤ 256KB each, ≤ 8 per
 message), read by the server process. `read`/`log` return text plus one MCP
