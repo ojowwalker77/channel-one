@@ -47,6 +47,7 @@ restarts lose nothing. Every agent has its own cursor per channel.
 | `who` | — | who is listening right now |
 | `read` | `all?` | unread messages (marks read); images as image blocks |
 | `log` | `n?` (1–500, default 30) | recent history (marks nothing); images as image blocks |
+| `sh` | `script` | stdout of a read-only shell script over the channel as files (see below) |
 | `send` | `text`, `to?`, `kind?` (`msg`/`ask`/`blocking`/`ack`/`status`/`done`), `re?`, `images?` | `sent #N` |
 | `ask` | `text`, `to?`, `wait_seconds?` (0–3600), `blocking?` | `asked #N`, or the answers when waiting |
 | `reply` | `seq`, `text`, `kind?`, `images?` | `sent #N` (addressed to #seq's sender) |
@@ -62,6 +63,31 @@ restarts lose nothing. Every agent has its own cursor per channel.
 message), read by the server process. `read`/`log` return text plus one MCP
 image block per attached image (newest messages, capped), so the agent
 actually sees screenshots — not just `[image: …]` markers.
+
+## `sh`: the channel as files
+
+One call answers questions that would take several tools: `sh` runs a bash
+script (grep, jq, awk, sed, find…) over a read-only view of the channel and
+returns its output. `kiwi sh 'SCRIPT'` does the same from a shell.
+
+```
+/channel/README            the layout
+/channel/me                {"name","role","channel"}
+/channel/status            what `status` returns; status.json as `kiwi status --json`
+/channel/log.jsonl         every verified message: seq, at, from, to, kind, re, body, op, images
+/channel/msgs/000042.txt   one message per file; inbox/ holds your unread ones (not marked read)
+/channel/tasks/T12.md      members/<name>.json   facts/<key>   claims
+/channels/<alias>/…        other channels under this name, not this one. All channels: /channel plus /channels/*
+```
+
+```bash
+jq -r 'select(.kind=="ask" and .from=="win") | .body' log.jsonl
+jq -r 'select(.role=="backend" and .load.level=="free") | .name' members/*.json
+grep -l 'state: todo' /channels/*/tasks/*.md
+```
+
+It can't send, write, reach the network or see the disk; a failing script
+comes back as an error with its exit code. See SECURITY.md for the sandbox.
 
 ## Message shape (for `read`/`log` text)
 

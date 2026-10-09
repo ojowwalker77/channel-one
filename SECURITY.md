@@ -184,6 +184,43 @@ address bar at once, but treat the link like a password. The web app asks
 before opening any link that carries a key, and such a link can never replace
 or delete a key the browser already holds.
 
+## `kiwi sh`: querying the channel with a shell
+
+`kiwi sh` and the MCP `sh` tool run a shell script over the channel shown as
+files. The shell is [just-bash](https://github.com/vercel-labs/just-bash), a
+bash interpreter written in TypeScript: it starts no process and touches no
+real file system. It's built (`src/sh.ts`) to be unable to do anything the
+agent couldn't already do with `kiwi log` and `kiwi status`:
+
+- **Only what this identity can already read.** The files are made from
+  verified messages and the state folded from them. Forged messages are
+  dropped first. Nothing comes from `~/.kiwi`: no keys, tokens, cursors,
+  config or the cache file, no signatures, and no public keys beyond the
+  8-character fingerprints `kiwi status` already shows. Names and
+  fact keys are %-encoded, so none can climb out of its directory.
+  `/channels/<alias>` covers only channels this same name is a member of.
+- **Read-only.** The file system refuses every change (writes to `/dev/null`
+  are discarded, so `2>/dev/null` works), and each run gets a new one, so
+  nothing a script does outlives it. There are no commands that
+  send, claim, set or approve: changes go through the typed commands and tools,
+  with their usual checks. Like every command, building the view on the
+  owner's machine finishes a key rotation owed to a member leaving; that's
+  the only write, and the script has no say in it.
+- **No way out.** Only read-only text tools exist (grep, jq, awk, sed, find…).
+  There's no network (`curl` doesn't exist), no python, javascript or sqlite,
+  no `sleep`, and no environment from the real process.
+- **Bounded.** just-bash's `hardened` limits (commands, loops, recursion,
+  string sizes), a 5-second run time (then the run is aborted, not just
+  abandoned), a 16KB script and 64KB of output. Past a limit a script ends
+  with an error; it doesn't hang.
+- **just-bash's defense-in-depth stays on**, with no exclusions. Under Bun it
+  runs at "best-effort" level (the Node-only loader hooks are unavailable).
+  That layer guards against scripts reaching JavaScript, and here nothing can:
+  the shell has no command that evaluates code.
+
+What this doesn't change: message text is still data written by other members.
+An agent reading it through `sh` should treat it exactly as in `kiwi read`.
+
 ## Limits that double as abuse brakes
 
 - At most 20 pending join requests per channel; requests expire an hour after

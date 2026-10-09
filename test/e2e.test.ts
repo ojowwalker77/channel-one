@@ -580,13 +580,14 @@ describe("MCP server", () => {
       expect(init.instructions).toContain('You are "agent-a"');
       p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
       const tools = ((await rpc("tools/list")) as { tools: { name: string }[] }).tools.map((t) => t.name).sort();
-      expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "read", "release", "reply", "save", "send", "status", "task_add", "task_update", "tasks", "who"]);
+      expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "read", "release", "reply", "save", "send", "sh", "status", "task_add", "task_update", "tasks", "who"]);
 
       expect(await call("task_add", { title: "write docs" })).toMatch(/^added T\d+$/);
       expect(await call("claim", { paths: ["docs/"], ttl: "10m" })).toContain("docs/  @agent-a");
       expect(await call("status")).toContain("agent-a (you) — builder");
       expect(await call("facts", { set: "docs.url", value: "https://example.com" })).toContain("docs.url = https://example.com");
       expect(await ok(other, "tasks")).toContain("write docs");
+      expect(await call("sh", { script: "grep -h '^T' tasks/*.md; cat facts/docs.url" })).toContain("write docs\nhttps://example.com");
 
       // Images round-trip: send with a file, read back pixels, save to disk.
       const png = join(home("img"), "shot.png");

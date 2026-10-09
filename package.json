@@ -12,7 +12,7 @@
     "relay:dev": "wrangler dev",
     "relay:deploy": "wrangler deploy",
     "relay:local": "bun src/relay/bun.ts",
-    "build": "bun build src/cli/main.ts --compile --outfile dist/kiwi",
+    "build": "bun build src/cli/main.ts --compile --external node-liblzma --external @mongodb-js/zstd --outfile dist/kiwi",
     "test": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json && cd web && tsc -b",
     "web:dev": "cd web && bun run dev",
@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "just-bash": "3.6.0",
     "zod": "^4.6.5"
   }
 }
