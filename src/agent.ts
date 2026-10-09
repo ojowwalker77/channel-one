@@ -3,7 +3,8 @@
 // state (tasks, claims, facts, members) costs one incremental fetch.
 
 import { Channel, isDirectedAt, isForAgent, type SendOptions } from "./client.ts";
-import { appendCache, loadIdentity, markSeen, readCache, readCursor, readSeen, saveAccess, writeCursor, type ChannelConfig } from "./config.ts";
+import { appendCache, loadIdentity, markSeen, readCache, readCursor, readSeen, saveAccess, signingBudget, writeCursor, type ChannelConfig } from "./config.ts";
+import { TOO_MANY_REQUESTS } from "./sas.ts";
 import type { ChannelAccess } from "./crypto.ts";
 import type { JoinRequest } from "./membership.ts";
 import type { Identity } from "./identity.ts";
@@ -72,7 +73,7 @@ export class AgentSession {
   /** Pending join requests (owner machine only). */
   async requests(): Promise<JoinRequest[]> {
     if (!this.ownerCh) throw new Rejected("only the channel owner's machine can see join requests");
-    return this.ownerCh.requests();
+    return this.ownerCh.requests({ budget: signingBudget });
   }
 
   get me(): string {
@@ -197,12 +198,17 @@ export class AgentSession {
         },
         onRequest: () => {
           if (!this.ownerCh || !opts.onNotice) return;
-          void this.ownerCh.requests().then(async (reqs) => {
+          void this.ownerCh.requests({ budget: signingBudget }).then(async (reqs) => {
             for (const r of reqs) {
-              await opts.onNotice!(
-                `join request: "${r.name}"${r.role ? ` (${r.role})` : ""} wants in, verification code ${r.code}. ` +
-                  `Only your human may approve: ask them to confirm the code matches what the joining agent shows, then run \`kiwi approve ${r.code}\` (or approve in the dashboard).`,
-              );
+              // A request becomes worth mentioning once both sides can see its code.
+              if (r.check === "ready") {
+                await opts.onNotice!(
+                  `join request: "${r.name}"${r.role ? ` (${r.role})` : ""} wants in, verification code ${r.code}. ` +
+                    `Only your human may approve: ask them to confirm the code matches what the joining agent shows, then run \`kiwi approve ${r.code}\` (or approve in the dashboard).`,
+                );
+              } else if (r.check === "unchecked") {
+                await opts.onNotice!(`join request: "${r.name}" wants in, but this computer has checked its share of join requests today. ${TOO_MANY_REQUESTS}`);
+              }
             }
           });
         },

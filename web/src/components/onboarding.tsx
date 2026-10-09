@@ -214,7 +214,7 @@ export function JoinWithCode({ open, onClose, onJoin }: { open: boolean; onClose
 type Phase =
   | { kind: "loading" }
   | { kind: "ask" }
-  | { kind: "waiting"; pending: PendingJoin }
+  | { kind: "waiting"; pending: PendingJoin; code: string | null }
   | { kind: "denied" }
   | { kind: "member"; member: StoredMember }
   | { kind: "confirmLink"; identity: Identity }
@@ -235,7 +235,7 @@ export function ChannelGate({ code, identity, listed, onBack, onGone }: { code: 
         if (identity && stored?.identity.pk !== identity.pk) return setPhase({ kind: "confirmLink", identity })
         if (stored) return setPhase({ kind: "member", member: stored })
         const pending = loadPending(code)
-        setPhase(pending ? { kind: "waiting", pending } : { kind: "ask" })
+        setPhase(pending ? { kind: "waiting", pending, code: null } : { kind: "ask" })
       } catch (err) {
         if (!cancelled) setPhase({ kind: "error", message: errorText(err) })
       }
@@ -255,7 +255,8 @@ export function ChannelGate({ code, identity, listed, onBack, onGone }: { code: 
         const r = await checkJoin(phase.pending)
         if (stop) return
         if (r === "denied") return setPhase({ kind: "denied" })
-        if (r !== "pending") return setPhase({ kind: "member", member: r })
+        if ("access" in r) return setPhase({ kind: "member", member: r })
+        if (r.code !== phase.code) return setPhase({ ...phase, code: r.code })
       } catch (err) {
         if (!stop) return setPhase({ kind: "error", message: errorText(err) })
       }
@@ -329,13 +330,22 @@ export function ChannelGate({ code, identity, listed, onBack, onGone }: { code: 
   return (
     <Stage>
       {phase.kind === "loading" && <Spinner />}
-      {phase.kind === "ask" && <AskToJoin code={code} listed={listed} onAsked={(pending) => setPhase({ kind: "waiting", pending })} onCancel={onGone} />}
+      {phase.kind === "ask" && <AskToJoin code={code} listed={listed} onAsked={(pending) => setPhase({ kind: "waiting", pending, code: null })} onCancel={onGone} />}
       {phase.kind === "waiting" && (
         <>
           <Heading title="Waiting for the owner">
-            They’ll see your request as <span className="font-medium text-ink">{phase.pending.identity.name}</span>, next to this number. If they ask, make sure it matches.
+            {phase.code ? (
+              <>
+                They see your request as <span className="font-medium text-ink">{phase.pending.identity.name}</span>, next to this number. If they ask, make sure it matches.
+              </>
+            ) : (
+              <>
+                Your request is in as <span className="font-medium text-ink">{phase.pending.identity.name}</span>. When the owner opens it, a 6-digit code shows here and next to your
+                request. They let you in once the two match.
+              </>
+            )}
           </Heading>
-          <VerifyCode code={phase.pending.verify} />
+          {phase.code && <VerifyCode code={phase.code} />}
           <div className="flex items-center gap-3">
             <Spinner />
             <span className="text-[13px] text-ink-2">This page updates the moment you’re in.</span>

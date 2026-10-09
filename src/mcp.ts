@@ -12,10 +12,11 @@ import { z } from "zod";
 import { AgentSession, Rejected } from "./agent.ts";
 import { loadImages } from "./attach.ts";
 import { loadSummary, memberLoad, showsLoad } from "./load.ts";
-import { forgetMember, home, identitiesIn, loadConfig, wipeChannel } from "./config.ts";
+import { forgetMember, home, identitiesIn, loadConfig, signingBudget, wipeChannel } from "./config.ts";
 import { ChannelGone } from "./client.ts";
 import { formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "./format.ts";
 import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
+import { TOO_MANY_REQUESTS } from "./sas.ts";
 import { parseTaskId, taskId } from "./state.ts";
 import { VERSION } from "./version.ts";
 
@@ -101,8 +102,12 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
       "join_requests",
       { description: "Pending join requests with their verification codes. Show them to your human; never approve on your own." },
       guard(async () => {
-        const reqs = await owner.requests();
-        return reqs.length ? reqs.map((r) => `${r.code}  ${r.name}${r.role ? ` (${r.role})` : ""}  key ${r.pk.slice(0, 8)}`).join("\n") : "no pending join requests";
+        const reqs = await owner.requests({ budget: signingBudget });
+        if (!reqs.length) return "no pending join requests";
+        const lines = reqs.map((r) => `${r.code ?? r.check}  ${r.name}${r.role ? ` (${r.role})` : ""}  key ${r.pk.slice(0, 8)}`);
+        if (reqs.some((r) => r.check === "waiting")) lines.push("waiting: the requester shows its code in a moment; ask again");
+        if (reqs.some((r) => r.check === "unchecked")) lines.push(`unchecked: ${TOO_MANY_REQUESTS}`);
+        return lines.join("\n");
       }),
     );
     server.registerTool(
@@ -114,7 +119,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
       },
       guard(async ({ code, approve, name }) => {
         const digits = code.replace(/\D/g, "");
-        const r = (await owner.requests()).find((x) => x.code.replace("-", "") === digits);
+        const r = (await owner.requests({ budget: signingBudget })).find((x) => x.code?.replace("-", "") === digits);
         if (!r) throw new Rejected(`no pending request with code ${code}`);
         if (!approve) {
           await owner.deny(r.id);

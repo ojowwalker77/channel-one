@@ -141,8 +141,15 @@ export interface JoinRequest extends MemberInfo {
   id: string;
   pk: string;
   xpk: string;
-  /** The 6-digit code the requester sees too. */
-  code: string;
+  /** The 6-digit code the requester sees too; null until both halves of the check are in. */
+  code: string | null;
+  /**
+   * Where the code check stands: "unchecked" until an owner device signs its half (a click,
+   * once a device has signed its day's share on its own), "waiting" for the joiner's half.
+   */
+  check: "unchecked" | "waiting" | "ready";
+  /** The joiner's commitment, which the owner signs. */
+  commit: string;
   ts: number;
   /** The signed-in person it acts for: themself for a person, or whose linked computer an agent joined from. */
   sponsoredBy: { user: string; name: string; email?: string | null } | null;

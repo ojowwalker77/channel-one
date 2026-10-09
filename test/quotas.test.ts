@@ -8,6 +8,7 @@ import { Channel } from "../src/client.ts";
 import { generateIdentity } from "../src/identity.ts";
 import { startRelay } from "../src/relay/bun.ts";
 import { OPEN_POLICY, policyFrom, SAFETY_BYTES_PER_CHANNEL, type RelayPolicy } from "../src/relay/policy.ts";
+import { checked } from "./check.ts";
 
 setDefaultTimeout(30_000);
 const dirs: string[] = [];
@@ -34,7 +35,7 @@ async function channelOn(relay: string, members = 1) {
   for (let i = 0; i < members; i++) {
     const a = await generateIdentity(`a${i}`);
     const req = await Channel.requestJoin(relay, code, a, { name: `a${i}` });
-    await ownerCh.approve((await ownerCh.requests()).find((r) => r.id === req.requestId)!);
+    await ownerCh.approve((await checked(ownerCh, relay, code, [{ id: a, requestId: req.requestId }])).find((r) => r.id === req.requestId)!);
     const st = await Channel.joinStatus(relay, code, a, req.requestId);
     if (st.status !== "approved") throw new Error("not approved");
     agents.push(new Channel(st.access, relay, a));
@@ -59,8 +60,8 @@ describe("members per channel", () => {
     const { relay } = relayWith({ membersPerChannel: 2 });
     const { code, ownerCh } = await channelOn(relay, 1);
     const extra = await generateIdentity("extra");
-    await Channel.requestJoin(relay, code, extra, { name: "extra" });
-    const [r] = await ownerCh.requests();
+    const ask = await Channel.requestJoin(relay, code, extra, { name: "extra" });
+    const [r] = await checked(ownerCh, relay, code, [{ id: extra, requestId: ask.requestId }]);
     await expect(ownerCh.approve(r!)).rejects.toMatchObject({ status: 429, message: expect.stringContaining("2 members") });
     const a0 = (await ownerCh.members()).find((m) => m.name === "a0")!;
     await ownerCh.remove(a0.pk);

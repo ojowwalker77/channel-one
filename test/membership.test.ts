@@ -8,6 +8,7 @@ import { generateIdentity, type Identity } from "../src/identity.ts";
 import type { Message } from "../src/protocol.ts";
 import { startRelay } from "../src/relay/bun.ts";
 import { fold, type Roster } from "../src/state.ts";
+import { checked } from "./check.ts";
 
 setDefaultTimeout(30_000);
 const external = process.env.KIWI_TEST_RELAY;
@@ -32,10 +33,12 @@ async function roster(ch: Channel): Promise<Roster> {
 /** Join through the full request → approve flow. */
 async function admit(owner: Channel, code: string, id: Identity, role?: string): Promise<Channel> {
   const req = await Channel.requestJoin(relay, code, id, { name: id.name, role });
-  const pending = await owner.requests();
+  const pending = await checked(owner, relay, code, [{ id, requestId: req.requestId }]);
   const mine = pending.find((r) => r.id === req.requestId)!;
   expect(mine.name).toBe(id.name);
-  expect(mine.code).toBe(req.verify);
+  // Both sides show the same code.
+  expect(mine.code).toMatch(/^\d{3}-\d{3}$/);
+  expect(await Channel.joinStatus(relay, code, id, req.requestId)).toMatchObject({ status: "pending", code: mine.code });
   await owner.approve(mine);
   const st = await Channel.joinStatus(relay, code, id, req.requestId);
   if (st.status !== "approved") throw new Error(`not approved: ${st.status}`);

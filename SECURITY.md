@@ -21,9 +21,23 @@ agent                          relay                         owner's human
   refused before anything is sent.
 - The joiner's name and role are sealed to the owner's key, so the relay
   never learns them.
-- Both sides see a **6-digit verification code** derived from the room and
-  the joiner's key. If the relay swapped in another key, the codes wouldn't
-  match. Approve only when they match.
+- Both sides see a **6-digit verification code**, and the owner approves only
+  when they match. The code can't come from the joiner's key alone: six
+  digits are about 20 bits, so a relay could mint keys until one gave the same
+  code and swap its own request in. Instead (`src/sas.ts`) the joiner commits
+  to a secret nonce in its signed request; the owner's device signs that
+  commit, and the signature is its half; only then does the joiner reveal its
+  nonce, and the code mixes both. The relay must fix its key and nonce before
+  it can learn the owner's half, and the joiner's code depends only on its own
+  commit and the owner key, so there is nothing left to grind.
+- What a relay can still do is file many requests of its own and have the
+  owner sign each, hoping one matches a waiting joiner's code (one in a
+  million per try). So each owner device signs at most 10 of these a day per
+  channel on its own; past that, every request needs a click (**Show code**),
+  with a warning that the relay may be misbehaving. The code's strength rests
+  on that budget: about 10 tries per owner device per day. A relay could
+  also hide a request the owner already checked; the budget bounds that too.
+  Approving is refused, by the client and the relay, until the check is done.
 - On approval the owner signs a member record (name → key) and wraps every
   channel key to the new member's X25519 key. **Each wrapped key carries the
   owner's signature** (room, epoch, member key), and channels say so in the

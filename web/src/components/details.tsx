@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react"
 
 import { loadLine, memberLoad, showsLoad, type Load } from "@mc/load.ts"
 import type { JoinRequest, Member as RosterMember } from "@mc/membership.ts"
+import { TOO_MANY_REQUESTS } from "@mc/sas.ts"
 import { taskId } from "@mc/state.ts"
 import type { ChannelState } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
@@ -30,6 +31,8 @@ interface Props {
   onFilter: (f: Filter) => void
   onApprove: (r: JoinRequest) => Promise<void>
   onDeny: (r: JoinRequest) => Promise<void>
+  /** Sign this browser's half of a request's code check, at the person's click. */
+  onCheck: (r: JoinRequest) => Promise<void>
   onRemove: (m: RosterMember) => Promise<void>
   onCloseChannel: () => Promise<void>
   onLeaveChannel: () => Promise<void>
@@ -126,6 +129,7 @@ export function Details(p: Props) {
 
         {p.isOwner && requests.length > 0 && (
           <Part title={requests.length === 1 ? "Wants to join" : `${requests.length} want to join`}>
+            {requests.some((r) => r.check === "unchecked") && <p className="mb-4 rounded-[10px] bg-wash p-3 text-[12.5px] leading-normal text-ink-2">{TOO_MANY_REQUESTS}</p>}
             <div className="grid gap-4">
               {requests.map((r) => (
                 <div key={r.id}>
@@ -147,9 +151,17 @@ export function Details(p: Props) {
                     <Button size="sm" variant="secondary" onClick={() => run(() => p.onDeny(r), `Declined ${r.name}`)}>
                       Decline
                     </Button>
-                    <Button size="sm" onClick={() => setConfirm({ kind: "approve", req: r })}>
-                      Review and approve
-                    </Button>
+                    {r.check === "ready" ? (
+                      <Button size="sm" onClick={() => setConfirm({ kind: "approve", req: r })}>
+                        Review and approve
+                      </Button>
+                    ) : r.check === "unchecked" ? (
+                      <Button size="sm" disabled={busy} onClick={() => run(() => p.onCheck(r), `Asked ${r.name} for its code`)}>
+                        Show code
+                      </Button>
+                    ) : (
+                      <span className="self-center text-[12px] text-ink-3">Waiting for {r.kind === "human" ? "their" : "its"} code…</span>
+                    )}
                   </div>
                 </div>
               ))}

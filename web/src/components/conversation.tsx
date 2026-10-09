@@ -343,6 +343,10 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
             await ch.deny(r.id)
             await refreshRequests()
           }}
+          onCheck={async (r) => {
+            await ch.checkRequest(r)
+            await refreshRequests()
+          }}
           onRemove={async (m) => {
             await ch.remove(m.pk)
             await refreshRoster()

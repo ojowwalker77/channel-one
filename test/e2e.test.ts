@@ -100,14 +100,24 @@ const home = (tag: string) => {
 };
 
 /**
+ * The code check, as people run it: the joiner asks; the owner's machine opens
+ * the request (signing its half); the joiner then shows the code.
+ */
+async function codeShown(owner: string, l: { got: string[]; until: (f: (x: string[]) => boolean) => Promise<void> }): Promise<string> {
+  await l.until((x) => x.some((y) => y.includes("waiting for the owner to open your request")));
+  await ok(owner, "requests");
+  await l.until((x) => x.some((y) => /verification code \d{3}-\d{3}/.test(y)));
+  return /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!;
+}
+
+/**
  * Join through the real flow: the joiner asks and waits, the owner's machine
  * sees the request, matches the verification code and approves.
  */
 async function joinVia(owner: string, joiner: string, code: string, alias: string, name: string, role?: string): Promise<string> {
   const p = mc(joiner, "join", code, alias, "--as", name, ...(role ? ["--role", role] : []));
   const l = lines(p);
-  await l.until((x) => x.some((y) => /verification code \d{3}-\d{3}/.test(y)));
-  const v = /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!;
+  const v = await codeShown(owner, l);
   expect(await ok(owner, "requests")).toContain(`${v}  ${name}`);
   await ok(owner, "approve", v, "--yes");
   expect(await p.exited).toBe(0);
@@ -162,8 +172,7 @@ describe("agents coordinating through the CLI", () => {
     // Someone else with the leaked code asks to be "win": approval refuses the duplicate name; the owner denies.
     const evil = mc(home("evil"), "join", code, "proj", "--as", "win", "--timeout", "20s");
     const el = lines(evil);
-    await el.until((x) => x.some((y) => /verification code/.test(y)));
-    const v = /verification code (\d{3}-\d{3})/.exec(el.got.join("\n"))![1]!;
+    const v = await codeShown(lead, el);
     const dup = await run(lead, "approve", v, "--yes");
     expect(dup.code).toBe(1);
     expect(dup.err).toContain('"win" is already a member');
@@ -381,8 +390,7 @@ describe("several agents on one machine", () => {
     const joinFrom = async (dir: string, name: string) => {
       const p = inDir(dir, "join", code, "--as", name);
       const l = lines(p);
-      await l.until((x) => x.some((y) => /verification code/.test(y)));
-      await ok(owner, "approve", /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!, "--yes");
+      await ok(owner, "approve", await codeShown(owner, l), "--yes");
       expect(await p.exited).toBe(0);
     };
     await joinFrom(dirA, "alpha");
@@ -420,8 +428,7 @@ describe("several agents on one machine", () => {
     const joinFrom = async (dir: string, owner: string, code: string, name: string) => {
       const p = inDir(dir, "join", code, "--as", name);
       const l = lines(p);
-      await l.until((x) => x.some((y) => /verification code/.test(y)));
-      await ok(owner, "approve", /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!, "--yes");
+      await ok(owner, "approve", await codeShown(owner, l), "--yes");
       expect(await p.exited).toBe(0);
     };
     // Joined concurrently, like separate sessions: neither may lose the other's config.
@@ -454,8 +461,7 @@ describe("several agents on one machine", () => {
     const code = /join code: (\S+)/.exec(await ok(owner, "create", "launch-plan", "--as", "boss"))![1]!;
     const p = mc(joiner, "join", code, "--as", "w");
     const l = lines(p);
-    await l.until((x) => x.some((y) => /verification code/.test(y)));
-    await ok(owner, "approve", /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!, "--yes");
+    await ok(owner, "approve", await codeShown(owner, l), "--yes");
     expect(await p.exited).toBe(0);
     expect(await new Response(p.stderr).text()).toContain('joined "launch-plan" as w');
     expect(await ok(joiner, "channels")).toContain("launch-plan");
@@ -467,8 +473,7 @@ describe("several agents on one machine", () => {
     const code = /join code: (\S+)/.exec(await ok(owner, "create", "hb", "--as", "boss"))![1]!;
     const p = Bun.spawn([...MC, "join", code, "--as", "solo"], { cwd: h, env: { ...process.env, HOME: h, KIWI_HOME: h, KIWI_RELAY: relay, CLAUDE_CONFIG_DIR: claudeDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const l = lines(p);
-    await l.until((x) => x.some((y) => /verification code/.test(y)));
-    await ok(owner, "approve", /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!, "--yes");
+    await ok(owner, "approve", await codeShown(owner, l), "--yes");
     expect(await p.exited).toBe(0);
     expect(await new Response(p.stderr).text()).toContain("too broad");
     expect(JSON.parse(readFileSync(join(h, "config.json"), "utf8")).bindings ?? {}).toEqual({});

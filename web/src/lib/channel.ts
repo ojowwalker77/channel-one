@@ -5,6 +5,7 @@ import { decodeJoinCode, fromB64url, newRoomId, ownerFingerprint, type ChannelAc
 import { generateIdentity, withExchangeKey, type Identity } from "@mc/identity.ts"
 import { handleFor, type JoinRequest, type Member } from "@mc/membership.ts"
 import type { Message, Presence } from "@mc/protocol.ts"
+import type { SigningBudget } from "@mc/sas.ts"
 import { fold, type ChannelState, type Roster } from "@mc/state.ts"
 
 /** How much history to load when the page opens. */
@@ -70,7 +71,6 @@ export interface PendingJoin {
   code: string
   identity: Identity
   requestId: string
-  verify: string
 }
 
 const MEMBER_KEY = (code: string) => `mc.member.${code}`
@@ -417,20 +417,35 @@ export async function askToJoin(code: string, name: string, role?: string, token
   const prior = loadPending(code)
   const identity = prior && prior.identity.name === name ? prior.identity : await generateIdentity(name)
   const r = await Channel.requestJoin(location.origin, code, identity, { name, ...(role ? { role } : {}) }, token)
-  const p: PendingJoin = { code, identity, requestId: r.requestId, verify: r.verify }
+  const p: PendingJoin = { code, identity, requestId: r.requestId }
   savePending(p)
   return p
 }
 
-export async function checkJoin(p: PendingJoin): Promise<"pending" | "denied" | StoredMember> {
+/** Where a request stands: still pending (with its code once the owner has opened it), declined, or in. */
+export async function checkJoin(p: PendingJoin): Promise<{ code: string | null } | "denied" | StoredMember> {
   const st = await Channel.joinStatus(location.origin, p.code, p.identity, p.requestId)
-  if (st.status !== "approved") return st.status
+  if (st.status === "denied") return "denied"
+  if (st.status === "pending") return { code: st.code }
   // The owner may have admitted this person under a handle from their account: speak under that one.
   const record = (await new Channel(st.access, location.origin, p.identity).members().catch(() => [])).find((x) => x.pk === p.identity.pk)
   const identity = record && record.name !== p.identity.name ? { ...p.identity, name: record.name } : p.identity
   const m: StoredMember = { code: p.code, identity, access: st.access, at: Date.now() }
   saveMember(m)
   return m
+}
+
+/** The join checks this browser signed as a channel's owner (see sas.ts). */
+const browserBudget: SigningBudget = {
+  load: (roomId) => {
+    const t = read<unknown>(`mc.checks.${roomId}`)
+    return Array.isArray(t) ? t.filter((x): x is number => typeof x === "number") : []
+  },
+  save: (roomId, times) => {
+    try {
+      localStorage.setItem(`mc.checks.${roomId}`, JSON.stringify(times))
+    } catch {}
+  },
 }
 
 // ---------- the live channel ----------
@@ -514,7 +529,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
   const refreshRequests = useCallback(async () => {
     if (!ch.isOwner) return
     try {
-      setRequests(await ch.requests())
+      setRequests(await ch.requests({ budget: browserBudget }))
     } catch (err) {
       onGone(err)
     }

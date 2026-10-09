@@ -11,6 +11,7 @@ import { offerLink, offerToDevice, offerWaiting, parseOfferHash, takeOffer, with
 import { startRelay } from "../src/relay/bun.ts";
 import { onDeviceHttp, TRANSFER_TTL_MS, type DeviceStore, type DeviceTransfer } from "../src/relay/devices.ts";
 import { workosHumanAuth } from "../src/relay/human.ts";
+import { checked } from "./check.ts";
 
 setDefaultTimeout(30_000);
 
@@ -105,8 +106,8 @@ describe("a relay that requires sign-in", () => {
 
     // The owning human can.
     const asAlice = new Channel(access, relay, owner, undefined, () => token("user_alice"));
-    const pending = await asAlice.requests();
-    expect(pending.map((r) => r.code)).toEqual([req.verify]);
+    const pending = await checked(asAlice, relay, code, [{ id: agent, requestId: req.requestId }]);
+    expect(pending.map((r) => r.code)).toEqual([((await Channel.joinStatus(relay, code, agent, req.requestId)) as { code: string }).code]);
     await asAlice.approve(pending[0]!);
     expect((await Channel.joinStatus(relay, code, agent, req.requestId)).status).toBe("approved");
 
@@ -143,8 +144,8 @@ describe("agents join only from a computer their person linked", () => {
     expect(steal.status).toBe(409);
 
     // His agent's request arrives as his; the owner approves it.
-    await agentAsks(code, agent, "helper", bobs);
-    const [r] = await ownerCh.requests();
+    const helperReq = await agentAsks(code, agent, "helper", bobs);
+    const [r] = await checked(ownerCh, relay, code, [{ id: agent, requestId: helperReq.requestId }]);
     expect(r).toMatchObject({ kind: "agent", sponsoredBy: { user: "user_bob", name: "Bob Builder" } });
     await ownerCh.approve(r!);
     const roster = await ownerCh.members();
@@ -174,7 +175,11 @@ describe("each person's channel list", () => {
     // Bob joins himself, and his agent joins from his linked computer; the owner admits both.
     const bobReq = await Channel.requestJoin(relay, code, bobKey, { name: "bob" }, await bob());
     const req = await agentAsks(code, agent, "scout", await linkedComputer("user_bob"));
-    for (const r of await ownerCh.requests()) await ownerCh.approve(r);
+    for (const r of await checked(ownerCh, relay, code, [
+      { id: bobKey, requestId: bobReq.requestId },
+      { id: agent, requestId: req.requestId },
+    ]))
+      await ownerCh.approve(r);
     expect(bobReq.requestId).toBeTruthy();
     expect((await myChannels(relay, await bob())).find((c) => c.room === room)).toMatchObject({ owner: false, member: true, agents: 1 });
 
@@ -205,14 +210,14 @@ describe("names", () => {
     const { code, access } = await Channel.create(relay, owner, { name: "alice", kind: "human" }, [], undefined, await alice());
     const ownerCh = new Channel(access, relay, owner, undefined, alice);
     // A person who types someone else's name still gets the handle of their own account.
-    await Channel.requestJoin(relay, code, bob1, { name: "alice" }, await token("user_bob"));
-    await ownerCh.approve((await ownerCh.requests())[0]!);
+    const ask1 = await Channel.requestJoin(relay, code, bob1, { name: "alice" }, await token("user_bob"));
+    await ownerCh.approve((await checked(ownerCh, relay, code, [{ id: bob1, requestId: ask1.requestId }]))[0]!);
     // The same account again (another browser) gets a distinct handle.
-    await Channel.requestJoin(relay, code, bob2, { name: "whatever" }, await token("user_bob"));
-    await ownerCh.approve((await ownerCh.requests())[0]!);
+    const ask2 = await Channel.requestJoin(relay, code, bob2, { name: "whatever" }, await token("user_bob"));
+    await ownerCh.approve((await checked(ownerCh, relay, code, [{ id: bob2, requestId: ask2.requestId }]))[0]!);
     // An agent can't take a name someone has.
-    await agentAsks(code, agent, "alice", await linkedComputer("user_bob"));
-    await expect(ownerCh.approve((await ownerCh.requests())[0]!)).rejects.toThrow(/already someone's name/);
+    const ask3 = await agentAsks(code, agent, "alice", await linkedComputer("user_bob"));
+    await expect(ownerCh.approve((await checked(ownerCh, relay, code, [{ id: agent, requestId: ask3.requestId }]))[0]!)).rejects.toThrow(/already someone's name/);
     expect((await ownerCh.members()).filter((m) => m.active).map((m) => m.name).sort()).toEqual(["alice", "bob-builder", "bob-builder-2"]);
     await ownerCh.close();
   });
@@ -315,8 +320,8 @@ describe("usage", () => {
       const m = await newMachine(at);
       await registerMachine(m);
       await fetch(`${at}/v1/machines/${m.identity.pk}/confirm`, { method: "POST", headers: { "x-human-token": await alice() }, body: "{}" });
-      await Channel.requestJoin(at, code, agent, { name: "helper" }, null, await vouchFor(m, access.roomId, agent.pk));
-      await ownerCh.approve((await ownerCh.requests())[0]!);
+      const ask = await Channel.requestJoin(at, code, agent, { name: "helper" }, null, await vouchFor(m, access.roomId, agent.pk));
+      await ownerCh.approve((await checked(ownerCh, at, code, [{ id: agent, requestId: ask.requestId }]))[0]!);
       await ownerCh.send("one");
       await ownerCh.send("two");
 

@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { AgentSession, Rejected } from "../agent.ts";
 import { loadImages } from "../attach.ts";
 import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
+import { TOO_MANY_REQUESTS } from "../sas.ts";
 import { DEFAULT_RELAY, forgetIdentity, home, forgetMember, identitiesIn, loadConfig, loadIdentity, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
 import { describeMember, handleFor, type JoinRequest } from "../membership.ts";
@@ -235,10 +236,10 @@ async function findRequest(s: AgentSession, needle: string): Promise<JoinRequest
   // anyone holding the join code can ask under the same one.
   const digits = needle.replace(/\D/g, "");
   if (digits.length !== 6) die(`use the 6-digit verification code (see: kiwi requests), not a name`);
-  const matches = reqs.filter((x) => x.code.replace("-", "") === digits);
+  const matches = reqs.filter((x) => x.code?.replace("-", "") === digits);
   if (matches.length > 1) die(`several requests share code ${needle}; deny them all and ask the requester to try again`);
   const r = matches[0];
-  if (!r) die(reqs.length ? `no pending request has code ${needle} (see: kiwi requests)` : "no pending join requests");
+  if (!r) die(reqs.length ? `no pending request shows code ${needle} yet (see: kiwi requests)` : "no pending join requests");
   return r;
 }
 
@@ -349,12 +350,17 @@ const commands: Record<string, () => Promise<void>> = {
       id = await loadIdentity(name, roomId);
       return Channel.requestJoin(relay, code, id, info, null, await vouch());
     });
-    out(`asked to join as ${name}, verification code ${req.verify}`);
-    if (linked) out(`Vouched for by this computer${linked.linked?.name ? `, linked to ${linked.linked.name}` : ""}. The channel owner checks the code and approves.`);
-    out(`waiting for approval…`);
+    out(`asked to join as ${name}.`);
+    if (linked) out(`Vouched for by this computer${linked.linked?.name ? `, linked to ${linked.linked.name}` : ""}.`);
+    out(`waiting for the owner to open your request…`);
     const deadline = Date.now() + parseDuration(opt.timeout ?? "30m") * 1000;
+    let shown: string | null = null;
     for (;;) {
       const st = await Channel.joinStatus(relay, code, id, req.requestId);
+      if (st.status === "pending" && st.code && st.code !== shown) {
+        shown = st.code;
+        out(`verification code ${st.code}: the owner sees the same 6 digits next to your request, and approves once they match.`);
+      }
       if (st.status === "denied") {
         forgetIdentity(name, decodeJoinCode(code).roomId);
         die("the owner denied this request");
@@ -382,7 +388,14 @@ const commands: Record<string, () => Promise<void>> = {
         out(agentPrompt(alias, name));
         return;
       }
-      if (Date.now() > deadline) die(`still waiting for approval (code ${req.verify}); run the same command again to keep waiting (same request, same link)`, 3);
+      if (Date.now() > deadline) {
+        die(
+          shown
+            ? `still waiting for approval (code ${shown}); run the same command again to keep waiting (same request, same code)`
+            : "the owner hasn't opened your request yet; run the same command again to keep waiting (same request)",
+          3,
+        );
+      }
       await Bun.sleep(1500);
     }
   },
@@ -487,8 +500,11 @@ const commands: Record<string, () => Promise<void>> = {
     if (!reqs.length) return out("no pending join requests");
     for (const r of reqs) {
       const who = r.kind === "human" ? `person, signed in as ${r.sponsoredBy?.name ?? "?"}` : r.sponsoredBy ? `agent of ${r.sponsoredBy.name}` : "agent";
-      out(`${r.code}  ${r.name}${r.role ? ` (${r.role})` : ""} · ${who} · key ${fingerprint(r.pk)} · ${ago(r.ts)}`);
+      const code = r.code ?? (r.check === "waiting" ? "waiting" : "unchecked");
+      out(`${code.padEnd(9)}${r.name}${r.role ? ` (${r.role})` : ""} · ${who} · key ${fingerprint(r.pk)} · ${ago(r.ts)}`);
     }
+    if (reqs.some((r) => r.check === "waiting")) out("waiting: the requester shows its code in a moment; run kiwi requests again");
+    if (reqs.some((r) => r.check === "unchecked")) out(`unchecked: ${TOO_MANY_REQUESTS}`);
   },
 
   async approve() {

@@ -13,10 +13,10 @@ import {
   ownerFingerprint,
   seal,
   sealTo,
-  verificationCode,
   type ChannelAccess,
 } from "./crypto.ts";
 import { sign, signText, verify, verifyText, type Identity } from "./identity.ts";
+import { commitTo, joinCheckCode, joinNonce, ownerNonceStatement, spendAuto, type SigningBudget } from "./sas.ts";
 import { handleFor, inlineText, makeRecord, NAME_RE, nameKey, openRecord, RESERVED_NAMES, sealRecord, type JoinRequest, type Member, type MemberInfo } from "./membership.ts";
 import {
   CLOSE_CLOSED,
@@ -238,7 +238,8 @@ export class Channel {
 
   /**
    * Ask to join. Name and role are sealed to the owner, so the relay can't read
-   * them. Returns the request id and the verification code both sides see.
+   * them. The request commits to this key's half of the code check (sas.ts);
+   * the code itself appears in joinStatus once the owner has signed its half.
    * Asking again with the same key resumes the same request.
    */
   static async requestJoin(
@@ -250,13 +251,14 @@ export class Channel {
     human?: string | null,
     /** An agent on a computer its person linked: the computer's vouch for this key. */
     machine?: { pk: string; sig: string } | null,
-  ): Promise<{ roomId: string; requestId: string; verify: string }> {
+  ): Promise<{ roomId: string; requestId: string }> {
     const { roomId, info: room } = await pinnedInfo(relay, code);
     if (!id.xpk) throw new Error("identity has no exchange key");
     const box = await sealTo(room.ownerXpk, JSON.stringify(info), requestInfo(roomId));
-    const body = await sign(id, { room: roomId, xpk: id.xpk, box, ts: Date.now() });
+    const commit = await commitTo(roomId, id.pk, await joinNonce(id, roomId));
+    const body = await sign(id, { room: roomId, xpk: id.xpk, box, ts: Date.now(), commit });
     const { id: requestId } = await call<{ id: string }>(relay, roomId, "/requests", { method: "POST", human, body: JSON.stringify(machine ? { ...body, machine } : body) });
-    return { roomId, requestId, verify: await verificationCode(roomId, id.pk) };
+    return { roomId, requestId };
   }
 
   /** Check a join request. Once approved, returns this member's access. */
@@ -265,11 +267,26 @@ export class Channel {
     code: string,
     id: Identity,
     requestId: string,
-  ): Promise<{ status: "pending" | "denied"; sponsored: boolean } | { status: "approved"; sponsored: boolean; access: ChannelAccess }> {
+  ): Promise<{ status: "pending"; sponsored: boolean; code: string | null } | { status: "denied"; sponsored: boolean } | { status: "approved"; sponsored: boolean; access: ChannelAccess }> {
     const { roomId, info, signedKeys } = await pinnedInfo(relay, code);
-    const r = await call<{ status: string; sponsored?: boolean; epoch?: number; keys?: Record<string, string> }>(relay, roomId, `/requests/${requestId}`, { identity: id });
+    const r = await call<{ status: string; sponsored?: boolean; ownerNonce?: string | null; revealed?: boolean; epoch?: number; keys?: Record<string, string> }>(
+      relay,
+      roomId,
+      `/requests/${requestId}`,
+      { identity: id },
+    );
     const sponsored = !!r.sponsored;
-    if (r.status !== "approved") return { status: r.status === "denied" ? "denied" : "pending", sponsored };
+    if (r.status === "denied") return { status: "denied", sponsored };
+    if (r.status !== "approved") {
+      // The code exists once the owner has signed its half; then this side reveals its own.
+      if (!r.ownerNonce) return { status: "pending", sponsored, code: null };
+      const nonce = await joinNonce(id, roomId);
+      if (!(await verifyText(info.ownerPk, r.ownerNonce, ownerNonceStatement(roomId, id.pk, await commitTo(roomId, id.pk, nonce))))) {
+        throw new Error("the relay passed on an owner signature that doesn't check out: don't let the owner approve this request, and tell them");
+      }
+      if (!r.revealed) await call(relay, roomId, `/requests/${requestId}/reveal`, { method: "POST", identity: id, body: JSON.stringify({ nonce }) });
+      return { status: "pending", sponsored, code: await joinCheckCode(roomId, id.pk, r.ownerNonce, nonce) };
+    }
     const keys = await unwrapKeys(id, roomId, r.keys ?? {}, info.ownerPk, signedKeys);
     return { status: "approved", sponsored, access: { roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: r.epoch ?? 0, keys, signedKeys } };
   }
@@ -334,8 +351,13 @@ export class Channel {
     if (!this.isOwner) throw new Error("only the channel owner can do that");
   }
 
-  /** Pending join requests, opened (only the owner can read their names). */
-  async requests(): Promise<JoinRequest[]> {
+  /**
+   * Pending join requests, opened (only the owner can read their names). With a
+   * budget, this device signs the owner's half of each new request's code check
+   * on its own, up to its day's share (sas.ts); past that, checkRequest() does
+   * it for one request at a person's click.
+   */
+  async requests(opts: { budget?: SigningBudget } = {}): Promise<JoinRequest[]> {
     this.ownerOnly();
     const { requests } = await this.request<{
       requests: {
@@ -344,16 +366,22 @@ export class Channel {
         xpk: string;
         box: string;
         ts: number;
+        commit: string;
+        ownerNonce: string | null;
+        reveal: string | null;
         sig: string;
         kind?: string;
         sponsorUser?: string | null;
         sponsorName?: string | null;
         sponsorEmail?: string | null;
       }[];
-    }>("/requests");
+    }>("/requests", {}, { v: 2 });
     const out: JoinRequest[] = [];
     for (const r of requests) {
-      if (!(await verify({ room: this.roomId, pk: r.pk, xpk: r.xpk, box: r.box, ts: r.ts, sig: r.sig }))) continue;
+      if (!(await verify({ room: this.roomId, pk: r.pk, xpk: r.xpk, box: r.box, ts: r.ts, commit: r.commit, sig: r.sig }))) continue;
+      // A half that doesn't check out means the relay tampered with the request: leave it out.
+      const check = await this.codeCheck(r, opts.budget).catch(() => null);
+      if (!check) continue;
       const raw = await openFrom(this.identity.xsk!, r.box, requestInfo(this.roomId));
       let info: MemberInfo = { name: "?" };
       try {
@@ -370,11 +398,36 @@ export class Channel {
         pk: r.pk,
         xpk: r.xpk,
         ts: r.ts,
-        code: await verificationCode(this.roomId, r.pk),
+        commit: r.commit,
+        ...check,
         sponsoredBy: r.sponsorUser ? { user: r.sponsorUser, name: inlineText(r.sponsorName, 80) || r.sponsorUser, email: r.sponsorEmail ?? null } : null,
       });
     }
     return out;
+  }
+
+  /** Where one request's code check stands, signing the owner's half if the budget allows. */
+  private async codeCheck(r: { id: string; pk: string; commit: string; ownerNonce: string | null; reveal: string | null }, budget?: SigningBudget): Promise<Pick<JoinRequest, "code" | "check">> {
+    const statement = ownerNonceStatement(this.roomId, r.pk, r.commit);
+    let ownerNonce = r.ownerNonce;
+    if (ownerNonce && !(await verifyText(this.access.ownerPk, ownerNonce, statement))) throw new Error("not the owner's signature");
+    if (!ownerNonce && budget && spendAuto(budget, this.roomId)) ownerNonce = await this.signHalf(r.id, statement);
+    if (!ownerNonce) return { code: null, check: "unchecked" };
+    if (!r.reveal) return { code: null, check: "waiting" };
+    if ((await commitTo(this.roomId, r.pk, r.reveal)) !== r.commit) throw new Error("the reveal doesn't match the commit");
+    return { code: await joinCheckCode(this.roomId, r.pk, ownerNonce, r.reveal), check: "ready" };
+  }
+
+  private async signHalf(requestId: string, statement: string): Promise<string> {
+    const nonce = await signText(this.identity, statement);
+    await this.request(`/requests/${requestId}/nonce`, { method: "POST", body: JSON.stringify({ nonce }) });
+    return nonce;
+  }
+
+  /** Sign the owner's half of one request's code check: a person's explicit go, outside the budget. */
+  async checkRequest(req: Pick<JoinRequest, "id" | "pk" | "commit">): Promise<void> {
+    this.ownerOnly();
+    await this.signHalf(req.id, ownerNonceStatement(this.roomId, req.pk, req.commit));
   }
 
   /**
@@ -404,6 +457,7 @@ export class Channel {
   /** Admit a requester: sign its record, and wrap every epoch key to it. */
   async approve(req: JoinRequest, as?: MemberInfo): Promise<Member> {
     this.ownerOnly();
+    if (req.check !== "ready" || !req.code) throw new Error(`${req.name} hasn't shown its code yet: approve once you've both seen the same 6 digits`);
     const kind = req.kind ?? "agent";
     // An agent's person, by the handle they have here if they're in this channel.
     const sponsorHandle =

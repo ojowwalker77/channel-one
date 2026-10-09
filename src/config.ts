@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { ChannelAccess } from "./crypto.ts";
 import { generateIdentity, withExchangeKey, type Identity } from "./identity.ts";
 import type { Message } from "./protocol.ts";
+import type { SigningBudget } from "./sas.ts";
 
 /** Public relay used when neither --relay nor KIWI_RELAY is given. */
 export const DEFAULT_RELAY = "https://channels.kiwiinit.com";
@@ -33,7 +34,6 @@ export interface PendingJoin {
   as: string;
   alias: string;
   requestId: string;
-  verify: string;
 }
 
 export interface Config {
@@ -75,6 +75,21 @@ function oldClientRunning(dir: string): boolean {
     }
   });
 }
+
+/** The join checks this computer signed as a channel's owner, per channel (see sas.ts). */
+export const signingBudget: SigningBudget = {
+  load(roomId) {
+    try {
+      const t = JSON.parse(readFileSync(join(home(), "checks", `${safe(roomId)}.json`), "utf8")) as unknown;
+      return Array.isArray(t) ? t.filter((x): x is number => typeof x === "number") : [];
+    } catch {
+      return [];
+    }
+  },
+  save(roomId, times) {
+    writePrivate(join(home(), "checks", `${safe(roomId)}.json`), JSON.stringify(times));
+  },
+};
 
 export function writePrivate(path: string, data: string): void {
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });

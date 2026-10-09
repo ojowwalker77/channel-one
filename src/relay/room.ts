@@ -20,7 +20,8 @@ import { verifyRequest } from "../auth.ts";
 import { encodeJoinCode, ownerFingerprint } from "../crypto.ts";
 import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
 import { betaMessage, inBeta, OPEN_POLICY, type RelayPolicy } from "./policy.ts";
-import { verify } from "../identity.ts";
+import { verify, verifyText } from "../identity.ts";
+import { commitTo, NONCE_RE, ownerNonceStatement } from "../sas.ts";
 import {
   CLOSE_CLOSED,
   CLOSE_REMOVED,
@@ -130,6 +131,8 @@ function allow(key: string, limit: number): boolean {
 const MAX_PENDING = 20;
 /** Pending requests expire after this long. */
 const REQUEST_TTL_MS = 60 * 60_000;
+/** What clients from before the join check (kiwi 0.4.x) are told. */
+const UPDATE_KIWI = "update kiwi to join or approve here: curl -fsSL https://channels.kiwiinit.com/install | sh (Windows: irm https://channels.kiwiinit.com/install.ps1 | iex)";
 
 const frame = (f: ServerFrame) => JSON.stringify(f);
 
@@ -202,6 +205,10 @@ export class RoomStore {
       ["sponsor_name", "TEXT"],
       ["received", "INTEGER"],
       ["sponsor_req", "TEXT"],
+      // The join check (see sas.ts): the joiner's commit, the owner's signed nonce, the joiner's reveal.
+      ["commit_to", "TEXT"],
+      ["owner_nonce", "TEXT"],
+      ["reveal", "TEXT"],
     ] as const) {
       if (!cols.has(col)) this.sql.run(`ALTER TABLE requests ADD COLUMN ${col} ${def}`);
     }
@@ -463,10 +470,11 @@ export class RoomStore {
   async request(body: RequestBody, human: { user: string; name: string } | null = null, vouchUser: string | null = null): Promise<{ id: string; fresh: boolean }> {
     this.meta();
     this.migrate();
-    const { pk, xpk, box, ts, sig } = body ?? ({} as RequestBody);
-    if (![pk, xpk, box, sig].every((x) => typeof x === "string") || typeof ts !== "number") throw new HttpError(400, "bad request");
+    const { pk, xpk, box, ts, sig, commit } = body ?? ({} as RequestBody);
+    if (typeof commit !== "string") throw new HttpError(426, UPDATE_KIWI);
+    if (![pk, xpk, box, sig].every((x) => typeof x === "string") || typeof ts !== "number" || !NONCE_RE.test(commit)) throw new HttpError(400, "bad request");
     if (box.length > 4096) throw new HttpError(413, "request too large");
-    if (!(await verify({ room: this.roomId, pk, xpk, box, ts, sig }))) throw new HttpError(400, "bad request signature");
+    if (!(await verify({ room: this.roomId, pk, xpk, box, ts, commit, sig }))) throw new HttpError(400, "bad request signature");
     if (Math.abs(Date.now() - ts) > REQUEST_TTL_MS) throw new HttpError(400, "request timestamp out of range");
     if (this.isMember(pk)) throw new HttpError(409, "already a member");
     // Expiry and order use when the relay received a request, not the time the requester claims.
@@ -477,13 +485,23 @@ export class RoomStore {
     if (existing) {
       // Asking again from a computer its person has since linked: the vouch applies now.
       if (vouchUser && !human) this.sql.run("UPDATE requests SET sponsor_user = ? WHERE id = ? AND status = 'pending' AND sponsor_user IS NULL AND kind = 'agent'", vouchUser, existing.id);
+      // A joiner that lost its nonce starts the check over; the owner signs the new commit.
+      this.sql.run(
+        "UPDATE requests SET commit_to = ?, box = ?, sig = ?, ts = ?, owner_nonce = NULL, reveal = NULL WHERE id = ? AND status = 'pending' AND commit_to IS NOT ?",
+        commit,
+        box,
+        sig,
+        ts,
+        existing.id,
+        commit,
+      );
       return { id: existing.id, fresh: false };
     }
     const pending = this.sql.all<{ n: number }>("SELECT COUNT(*) AS n FROM requests WHERE status = 'pending'")[0]!.n;
     if (pending >= MAX_PENDING) throw new HttpError(429, "too many pending join requests");
     const id = crypto.randomUUID();
     this.sql.run(
-      "INSERT INTO requests (id, pk, xpk, box, sig, ts, status, kind, sponsor_user, sponsor_name, received) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ?)",
+      "INSERT INTO requests (id, pk, xpk, box, sig, ts, status, kind, sponsor_user, sponsor_name, received, commit_to) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, ?, ?)",
       id,
       pk,
       xpk,
@@ -495,24 +513,68 @@ export class RoomStore {
       // An agent from a computer its person linked arrives already vouched for by them.
       human?.user ?? vouchUser ?? null,
       Date.now(),
+      commit,
     );
     return { id, fresh: true };
   }
 
-  requestStatus(id: string, pk: string): { status: string; sponsored: boolean; epoch?: number; keys?: Record<string, string> } {
+  requestStatus(id: string, pk: string): { status: string; sponsored: boolean; ownerNonce?: string | null; revealed?: boolean; epoch?: number; keys?: Record<string, string> } {
     this.meta();
     this.migrate();
-    const r = this.sql.all<{ pk: string; status: string; sponsor_user: string | null }>("SELECT pk, status, sponsor_user FROM requests WHERE id = ?", id)[0];
+    const r = this.sql.all<{ pk: string; status: string; sponsor_user: string | null; owner_nonce: string | null; reveal: string | null }>(
+      "SELECT pk, status, sponsor_user, owner_nonce, reveal FROM requests WHERE id = ?",
+      id,
+    )[0];
     if (!r || r.pk !== pk) throw new HttpError(404, "no such request");
+    if (r.status === "pending") return { status: r.status, sponsored: !!r.sponsor_user, ownerNonce: r.owner_nonce, revealed: !!r.reveal };
     if (r.status !== "approved" || !this.isMember(pk)) return { status: r.status, sponsored: !!r.sponsor_user };
     return { status: "approved", sponsored: !!r.sponsor_user, ...this.keysFor(pk) };
   }
 
-  pendingRequests(): (RequestBody & { kind: string; sponsorUser: string | null; sponsorName: string | null })[] {
+  pendingRequests(): (RequestBody & { kind: string; sponsorUser: string | null; sponsorName: string | null; ownerNonce: string | null; reveal: string | null })[] {
     this.migrate();
     return this.sql.all(
-      "SELECT id, pk, xpk, box, sig, ts, kind, sponsor_user AS sponsorUser, sponsor_name AS sponsorName FROM requests WHERE status = 'pending' ORDER BY COALESCE(received, ts)",
+      "SELECT id, pk, xpk, box, sig, ts, commit_to AS \"commit\", owner_nonce AS ownerNonce, reveal, kind, sponsor_user AS sponsorUser, sponsor_name AS sponsorName FROM requests WHERE status = 'pending' AND commit_to IS NOT NULL ORDER BY COALESCE(received, ts)",
     );
+  }
+
+  private pendingCheck(id: string): { pk: string; commit: string; ownerNonce: string | null; reveal: string | null } {
+    this.migrate();
+    const r = this.sql.all<{ pk: string; commit: string | null; ownerNonce: string | null; reveal: string | null }>(
+      "SELECT pk, commit_to AS \"commit\", owner_nonce AS ownerNonce, reveal FROM requests WHERE id = ? AND status = 'pending'",
+      id,
+    )[0];
+    if (!r?.commit) throw new HttpError(404, "no such pending request");
+    return r as { pk: string; commit: string; ownerNonce: string | null; reveal: string | null };
+  }
+
+  /** The owner's half of the join check: its signature over the joiner's commit. Set once. */
+  async setOwnerNonce(id: string, nonce: unknown): Promise<void> {
+    const r = this.pendingCheck(id);
+    if (typeof nonce !== "string" || !(await verifyText(this.meta().ownerPk, nonce, ownerNonceStatement(this.roomId, r.pk, r.commit)))) {
+      throw new HttpError(400, "that isn't the owner's signature over this request");
+    }
+    if (r.ownerNonce && r.ownerNonce !== nonce) throw new HttpError(409, "this request already has the owner's nonce");
+    this.sql.run("UPDATE requests SET owner_nonce = ? WHERE id = ?", nonce, id);
+  }
+
+  /** The joiner's half, revealed once the owner's is in: it has to match the commit. */
+  async reveal(id: string, pk: string, nonce: unknown): Promise<boolean> {
+    const r = this.pendingCheck(id);
+    if (r.pk !== pk) throw new HttpError(404, "no such pending request");
+    if (!r.ownerNonce) throw new HttpError(409, "wait for the owner's half of the check");
+    if (typeof nonce !== "string" || !NONCE_RE.test(nonce) || (await commitTo(this.roomId, pk, nonce)) !== r.commit) throw new HttpError(400, "that nonce doesn't match the request");
+    if (r.reveal === nonce) return false;
+    this.sql.run("UPDATE requests SET reveal = ? WHERE id = ?", nonce, id);
+    return true;
+  }
+
+  /** Nobody is let in before both sides could compare the code. */
+  requireChecked(request: string | undefined, pk: string): void {
+    this.migrate();
+    const r = request ? this.sql.all<{ pk: string; reveal: string | null }>("SELECT pk, reveal FROM requests WHERE id = ? AND status = 'pending'", request)[0] : undefined;
+    if (!r || r.pk !== pk) throw new HttpError(400, "approve a pending request");
+    if (!r.reveal) throw new HttpError(409, "this request hasn't finished its code check yet");
   }
 
   /** On a sign-in relay, agents need their human's vouch before the owner can admit them. */
@@ -596,6 +658,8 @@ export interface RequestBody {
   /** Name/role/about, sealed to the owner's xpk. */
   box: string;
   ts: number;
+  /** The joiner's commitment to its half of the code (see sas.ts). */
+  commit: string;
   sig: string;
 }
 
@@ -643,7 +707,9 @@ export function onClientFrame(store: RoomStore, raw: string, sender = ""): Effec
  *   POST   /create                    owner: create the room
  *   POST   /requests                  anyone with the code: ask to join (self-signed)
  *   GET    /requests/<id>             the requester: status, and wrapped keys once approved
- *   GET    /requests                  owner: pending requests
+ *   POST   /requests/<id>/reveal      the requester: its half of the code check
+ *   GET    /requests?v=2              owner: pending requests
+ *   POST   /requests/<id>/nonce       owner: its half of the code check (a signature)
  *   POST   /requests/<id>/deny        owner
  *   POST   /members                   owner: approve (enroll a key, hand it wrapped keys)
  *   GET    /members                   member: the sealed member records
@@ -738,6 +804,14 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     if (!user || user !== store.ownerUser()) throw new HttpError(403, "only the person who owns this channel can see its usage");
     return ok(store.usage());
   }
+  // The joiner reveals its half of the code, signed by the key that's asking.
+  const revealMatch = /^\/requests\/([0-9a-f-]{36})\/reveal$/.exec(path);
+  if (revealMatch && method === "POST") {
+    const pk = await verifyRequest(requestToken(req), store.roomId, method, path + url.search, body);
+    if (!pk) throw new HttpError(401, "bad or expired signature");
+    const fresh = await store.reveal(revealMatch[1]!, pk, json<{ nonce?: unknown }>().nonce);
+    return ok({ revealed: true }, fresh ? { broadcast: [frame({ t: "request" })] } : undefined);
+  }
   const reqMatch = /^\/requests\/([0-9a-f-]{36})$/.exec(path);
   if (reqMatch && method === "GET") {
     // Signed by the requester's key, which isn't a member yet.
@@ -777,6 +851,8 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     return ok({ left: true }, { disconnect: me, broadcast: [frame({ t: "roster" })], directory: await store.directory() });
   }
   if (path === "/requests" && method === "GET") {
+    // Clients from before the join check would show requests without a code they can trust.
+    if (url.searchParams.get("v") !== "2") throw new HttpError(426, UPDATE_KIWI);
     await owner();
     // Names and emails come from sign-in at read time, for the owner only; the relay doesn't keep them.
     const requests = await Promise.all(
@@ -787,6 +863,12 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     );
     return ok({ requests });
   }
+  const nonceMatch = /^\/requests\/([0-9a-f-]{36})\/nonce$/.exec(path);
+  if (nonceMatch && method === "POST") {
+    await owner();
+    await store.setOwnerNonce(nonceMatch[1]!, json<{ nonce?: unknown }>().nonce);
+    return ok({ set: true });
+  }
   const denyMatch = /^\/requests\/([0-9a-f-]{36})\/deny$/.exec(path);
   if (denyMatch && method === "POST") {
     await owner();
@@ -796,6 +878,7 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
   if (path === "/members" && method === "POST") {
     await owner();
     const b = json<MemberBody & { request?: string }>();
+    store.requireChecked(b.request, b.pk);
     if (human && store.ownerUser()) store.requireSponsor(b.request, b.pk);
     store.approve(b);
     return ok({ approved: true }, { broadcast: [frame({ t: "roster" })], directory: await store.directory() });
