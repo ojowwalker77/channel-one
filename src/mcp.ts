@@ -19,6 +19,7 @@ import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
 import { TOO_MANY_REQUESTS } from "./sas.ts";
 import { parseTaskId, taskId } from "./state.ts";
 import { VERSION } from "./version.ts";
+import { channelFiles, runSh, sessionViews } from "./sh.ts";
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -169,6 +170,27 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
         const shown = messages.slice(-(n ?? 30));
         if (!shown.length) return ok("no messages");
         return withImages(shown.map((m) => formatMessage(m, state.trust.get(m.seq), state)).join("\n"), shown);
+      } catch (err) {
+        return fail(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  server.registerTool(
+    "sh",
+    {
+      description:
+        "Query the channel as read-only files with a sandboxed shell (grep, jq, awk, sed, find…), in one script. " +
+        "/channel has log.jsonl, msgs/, inbox/, tasks/T<n>.md, members/<name>.json, facts/<key>, claims, status, status.json; " +
+        "/channels/<alias>/ has every channel you're in. `cat README` for the layout. " +
+        "Read-only: no disk, no network, no writes; use the other tools to send or change anything.",
+      inputSchema: { script: z.string().describe("a bash script, e.g. jq -r 'select(.kind==\"ask\") | .body' log.jsonl") },
+    },
+    async ({ script }) => {
+      try {
+        const r = await runSh(channelFiles(await sessionViews(s, script)), script);
+        const text = [r.stdout.trimEnd(), r.stderr.trimEnd() && `[stderr]\n${r.stderr.trimEnd()}`, r.exitCode && `[exit ${r.exitCode}]`].filter(Boolean).join("\n");
+        return r.exitCode ? fail(text) : ok(text || "(no output)");
       } catch (err) {
         return fail(err instanceof Error ? err.message : String(err));
       }

@@ -18,6 +18,7 @@ import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
 import { parseTaskId, taskId, type ChannelState } from "../state.ts";
 import { VERSION } from "../version.ts";
+import { channelFiles, runSh, sessionViews } from "../sh.ts";
 import { forgetMachine, linkUrl, loadMachine, machineCode, machineStatus, newMachine, registerMachine, saveMachine, unlinkMachine, vouchFor } from "../machine.ts";
 import { autoInstallHooks, bindDirectory, bindingFor, hooksInstalled, installHooks, mcFor, runHook, uninstallHooks } from "../hooks.ts";
 
@@ -55,6 +56,8 @@ Talk
   kiwi watch --webhook URL [--for-me|--all]      POST every message to URL as JSON (wakes threads, CI, phones)
   kiwi read [--for-me|--all]                     print unread messages without blocking
   kiwi log [-n 30] [--all]                       recent history (doesn't mark read)
+  kiwi sh 'SCRIPT'                               query the channel as read-only files with a sandboxed shell
+                                               (grep, jq, awk…; no disk, network or writes; script from stdin if omitted)
 
 Coordinate
   kiwi task add "title" [--owner NAME] [--after T3,T4] [--detail "…"]
@@ -654,6 +657,15 @@ const commands: Record<string, () => Promise<void>> = {
     const { messages, state } = await s.state();
     const shown = opt.all ? messages : messages.filter((m) => m.kind !== "event" || m.ev?.op !== "hello");
     for (const m of shown.slice(-Number(opt.n ?? 30))) out(render(m, state));
+  },
+
+  async sh() {
+    const s = await session();
+    const script = (await text(1)) || die("usage: kiwi sh 'SCRIPT' (start with: kiwi sh 'cat README')");
+    const r = await runSh(channelFiles(await sessionViews(s, script)), script);
+    process.stdout.write(r.stdout);
+    process.stderr.write(r.stderr);
+    process.exit(r.exitCode);
   },
 
   async read() {

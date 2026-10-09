@@ -114,14 +114,7 @@ export class AgentSession {
    * they concern us, plus members joining. Our own messages never are.
    */
   wants(m: Message, state: ChannelState | null, d: Delivery = {}): boolean {
-    if (m.from === this.me) return false;
-    // Forged messages never reach an agent: they're noise at best, prompt injection at worst.
-    if (state?.trust.get(m.seq) === "forged") return false;
-    if (d.all) return true;
-    const role = state?.members.get(this.me)?.role;
-    const addressed = isDirectedAt(m, this.me) || (!!role && !!m.to?.includes(`role:${role}`));
-    if (m.kind === "event") return addressed || m.ev?.op === "hello";
-    return d.forMe ? addressed || isForAgent(m, this.me) && (m.kind === "ask" || m.kind === "blocking") : true;
+    return wants(this.me, m, state, d);
   }
 
   /** Unread messages for this agent; advances the cursor. */
@@ -426,3 +419,15 @@ export class AgentSession {
 }
 
 export type { Presence };
+
+/** `AgentSession.wants`, for callers that have the state but no session (kiwi sh). */
+export function wants(me: string, m: Message, state: ChannelState | null, d: Delivery = {}): boolean {
+  if (m.from === me) return false;
+  // Forged messages never reach an agent: they're noise at best, prompt injection at worst.
+  if (state?.trust.get(m.seq) === "forged") return false;
+  if (d.all) return true;
+  const role = state?.members.get(me)?.role;
+  const addressed = isDirectedAt(m, me) || (!!role && !!m.to?.includes(`role:${role}`));
+  if (m.kind === "event") return addressed || m.ev?.op === "hello";
+  return d.forMe ? addressed || isForAgent(m, me) && (m.kind === "ask" || m.kind === "blocking") : true;
+}
