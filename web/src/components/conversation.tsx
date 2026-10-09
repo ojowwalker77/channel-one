@@ -12,8 +12,9 @@ import { Composer } from "./composer"
 import { ChannelControls, ChannelMenu, InviteButton, People, RequestsBanner, type Filter } from "./controls"
 import { Icon } from "./icon"
 import { Button, IconButton, Spinner, Tabs, TextField } from "./kit"
-import { DayMark, EventGroup, EventRow, MessageRow, isAgent, standsAlone } from "./message"
+import { DayMark, EventGroup, EventRow, MessageRow, isAgent, standsAlone, type ThreadSummary } from "./message"
 import { TaskDetail, Tasks } from "./tasks"
+import { ThreadPanel } from "./thread"
 
 /** Messages this close together from one sender read as one run. */
 const RUN_GAP = 5 * 60_000
@@ -57,6 +58,8 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const [filter, setFilter] = useState<Filter | null>(null)
   const [search, setSearch] = useState<string | null>(null)
   const [replyTo, setReplyTo] = useState<Message | null>(null)
+  /** The thread open on the right, by its first message. */
+  const [threadRoot, setThreadRoot] = useState<number | null>(null)
   const [openTask, setOpenTask] = useState<number | null>(null)
   const [highlight, setHighlight] = useState<number | null>(null)
 
@@ -91,14 +94,39 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
     })
   }, [messages, others, state.trust, member.code, member.at, nameOf, me])
 
+  // Replies live in their thread. A reply whose first message isn't loaded stays in the timeline, with its quote line.
+  const bySeqAll = useMemo(() => new Map(messages.map((m) => [m.seq, m])), [messages])
+  const rootOf = useCallback(
+    (seq: number) => {
+      const root = state.threadOf.get(seq)
+      return root !== undefined && root !== seq && bySeqAll.has(root) ? root : null
+    },
+    [state.threadOf, bySeqAll]
+  )
+  const threads = useMemo(() => {
+    const out = new Map<number, Message[]>()
+    for (const m of messages) {
+      if (m.kind === "event") continue
+      const root = rootOf(m.seq)
+      if (root === null) continue
+      const list = out.get(root)
+      if (list) list.push(m)
+      else out.set(root, [m])
+    }
+    return out
+  }, [messages, rootOf])
+
   const visible = useMemo(() => {
+    // Filters and search show every match flat, threads or not.
+    const flat = !!filter || !!search?.trim()
     let list = filter?.kind === "open" ? state.openAsks : filter?.kind === "mine" ? forMe : filter?.kind === "from" ? messages.filter((m) => m.from === filter.name) : messages
+    if (!flat) list = list.filter((m) => m.kind === "event" || rootOf(m.seq) === null)
     // Joins are noise; the member list already shows who's here.
     list = list.filter((m) => m.ev?.op !== "hello")
     const q = search?.trim().toLowerCase()
     if (q) list = list.filter((m) => m.body.toLowerCase().includes(q) || nameOf(m.from).toLowerCase().includes(q))
     return list
-  }, [filter, state.openAsks, forMe, messages, search, nameOf])
+  }, [filter, state.openAsks, forMe, messages, search, nameOf, rootOf])
 
   const bySeq = useMemo(() => new Map(messages.map((m) => [m.seq, m])), [messages])
   const quoted = useCallback((seq: number) => bySeq.get(seq), [bySeq])
@@ -128,8 +156,10 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
     (seq: number) => {
       setHighlight(seq)
       setTimeout(() => setHighlight((h) => (h === seq ? null : h)), 1600)
+      const inThread = rootOf(seq)
+      if (inThread !== null) setThreadRoot(inThread)
       const go = (left: number) => {
-        const el = document.getElementById(`m${seq}`)
+        const el = document.getElementById(`${inThread !== null ? "t" : "m"}${seq}`)
         if (!el) {
           if (left > 0) requestAnimationFrame(() => go(left - 1))
           return
@@ -138,16 +168,30 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       }
       // Two frames so a collapsed run can open before we look for the row.
       const start = () => requestAnimationFrame(() => requestAnimationFrame(() => go(1)))
-      if (!visible.some((m) => m.seq === seq)) {
+      if (inThread === null && !visible.some((m) => m.seq === seq)) {
         setFilter(null)
         setSearch(null)
         start()
       } else start()
     },
-    [visible]
+    [visible, rootOf]
   )
 
-  const onReply = useCallback((m: Message) => setReplyTo(m), [])
+  // Replying opens the message's thread, so the answer doesn't land in the main timeline.
+  const onReply = useCallback((m: Message) => setThreadRoot(rootOf(m.seq) ?? m.seq), [rootOf])
+  const peopleOf = useCallback(
+    (list: Message[]) => {
+      const seen = new Map<string, { name: string; label: string; agent: boolean }>()
+      for (const r of list) if (!seen.has(r.from)) seen.set(r.from, { name: r.from, label: nameOf(r.from), agent: isAgent(state.members.get(r.from)) })
+      return [...seen.values()]
+    },
+    [nameOf, state.members]
+  )
+  const summaryOf = (seq: number): ThreadSummary | undefined => {
+    const list = threads.get(seq)
+    if (!list?.length) return undefined
+    return { count: list.length, last: list[list.length - 1]!.ts, people: peopleOf(list), forYou: list.some((r) => r.from !== me && r.to?.includes(me)) }
+  }
 
   if (gone) {
     return (
@@ -210,8 +254,42 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         nameOf={nameOf}
         onReply={onReply}
         onJump={jump}
+        thread={search || filter ? undefined : summaryOf(m.seq)}
+        onOpenThread={setThreadRoot}
       />
     )
+  }
+
+  // The open thread: its first message, then every reply, grouped the same way.
+  const root = threadRoot === null ? undefined : bySeqAll.get(threadRoot)
+  const replies = threadRoot === null ? [] : (threads.get(threadRoot) ?? [])
+  const threadRows: ReactNode[] = []
+  if (root) {
+    const list = [root, ...replies]
+    list.forEach((m, i) => {
+      const prev = list[i - 1]
+      const head = !prev || prev.from !== m.from || m.ts - prev.ts > RUN_GAP
+      threadRows.push(
+        <MessageRow
+          key={m.seq}
+          anchor="t"
+          m={m}
+          me={me}
+          author={(m.pk && byKey.get(m.pk)) || state.members.get(m.from)}
+          trust={state.trust.get(m.seq)}
+          online={online.has(m.from)}
+          head={head}
+          // Inside a thread, answering the root needs no quote; a reply to a reply still shows what it answers.
+          adjacentReply={i > 0 && (m.re?.length ?? 0) === 1 && (m.re![0] === root.seq || m.re![0] === prev?.seq)}
+          highlighted={highlight === m.seq}
+          quoted={quoted}
+          nameOf={nameOf}
+          onReply={() => undefined}
+          onJump={jump}
+        />
+      )
+      if (i === 0 && replies.length) threadRows.push(<div key="split" className="my-3 h-px bg-line" />)
+    })
   }
 
   const filterLabel = filter?.kind === "from" ? `Only ${nameOf(filter.name)}` : filter?.kind === "open" ? "Unanswered questions" : filter?.kind === "mine" ? "Messages to you" : null
@@ -301,7 +379,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       }}
     >
       <div className="flex h-full min-w-0 flex-1">
-        <div className="relative flex min-w-0 flex-1 flex-col">
+        <div className={cx("relative flex min-w-0 flex-1 flex-col", root && "hidden md:flex")}>
           <header className="flex h-[56px] shrink-0 items-center gap-2 px-3 shadow-[inset_0_-0.5px_0_var(--line)] md:px-5">
             <IconButton label="Channels" className="md:hidden" onClick={onBack}>
               <Icon icon={ArrowLeft01Icon} size={20} />
@@ -330,7 +408,12 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
           <RequestsBanner />
 
           {tab === "tasks" ? (
-            <Tasks state={state} now={now} onOpen={setOpenTask} onForgetFact={async (key) => void (await send(`cleared ${key}`, { kind: "event", ev: { op: "fact.del", key } }))} />
+            <Tasks
+              state={state}
+              now={now}
+              onOpen={setOpenTask}
+              onForgetFact={async (key) => void (await send(`cleared ${key}`, { kind: "event", ev: { op: "fact.del", key } }))}
+            />
           ) : (
             <>
               <div className="mx-auto flex w-full max-w-[760px] shrink-0 flex-wrap items-center gap-1.5 px-4 pt-3 pb-1 md:px-8">
@@ -430,6 +513,16 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
             </>
           )}
         </div>
+
+        {root && (
+          <ThreadPanel
+            count={replies.length}
+            onClose={() => setThreadRoot(null)}
+            composer={<Composer key={root.seq} thread me={me} people={people} replyTo={root} nameOf={nameOf} onClearReply={() => undefined} disabled={connection === "connecting"} send={send} />}
+          >
+            {threadRows}
+          </ThreadPanel>
+        )}
 
         <TaskDetail id={openTask} state={state} messages={messages} now={now} onClose={() => setOpenTask(null)} onOpen={setOpenTask} />
       </div>

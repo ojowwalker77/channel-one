@@ -41,6 +41,8 @@ interface Props {
   onClearReply: () => void
   disabled: boolean
   send: (body: string, opts: SendOptions) => Promise<number>
+  /** In a thread: every message answers replyTo (the root), and there's no reply bar to cancel. */
+  thread?: boolean
 }
 
 /** Who a message is for: the people @mentioned at its start. */
@@ -49,7 +51,7 @@ function recipients(body: string, names: Set<string>): string[] {
   return [...lead.matchAll(/@([\p{L}\p{N}_.-]+)/gu)].map((m) => m[1]!).filter((n) => names.has(n))
 }
 
-export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, send }: Props) {
+export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, send, thread }: Props) {
   const [body, setBody] = useState("")
   const [kind, setKind] = useState<Kind>("msg")
   const [files, setFiles] = useState<{ name: string; mime: string; data: string }[]>([])
@@ -163,7 +165,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
       setBody("")
       setFiles([])
       setKind("msg")
-      onClearReply()
+      if (!thread) onClearReply()
     } catch (err) {
       toast(`Not sent: ${errorText(err)}`, "error")
     } finally {
@@ -219,7 +221,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
         }}
       >
         {dropping && <div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-[14px] border border-dashed border-ink-3 bg-canvas/85 text-[13px] text-ink-2">Drop images</div>}
-        {replyTo && (
+        {replyTo && !thread && (
           <div className="flex items-center gap-2 px-4 pt-2.5 text-[12.5px] text-ink-2">
             <span className="min-w-0 truncate">
               Replying to <span className="font-medium text-ink">{nameOf(replyTo.from)}</span> <span className="text-ink-3">{excerpt(replyTo.body, 80)}</span>
@@ -253,7 +255,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
           rows={1}
           value={body}
           disabled={disabled}
-          placeholder={disabled ? "Connecting…" : replyTo ? `Reply to ${nameOf(replyTo.from)}` : "Write to the channel. Type @ to address someone."}
+          placeholder={disabled ? "Connecting…" : thread ? "Reply in this thread" : replyTo ? `Reply to ${nameOf(replyTo.from)}` : "Write to the channel. Type @ to address someone."}
           onChange={(e) => {
             setBody(e.target.value)
             trackMention(e.target.value, e.target.selectionStart)
@@ -290,7 +292,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
               e.preventDefault()
               void submit()
             }
-            if (e.key === "Escape" && replyTo) onClearReply()
+            if (e.key === "Escape" && replyTo && !thread) onClearReply()
           }}
           className="block max-h-[220px] min-h-[48px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[14.5px] leading-[1.5] outline-none placeholder:text-ink-3 focus-visible:outline-none"
         />

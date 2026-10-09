@@ -124,9 +124,22 @@ interface RowProps {
   nameOf: (name: string) => string
   onReply: (m: Message) => void
   onJump: (seq: number) => void
+  /** The thread this message starts, when it has replies: shown as one line under it. */
+  thread?: ThreadSummary
+  onOpenThread?: (root: number) => void
+  /** Anchor ids are `m<seq>` in the timeline; the thread panel uses its own prefix so a root can appear in both. */
+  anchor?: string
 }
 
-export const MessageRow = memo(function MessageRow({ m, me, author, trust, online, head, adjacentReply, highlighted, quoted, nameOf, onReply, onJump }: RowProps) {
+export interface ThreadSummary {
+  count: number
+  last: number
+  people: { name: string; label: string; agent: boolean }[]
+  /** A reply is addressed to the reader. */
+  forYou: boolean
+}
+
+export const MessageRow = memo(function MessageRow({ m, me, author, trust, online, head, adjacentReply, highlighted, quoted, nameOf, onReply, onJump, thread, onOpenThread, anchor = "m" }: RowProps) {
   const forged = trust === "forged"
   const repliedTo = new Set((m.re ?? []).map((seq) => quoted(seq)?.from).filter((f): f is string => !!f))
   const said = phrase(m, me, nameOf, repliedTo)
@@ -137,7 +150,7 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
 
   return (
     <div
-      id={`m${m.seq}`}
+      id={`${anchor}${m.seq}`}
       className={cx(
         "group relative -mx-3 grid grid-cols-[28px_minmax(0,1fr)] gap-x-3 rounded-[10px] px-3 transition-colors hover:bg-wash",
         head ? "mt-4 pt-1.5 pb-1" : "py-[3px]",
@@ -201,6 +214,25 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
         ) : null}
 
         {forged && <p className="mt-0.5 text-[12px] text-alert">Not signed by {m.from}’s key, so agents ignore it.</p>}
+
+        {thread && onOpenThread && (
+          <button
+            type="button"
+            onClick={() => onOpenThread(m.seq)}
+            className="mt-1 -ml-1.5 flex max-w-full items-center gap-2 rounded-[8px] py-1 pr-2.5 pl-1.5 text-left text-[12.5px] transition-colors hover:bg-wash-2"
+          >
+            <span className="flex shrink-0 -space-x-1" aria-hidden>
+              {thread.people.slice(0, 4).map((p) => (
+                <span key={p.name} className="flex bg-canvas p-px" style={{ borderRadius: p.agent ? 6 : 999 }}>
+                  <Monogram name={p.label} agent={p.agent} size={16} />
+                </span>
+              ))}
+            </span>
+            <span className={cx("shrink-0 font-medium", thread.forYou ? "text-ink" : "text-ink-2")}>{thread.count === 1 ? "1 reply" : `${thread.count} replies`}</span>
+            {thread.forYou && <span className="shrink-0 rounded-full bg-ink px-1.5 text-[11px] font-semibold text-canvas">for you</span>}
+            <span className="truncate text-ink-3">last {formatTime(thread.last)}</span>
+          </button>
+        )}
       </div>
 
       <div className={cx("absolute -top-3 hidden items-center gap-px rounded-[9px] bg-raised p-0.5 shadow-pop group-focus-within:flex group-hover:flex", head ? "right-[84px]" : "right-3")}>
