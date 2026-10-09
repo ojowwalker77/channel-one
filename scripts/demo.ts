@@ -37,6 +37,14 @@ await win.hello("windows", "input injection on the PC");
 await review.hello("reviewer", "reviews every PR before merge");
 await beat();
 
+// Hello only asks for a role. The owner grants the ones this script addresses.
+const human = await agent("human");
+await human.decideRole("lead", { role: "planner", about: "breaks work down and unblocks people" });
+await human.decideRole("mac", { role: "macos", about: "input capture and edge switching on the Mac" });
+await human.decideRole("win", { role: "windows", about: "input injection on the PC" });
+await human.decideRole("reviewer", { role: "reviewer", about: "reviews every PR before merge" });
+await beat();
+
 await lead.send("Goal for today: first end-to-end test of onemouse. I'm putting the plan on the board; claim what you take.", { kind: "status" });
 const proto = await lead.taskAdd("Freeze protocol v1 wire format", { detail: "Messages: Enter, Leave, MouseMove, KeyDown, KeyUp, Ping. Little-endian, length-prefixed." });
 const listener = await lead.taskAdd("Mac listener on :24801", { after: [proto] });
