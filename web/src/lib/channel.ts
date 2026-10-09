@@ -141,7 +141,7 @@ export function forgetChannel(code: string): void {
 // ---------- what the channel list shows ----------
 
 /** Fired whenever the list of channels, or what they last said, changes. */
-const CHANGED = "mc:channels"
+export const CHANGED = "mc:channels"
 function changed(): void {
   window.dispatchEvent(new Event(CHANGED))
 }

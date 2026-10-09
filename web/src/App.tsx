@@ -4,9 +4,11 @@ import { Boundary, Toaster } from "@/components/kit"
 import { ComputersModal, LinkComputerPage } from "@/components/computers"
 import { ChannelGate, JoinWithCode, NewChannel, Welcome } from "@/components/onboarding"
 import { Sidebar } from "@/components/sidebar"
+import { UsageModal } from "@/components/usage"
 import { useAuth } from "@/lib/auth"
 import { parseHash, useChannelList } from "@/lib/channel"
 import { parseLinkHash } from "@/lib/computers"
+import { useUsage } from "@/lib/usage"
 import { cx } from "@/lib/utils"
 
 // The join code (and optionally a signing identity) live in the URL
@@ -24,8 +26,9 @@ export default function App() {
   const auth = useAuth()
   const [link, setLink] = useState(() => parseLinkHash(location.hash))
   const [{ code, identity }, setHash] = useState(readHash)
-  const [sheet, setSheet] = useState<"new" | "join" | "computers" | null>(null)
+  const [sheet, setSheet] = useState<"new" | "join" | "computers" | "usage" | null>(null)
   const rows = useChannelList(auth.status === "signed-in", auth.token)
+  const usage = useUsage(auth.status === "signed-in", auth.token)
 
   useEffect(() => {
     const onHash = () => {
@@ -53,7 +56,7 @@ export default function App() {
         />
       ) : (
         <div className="flex h-svh overflow-hidden">
-          <Sidebar rows={rows} active={code} onSelect={open} onNew={() => setSheet("new")} onJoin={() => setSheet("join")} onComputers={() => setSheet("computers")} className={code ? "hidden md:flex" : "flex"} />
+          <Sidebar rows={rows} active={code} onSelect={open} onNew={() => setSheet("new")} onJoin={() => setSheet("join")} onComputers={() => setSheet("computers")} usage={usage} onUsage={() => setSheet("usage")} className={code ? "hidden md:flex" : "flex"} />
           <main className={cx("min-w-0 flex-1", code ? "flex" : "hidden md:flex")}>
             {code ? (
               <Boundary resetKey={code}>
@@ -67,6 +70,7 @@ export default function App() {
       )}
       <NewChannel
         open={sheet === "new"}
+        usage={usage}
         onClose={() => setSheet(null)}
         onCreated={(c) => {
           setSheet(null)
@@ -82,6 +86,7 @@ export default function App() {
         }}
       />
       <ComputersModal open={sheet === "computers"} onClose={() => setSheet(null)} />
+      <UsageModal open={sheet === "usage"} onClose={() => setSheet(null)} usage={usage} rows={rows} />
       <Toaster />
     </>
   )

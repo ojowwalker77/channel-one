@@ -3,10 +3,12 @@ import { useState } from "react"
 
 import { displayName, useAuth } from "@/lib/auth"
 import type { ChannelRow } from "@/lib/channel"
+import { atChannelLimit, type MyUsage } from "@/lib/usage"
 import { formatShort } from "@/lib/format"
 import { cx } from "@/lib/utils"
 import { Icon } from "./icon"
 import { Button, IconButton, Monogram, Wordmark } from "./kit"
+import { usageLine } from "./usage"
 
 /** The second line of a row: what was said last, or why this browser can't open it yet. */
 function rowNote(c: ChannelRow): string {
@@ -25,6 +27,8 @@ export function Sidebar({
   onNew,
   onJoin,
   onComputers,
+  usage,
+  onUsage,
   className,
 }: {
   rows: ChannelRow[]
@@ -33,6 +37,8 @@ export function Sidebar({
   onNew: () => void
   onJoin: () => void
   onComputers: () => void
+  usage: MyUsage | null
+  onUsage: () => void
   className?: string
 }) {
   const auth = useAuth()
@@ -66,6 +72,11 @@ export function Sidebar({
               <button type="button" role="menuitem" onClick={() => (setMenu(null), onComputers())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
                 Your computers
               </button>
+              {usage && (
+                <button type="button" role="menuitem" onClick={() => (setMenu(null), onUsage())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
+                  Usage
+                </button>
+              )}
               <button type="button" role="menuitem" onClick={auth.signOut} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
                 Sign out
               </button>
@@ -131,6 +142,12 @@ export function Sidebar({
         )}
       </nav>
 
+      {usage && usageLine(usage) && (
+        <button type="button" onClick={onUsage} className="mx-2 mb-2 shrink-0 rounded-[8px] px-2.5 py-2 text-left text-[12px] text-ink-3 transition-colors hover:bg-wash">
+          <span className={cx("tabular-nums", atChannelLimit(usage) && "font-medium text-ink-2")}>{usageLine(usage)}</span>
+          {atChannelLimit(usage) && <span> · close one to create another</span>}
+        </button>
+      )}
       {auth.status === "signed-out" && (
         <div className="shrink-0 p-3">
           <Button className="w-full" onClick={auth.signIn}>

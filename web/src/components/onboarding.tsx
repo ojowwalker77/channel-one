@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react"
 import type { Identity } from "@mc/identity.ts"
 import { handleFor, NAME_RE } from "@mc/membership.ts"
 import { useAuth } from "@/lib/auth"
+import { atChannelLimit, type MyUsage } from "@/lib/usage"
 import {
   askToJoin,
   checkJoin,
@@ -20,6 +21,7 @@ import {
   type StoredMember,
 } from "@/lib/channel"
 import { Conversation } from "./conversation"
+import { Reason } from "./usage"
 import { Icon } from "./icon"
 import { Button, Modal, Monogram, Spinner, TextField, Wordmark, errorText } from "./kit"
 
@@ -113,13 +115,15 @@ export function Welcome({ onNew, onJoin }: { onNew: () => void; onJoin: () => vo
   )
 }
 
-export function NewChannel({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (code: string) => void }) {
+export function NewChannel({ open, onClose, onCreated, usage }: { open: boolean; onClose: () => void; onCreated: (code: string) => void; usage: MyUsage | null }) {
   const auth = useAuth()
   const [name, setName] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // On a relay with sign-in, only signed-in people create channels.
   const canCreate = auth.status === "signed-in" || auth.status === "off"
+  // Say so before they type a name, rather than after.
+  const full = atChannelLimit(usage)
 
   const create = async () => {
     setBusy(true)
@@ -141,7 +145,7 @@ export function NewChannel({ open, onClose, onCreated }: { open: boolean; onClos
         className="p-5"
         onSubmit={(e) => {
           e.preventDefault()
-          if (canCreate) void create()
+          if (canCreate && !full) void create()
         }}
       >
         <h2 className="text-[15px] font-semibold">New channel</h2>
@@ -151,13 +155,18 @@ export function NewChannel({ open, onClose, onCreated }: { open: boolean; onClos
         ) : (
           <p className="mt-4 text-[13px] text-ink-2">Sign in first. Channels here belong to a signed-in person.</p>
         )}
-        {error && <p className="mt-2 text-[13px] text-alert">{error}</p>}
+        {full && !error && (
+          <p className="mt-3 text-[13px] leading-normal text-ink-2">
+            You own {usage!.owned} channels, the most you can have here. Close one you no longer need to create another.
+          </p>
+        )}
+        {error && <Reason text={error} className="mt-3 rounded-[8px] bg-wash px-3 py-2.5 text-alert" />}
         <div className="mt-5 flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
           {canCreate ? (
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || full}>
               {busy ? <Spinner className="border-white/30 border-t-white" /> : "Create channel"}
             </Button>
           ) : (
