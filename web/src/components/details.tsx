@@ -5,6 +5,7 @@ import { loadLine, memberLoad, showsLoad, type Load } from "@mc/load.ts"
 import { NAME_RE, type JoinRequest, type Member as RosterMember } from "@mc/membership.ts"
 import { TOO_MANY_REQUESTS } from "@mc/sas.ts"
 import { taskId } from "@mc/state.ts"
+import type { Event } from "@mc/protocol.ts"
 import type { ChannelState } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
 import { formatAgo, memberLine, memberName } from "@/lib/format"
@@ -14,7 +15,7 @@ import { Alert, Button, IconButton, Monogram, TextField, errorText, toast } from
 
 export type Filter = { kind: "from"; name: string } | { kind: "open" } | { kind: "mine" }
 
-type Confirm = { kind: "approve"; req: JoinRequest } | { kind: "remove"; member: RosterMember } | { kind: "close" } | { kind: "leave" } | null
+type Confirm = { kind: "approve"; req: JoinRequest } | { kind: "remove"; member: RosterMember } | { kind: "role"; member: RosterMember } | { kind: "close" } | { kind: "leave" } | null
 
 interface Props {
   code: string
@@ -34,6 +35,8 @@ interface Props {
   /** Sign this browser's half of a request's code check, at the person's click. */
   onCheck: (r: JoinRequest) => Promise<void>
   onRemove: (m: RosterMember) => Promise<void>
+  /** Owner: set a member's role, or allow or refuse the one they asked for (a signed event). */
+  onRole: (ev: Extract<Event, { op: "role.set" | "role.refuse" }>) => Promise<void>
   onCloseChannel: () => Promise<void>
   onLeaveChannel: () => Promise<void>
   onDismiss: () => void
@@ -133,6 +136,7 @@ export function Details(p: Props) {
   const auth = useAuth()
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [busy, setBusy] = useState(false)
+  const [roleDraft, setRoleDraft] = useState({ role: "", about: "" })
   const needsSignIn = p.isOwner && auth.status === "signed-out"
   const requests = p.requests
   const active = p.roster.filter((m) => m.active).sort((a, b) => Number(b.owner) - Number(a.owner) || Number(p.online.has(b.name)) - Number(p.online.has(a.name)))
@@ -222,36 +226,73 @@ export function Details(p: Props) {
               // Agents always show load, so a coordinator sees who's free; people only when they hold tasks.
               const load = memberLoad(p.state, m.name, p.now)
               const showLoad = showsLoad(m, load)
+              // Roles as the owner last set them: role events fold on top of the signed record.
+              const live = p.state.members.get(m.name)
+              const asked = live?.roleRequest
               return (
-                <div key={m.pk} className="group flex items-center gap-3 rounded-[8px] px-2 py-1.5 hover:bg-wash">
-                  <Monogram name={memberName(m)} agent={m.kind !== "human"} size={26} online={p.online.has(m.name)} />
-                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => p.onFilter({ kind: "from", name: m.name })} title="Show only their messages">
-                    <p className="truncate text-[13px] font-medium">
-                      {memberName(m)}
-                      {m.pk === p.myKey && <span className="font-normal text-ink-3"> (you)</span>}
-                    </p>
-                    <p className="truncate text-[12px] text-ink-2" title={`${m.about ? `Rules: ${m.about}\n` : ""}Key ${m.pk.slice(0, 16)}`}>
-                      {memberLine(m)}
-                    </p>
-                    {showLoad && load.level !== "free" && <p className="truncate text-[12px] text-ink-3">{loadLine(load)}</p>}
-                  </button>
-                  {showLoad && (
-                    <span
-                      title={loadDetail(load)}
-                      className={cx(
-                        "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium",
-                        load.level === "free" && "bg-wash text-ink-3",
-                        load.level === "busy" && "bg-wash-2 text-ink-2",
-                        load.level === "overloaded" && "bg-wash-2 text-alert",
+                <div key={m.pk}>
+                  <div className="group flex items-center gap-3 rounded-[8px] px-2 py-1.5 hover:bg-wash">
+                    <Monogram name={memberName(m)} agent={m.kind !== "human"} size={26} online={p.online.has(m.name)} />
+                    <button type="button" className="min-w-0 flex-1 text-left" onClick={() => p.onFilter({ kind: "from", name: m.name })} title="Show only their messages">
+                      <p className="truncate text-[13px] font-medium">
+                        {memberName(m)}
+                        {m.pk === p.myKey && <span className="font-normal text-ink-3"> (you)</span>}
+                      </p>
+                      <p className="truncate text-[12px] text-ink-2" title={`${live?.about ? `Rules: ${live.about}\n` : ""}Key ${m.pk.slice(0, 16)}`}>
+                        {memberLine(live ?? m)}
+                      </p>
+                      {showLoad && load.level !== "free" && <p className="truncate text-[12px] text-ink-3">{loadLine(load)}</p>}
+                    </button>
+                    {showLoad && (
+                      <span
+                        title={loadDetail(load)}
+                        className={cx(
+                          "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                          load.level === "free" && "bg-wash text-ink-3",
+                          load.level === "busy" && "bg-wash-2 text-ink-2",
+                          load.level === "overloaded" && "bg-wash-2 text-alert",
+                        )}
+                      >
+                        {LEVEL[load.level]}
+                      </span>
+                    )}
+                    {p.isOwner && !m.owner && (
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => {
+                            setRoleDraft({ role: live?.role ?? "", about: live?.about ?? "" })
+                            setConfirm({ kind: "role", member: m })
+                          }}
+                        >
+                          Role
+                        </Button>
+                        <Button size="sm" variant="danger" onClick={() => setConfirm({ kind: "remove", member: m })}>
+                          Remove
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  {asked && (
+                    <div className="mb-1 ml-[46px] flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
+                      <span className="min-w-0 text-ink-2">
+                        Asks to be <span className="font-medium text-ink">{asked.role ?? "unassigned"}</span>
+                        {asked.about && <span className="text-ink-3"> · {asked.about}</span>}
+                      </span>
+                      {p.isOwner ? (
+                        <span className="flex gap-1">
+                          <Button size="sm" disabled={busy} onClick={() => void run(() => p.onRole({ op: "role.set", member: m.name, role: asked.role ?? null, about: asked.about ?? null }), `${m.name} is now ${asked.role ?? "unassigned"}`)}>
+                            Allow
+                          </Button>
+                          <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(() => p.onRole({ op: "role.refuse", member: m.name }), `Kept ${m.name}'s role`)}>
+                            Refuse
+                          </Button>
+                        </span>
+                      ) : (
+                        <span className="text-ink-3">The owner decides.</span>
                       )}
-                    >
-                      {LEVEL[load.level]}
-                    </span>
-                  )}
-                  {p.isOwner && !m.owner && (
-                    <Button size="sm" variant="danger" className="opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={() => setConfirm({ kind: "remove", member: m })}>
-                      Remove
-                    </Button>
+                    </div>
                   )}
                 </div>
               )
@@ -329,6 +370,32 @@ export function Details(p: Props) {
         </Part>
       </div>
 
+      <Alert
+        open={confirm?.kind === "role"}
+        onClose={() => setConfirm(null)}
+        title={confirm?.kind === "role" ? `${confirm.member.name}’s role` : ""}
+        message={
+          <span className="mt-3 grid gap-2">
+            <TextField value={roleDraft.role} onChange={(e) => setRoleDraft((d) => ({ ...d, role: e.target.value }))} placeholder="Role, e.g. reviewer" maxLength={60} list="kiwi-roles" aria-label="Role" autoFocus />
+            <TextField value={roleDraft.about} onChange={(e) => setRoleDraft((d) => ({ ...d, about: e.target.value }))} placeholder="Rules (optional)" maxLength={200} aria-label="Rules" />
+            <span className="text-[12px] text-ink-3">Everyone sees the role, and agents route work by it.</span>
+          </span>
+        }
+      >
+        <Button variant="secondary" onClick={() => setConfirm(null)}>
+          Cancel
+        </Button>
+        <Button
+          disabled={busy}
+          onClick={() => {
+            if (confirm?.kind !== "role") return
+            const name = confirm.member.name
+            void run(() => p.onRole({ op: "role.set", member: name, role: roleDraft.role.trim() || null, about: roleDraft.about.trim() || null }), `Saved ${name}’s role`)
+          }}
+        >
+          Save
+        </Button>
+      </Alert>
       <Alert
         open={confirm?.kind === "approve"}
         onClose={() => setConfirm(null)}

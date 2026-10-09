@@ -339,6 +339,9 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
             await ch.approve(r)
             await Promise.all([refreshRequests(), refreshRoster()])
           }}
+          onRole={async (ev) => {
+            await send(ev.op === "role.set" ? `made ${ev.member} ${ev.role ?? "unassigned"}` : `kept ${ev.member}'s role`, { kind: "event", ev })
+          }}
           onDeny={async (r) => {
             await ch.deny(r.id)
             await refreshRequests()

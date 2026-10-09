@@ -322,8 +322,27 @@ export class AgentSession {
     return this.ch.send(body, { to, kind, re: [seq], imgs });
   }
 
+  /** Announce yourself. After joining, a different role or rules is a request: the owner decides. */
   async hello(role?: string, about?: string): Promise<number> {
     return this.event({ op: "hello", role, about }, `joined${role ? ` as ${role}` : ""}`);
+  }
+
+  /**
+   * Owner: set a member's role and rules, give them the role they asked for, or
+   * refuse it. Sent as the owner, so every client checks it's the owner's word.
+   */
+  async decideRole(member: string, decision: { role: string | null; about?: string | null } | "allow" | "refuse"): Promise<number> {
+    if (!this.ownerCh) throw new Rejected("only the channel owner's machine decides roles");
+    const { state } = await this.state();
+    const m = state.members.get(member);
+    if (!m?.active) throw new Rejected(`no member named ${member}`);
+    let ev: Event;
+    if (decision === "refuse") ev = { op: "role.refuse", member };
+    else if (decision === "allow") {
+      if (!m.roleRequest) throw new Rejected(`${member} hasn't asked for a role`);
+      ev = { op: "role.set", member, role: m.roleRequest.role ?? null, about: m.roleRequest.about ?? null };
+    } else ev = { op: "role.set", member, ...decision };
+    return this.ownerCh.send(ev.op === "role.refuse" ? `kept ${member}'s role` : `made ${member} ${ev.role ?? "unassigned"}`, { kind: "event", ev });
   }
 
   // ---------- events ----------

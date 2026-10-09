@@ -88,7 +88,10 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
       const [members, { state }] = await Promise.all([s.members(true), s.state()]);
       return members
         .map((m) => {
-          const head = `${m.name}${m.name === s.me ? " (you)" : ""}${m.owner ? " — owner" : m.role ? ` — ${m.role}` : ""}  key ${m.pk.slice(0, 8)}${m.active ? "" : "  (left)"}`;
+          // The role as the owner last set it (role events fold on top of the signed record).
+          const role = state.members.get(m.name)?.role ?? m.role;
+          const asked = state.members.get(m.name)?.roleRequest;
+          const head = `${m.name}${m.name === s.me ? " (you)" : ""}${m.owner ? " — owner" : role ? ` — ${role}` : ""}${asked ? ` (asked to be ${asked.role ?? "unassigned"})` : ""}  key ${m.pk.slice(0, 8)}${m.active ? "" : "  (left)"}`;
           const load = memberLoad(state, m.name);
           return m.active && showsLoad(m, load) ? `${head}\n    ${loadSummary(load)}` : head;
         })

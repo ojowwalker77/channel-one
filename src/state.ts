@@ -16,6 +16,8 @@ export interface Member {
   pk: string;
   role?: string;
   about?: string;
+  /** A role (or rules) they asked for and the owner hasn't decided on yet. */
+  roleRequest?: { role?: string; about?: string; seq: number; at: number };
   owner: boolean;
   /** When the owner admitted them. */
   joined: number;
@@ -177,10 +179,38 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
       const reject = (why: string) => rejected.set(m.seq, why);
 
       switch (ev.op) {
-        case "hello":
-          if (ev.role !== undefined) member.role = ev.role || undefined;
-          if (ev.about !== undefined) member.about = ev.about || undefined;
+        case "hello": {
+          // Roles are the owner's to give: the owner sets its own, anyone else's hello asks for one.
+          if (member.owner) {
+            if (ev.role !== undefined) member.role = ev.role || undefined;
+            if (ev.about !== undefined) member.about = ev.about || undefined;
+            break;
+          }
+          const role = ev.role === undefined ? member.role : ev.role || undefined;
+          const about = ev.about === undefined ? member.about : ev.about || undefined;
+          if (role === member.role && about === member.about) member.roleRequest = undefined;
+          else member.roleRequest = { ...(role !== undefined ? { role } : {}), ...(about !== undefined ? { about } : {}), seq: m.seq, at };
           break;
+        }
+
+        case "role.set":
+        case "role.refuse": {
+          if (!member.owner) {
+            reject("only the owner decides roles");
+            break;
+          }
+          const target = members.get(ev.member);
+          if (!target) {
+            reject(`no member named ${ev.member}`);
+            break;
+          }
+          if (ev.op === "role.set") {
+            target.role = ev.role || undefined;
+            if (ev.about !== undefined) target.about = ev.about || undefined;
+          }
+          target.roleRequest = undefined;
+          break;
+        }
 
         case "task.add":
           tasks.set(m.seq, {

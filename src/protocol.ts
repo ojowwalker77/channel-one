@@ -71,7 +71,7 @@ export const CLOSE_CLOSED = 4410;
 
 /**
  * Message kinds. Chat kinds carry intent for the reader; "event" marks a
- * coordination event (task, claim, fact, hello) whose meaning is in `ev`.
+ * coordination event (task, claim, fact, hello, role) whose meaning is in `ev`.
  */
 export const KINDS = ["msg", "ask", "blocking", "ack", "status", "done", "event"] as const;
 export type Kind = (typeof KINDS)[number];
@@ -89,7 +89,11 @@ export type Event =
   | { op: "claim"; paths: string[]; ttl: number; note?: string }
   | { op: "release"; paths?: string[] }
   | { op: "fact.set"; key: string; value: string }
-  | { op: "fact.del"; key: string };
+  | { op: "fact.del"; key: string }
+  /** Owner only: set a member's role (and rules), or allow the one they asked for. */
+  | { op: "role.set"; member: string; role: string | null; about?: string | null }
+  /** Owner only: turn down the role a member asked for. */
+  | { op: "role.refuse"; member: string };
 
 /** One image attached to a message, encrypted with everything else. */
 export interface ImageAttachment {
@@ -191,6 +195,10 @@ export function wellFormedEvent(ev: unknown): ev is Event {
       return str(e.key, 200) && str(e.value, 10_000);
     case "fact.del":
       return str(e.key, 200);
+    case "role.set":
+      return str(e.member, 64) && (e.role === null || str(e.role, 200)) && (e.about === undefined || e.about === null || str(e.about, 2000));
+    case "role.refuse":
+      return str(e.member, 64);
     default:
       return false;
   }

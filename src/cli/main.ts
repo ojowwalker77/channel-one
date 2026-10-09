@@ -34,6 +34,7 @@ Start
 Membership (the owner's human decides who gets in)
   kiwi requests                                  pending join requests and their verification codes (owner)
   kiwi approve CODE [--yes]                      let a requester in, after your human confirms the code (owner)
+  kiwi role [allow|refuse NAME | NAME ROLE]      role requests; the owner sets, allows or refuses roles
   kiwi deny CODE                                 refuse a request; that key can't ask again (owner)
   kiwi members                                   who's in, their roles, and their key fingerprints
   kiwi kick NAME                                 remove a member and rotate the channel key (owner)
@@ -850,7 +851,33 @@ const commands: Record<string, () => Promise<void>> = {
   async hello() {
     const s = await session();
     await s.hello(opt.role, opt.about);
-    out(`announced ${s.me}${opt.role ? ` as ${opt.role}` : ""}`);
+    const me = (await s.state()).state.members.get(s.me);
+    if (me?.roleRequest) out(`asked the owner to make you ${me.roleRequest.role ?? "unassigned"}${me.roleRequest.about ? ` (${me.roleRequest.about})` : ""}; your role stays ${me.role ?? "unset"} until they decide`);
+    else out(`announced ${s.me}${me?.role ? ` as ${me.role}` : ""}`);
+  },
+
+  /** Roles are the owner's to give: list requests, set one, allow or refuse what someone asked for. */
+  async role() {
+    const s = await session();
+    const [sub, a, b] = args.slice(1);
+    if (!sub) {
+      const { state } = await s.state();
+      const asks = [...state.members.values()].filter((m) => m.active && m.roleRequest);
+      if (!asks.length) return out("no role requests");
+      for (const m of asks) out(`${m.name}: ${m.role ?? "no role"} → ${m.roleRequest!.role ?? "no role"}${m.roleRequest!.about ? ` (${m.roleRequest!.about})` : ""}`);
+      return out(s.ownerCh ? "decide with: kiwi role allow NAME, or kiwi role refuse NAME" : "the owner decides these");
+    }
+    if (!s.ownerCh) die("only the channel owner's machine decides roles; ask with: kiwi hello --role ROLE");
+    if (sub === "refuse") {
+      await s.decideRole(a ?? die("usage: kiwi role refuse NAME"), "refuse");
+      return out(`kept ${a}'s role`);
+    }
+    const allowing = sub === "allow";
+    const member = allowing ? (a ?? die("usage: kiwi role allow NAME [--yes]")) : sub;
+    const role = allowing ? undefined : (a ?? die('usage: kiwi role NAME ROLE [--about "rules"] [--yes]'));
+    if (!(await confirm(allowing ? `Give ${member} the role they asked for?` : `Make ${member} ${role}?`))) die("changing a role needs your human's go-ahead; re-run with --yes");
+    await s.decideRole(member, allowing ? "allow" : { role: role!, ...(opt.about !== undefined ? { about: opt.about } : {}) });
+    out(allowing ? `${member} has the role they asked for` : `made ${member} ${role}`);
   },
 
   async web() {
@@ -898,7 +925,7 @@ export function agentPrompt(alias: string, agent: string, as: { role?: string; a
   const mc = mcFor(alias, agent);
   // The role and rules its human agreed on before it joined (the dashboard's invite line carries them).
   const role = as.role
-    ? `\n## Your role\nYou joined as ${as.role}.${as.about ? ` Rules you agreed with your human: ${as.about}${/[.!?]$/.test(as.about) ? "" : "."}` : ""} Take work that fits this role, and say so when you're asked for something outside it. The others see your role in status and route work to you by it.\n`
+    ? `\n## Your role\nYou joined as ${as.role}.${as.about ? ` Rules you agreed with your human: ${as.about}${/[.!?]$/.test(as.about) ? "" : "."}` : ""} Take work that fits this role, and say so when you're asked for something outside it. The others see your role in status and route work to you by it. To change it, ask the owner with \`${mc} hello --role ROLE\`; it changes only when they allow it.\n`
     : "";
   return `You are agent "${agent}" in channel "${alias}" on Kiwi Channels. Other agents (often on other machines) and the user ("human") are on it too. Use it to coordinate directly and fast. Never wait for the user to relay anything.
 ${role}

@@ -51,7 +51,13 @@ export function describeEvent(m: Message, state?: ChannelState): string {
   const note = (n?: string) => (n ? `: ${n}` : "");
   switch (ev.op) {
     case "hello":
+      // After joining, a hello that changes the role is a request the owner decides on.
+      if (state?.members.get(m.from)?.roleRequest?.seq === m.seq) return `asks to be ${ev.role ?? "unassigned"}${ev.about ? ` (${ev.about})` : ""}; the owner decides`;
       return `joined${ev.role ? ` as ${ev.role}` : ""}${ev.about ? ` (${ev.about})` : ""}`;
+    case "role.set":
+      return ev.role ? `made ${ev.member} ${ev.role}${ev.about ? ` (${ev.about})` : ""}` : `cleared ${ev.member}'s role`;
+    case "role.refuse":
+      return `kept ${ev.member}'s role as it was`;
     case "task.add":
       return `added task ${taskId(m.seq)} “${ev.title}”${ev.owner ? ` for ${ev.owner}` : ""}${ev.after?.length ? ` after ${ev.after.map(taskId).join(", ")}` : ""}`;
     case "task.claim":

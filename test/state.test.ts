@@ -62,7 +62,9 @@ describe("fold", () => {
     const s = fold(ms);
     expect(ms.map((m) => s.trust.get(m.seq))).toEqual(["verified", "forged", "forged", "forged"]);
     expect(s.facts.size).toBe(0);
-    expect(s.members.get("mac")?.role).toBe("capture");
+    // An agent's hello only asks for a role; the owner decides (see "roles" below).
+    expect(s.members.get("mac")?.role).toBeUndefined();
+    expect(s.members.get("mac")?.roleRequest?.role).toBe("capture");
     expect(s.members.has("ghost")).toBe(false);
   });
 
@@ -132,5 +134,58 @@ describe("fold", () => {
     expect(overlaps("src", "src/a.rs")).toBe(true);
     expect(overlaps("src/a", "src/ab")).toBe(false);
     expect(overlaps("*", "anything")).toBe(true);
+  });
+});
+
+describe("roles", () => {
+  /** A roster where "boss" is the owner and "pixel" joined as a designer. */
+  async function channel() {
+    const boss = await generateIdentity("boss");
+    const pixel = await generateIdentity("pixel");
+    const r: Roster = [
+      { name: "boss", pk: boss.pk, owner: true, at: 0, active: true },
+      { name: "pixel", pk: pixel.pk, owner: false, at: 0, active: true, role: "designer" },
+    ];
+    return { boss, pixel, r };
+  }
+
+  test("an agent asks for a role; the owner allows it, and only the owner's word counts", async () => {
+    const { boss, pixel, r } = await channel();
+    const ask = await msg(pixel, "pixel", { ev: { op: "hello", role: "reviewer", about: "reads every PR" } });
+    let s = foldWith([ask], r);
+    expect(s.members.get("pixel")?.role).toBe("designer");
+    expect(s.members.get("pixel")?.roleRequest).toMatchObject({ role: "reviewer", about: "reads every PR", seq: ask.seq });
+
+    // pixel can't grant itself the role.
+    const self = await msg(pixel, "pixel", { ev: { op: "role.set", member: "pixel", role: "reviewer" } });
+    s = foldWith([ask, self], r);
+    expect(s.members.get("pixel")?.role).toBe("designer");
+    expect(s.rejected.get(self.seq)).toBe("only the owner decides roles");
+
+    const allow = await msg(boss, "boss", { ev: { op: "role.set", member: "pixel", role: "reviewer", about: "reads every PR" } });
+    s = foldWith([ask, self, allow], r);
+    expect(s.members.get("pixel")).toMatchObject({ role: "reviewer", about: "reads every PR" });
+    expect(s.members.get("pixel")?.roleRequest).toBeUndefined();
+  });
+
+  test("the owner can refuse, or set any role directly; hello repeating the current role asks nothing", async () => {
+    const { boss, pixel, r } = await channel();
+    const ask = await msg(pixel, "pixel", { ev: { op: "hello", role: "lead" } });
+    const refuse = await msg(boss, "boss", { ev: { op: "role.refuse", member: "pixel" } });
+    let s = foldWith([ask, refuse], r);
+    expect(s.members.get("pixel")?.role).toBe("designer");
+    expect(s.members.get("pixel")?.roleRequest).toBeUndefined();
+
+    const direct = await msg(boss, "boss", { ev: { op: "role.set", member: "pixel", role: "intern" } });
+    const same = await msg(pixel, "pixel", { ev: { op: "hello", role: "intern" } });
+    s = foldWith([ask, refuse, direct, same], r);
+    expect(s.members.get("pixel")?.role).toBe("intern");
+    expect(s.members.get("pixel")?.roleRequest).toBeUndefined();
+  });
+
+  test("the owner sets its own role with hello", async () => {
+    const { boss, r } = await channel();
+    const s = foldWith([await msg(boss, "boss", { ev: { op: "hello", role: "coordinator" } })], r);
+    expect(s.members.get("boss")?.role).toBe("coordinator");
   });
 });

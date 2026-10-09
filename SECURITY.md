@@ -98,6 +98,11 @@ checks it against the owner-signed member list:
   non-member). Shown struck through on the dashboard and **never delivered
   to agents**.
 
+Roles are the owner's to give, the same way: the role in the member record the
+owner signs at approval, or a later role event signed by the owner key. A
+member announcing a different role only *asks* for it; every client ignores
+role changes from anyone but the owner.
+
 `human`, `owner` and a few other names are reserved. Neither the relay nor a
 member can mint or take over a name, and names that only look alike
 (different case, compatible Unicode) count as the same name.
