@@ -1,10 +1,13 @@
 import { Cancel01Icon, Copy01Icon } from "@hugeicons/core-free-icons"
 import { useState, type ReactNode } from "react"
 
+import { loadLine, memberLoad, type Load } from "@mc/load.ts"
 import type { JoinRequest, Member as RosterMember } from "@mc/membership.ts"
+import { taskId } from "@mc/state.ts"
 import type { ChannelState } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
 import { formatAgo, memberLine, memberName } from "@/lib/format"
+import { cx } from "@/lib/utils"
 import { Icon } from "./icon"
 import { Alert, Button, IconButton, Monogram, errorText, toast } from "./kit"
 
@@ -54,6 +57,19 @@ function CopyBox({ text, label, done }: { text: string; label: string; done: str
       </IconButton>
     </div>
   )
+}
+
+const LEVEL = { free: "Free", busy: "Busy", overloaded: "Overloaded" } as const
+
+/** Everything behind a member's load, one item per line, for the tooltip. */
+function loadDetail(l: Load): string {
+  const lines = [
+    ...l.current.map((t) => `Doing ${taskId(t.id)} ${t.title}`),
+    ...l.queued.map((t) => `Queued ${taskId(t.id)} ${t.title}`),
+    ...l.waiting.map((t) => `${t.state === "review" ? "In review" : "Blocked"} ${taskId(t.id)} ${t.title}`),
+    ...l.claims.map((c) => `Claimed ${c.path}`),
+  ]
+  return lines.length ? lines.join("\n") : "Nothing assigned"
 }
 
 function minutesLeft(expires: number, now: number) {
@@ -143,25 +159,44 @@ export function Details(p: Props) {
 
         <Part title={`${active.length} ${active.length === 1 ? "member" : "members"}`}>
           <div className="-mx-2 grid">
-            {active.map((m) => (
-              <div key={m.pk} className="group flex items-center gap-3 rounded-[8px] px-2 py-1.5 hover:bg-wash">
-                <Monogram name={memberName(m)} agent={m.kind !== "human"} size={26} online={p.online.has(m.name)} />
-                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => p.onFilter({ kind: "from", name: m.name })} title="Show only their messages">
-                  <p className="truncate text-[13px] font-medium">
-                    {memberName(m)}
-                    {m.pk === p.myKey && <span className="font-normal text-ink-3"> (you)</span>}
-                  </p>
-                  <p className="truncate text-[12px] text-ink-2" title={`Key ${m.pk.slice(0, 16)}`}>
-                    {memberLine(m)}
-                  </p>
-                </button>
-                {p.isOwner && !m.owner && (
-                  <Button size="sm" variant="danger" className="opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={() => setConfirm({ kind: "remove", member: m })}>
-                    Remove
-                  </Button>
-                )}
-              </div>
-            ))}
+            {active.map((m) => {
+              // People show load only when they hold tasks; agents always do, so a coordinator sees who's free.
+              const load = memberLoad(p.state, m.name, p.now)
+              const showLoad = m.kind !== "human" || load.level !== "free" || load.waiting.length > 0
+              return (
+                <div key={m.pk} className="group flex items-center gap-3 rounded-[8px] px-2 py-1.5 hover:bg-wash">
+                  <Monogram name={memberName(m)} agent={m.kind !== "human"} size={26} online={p.online.has(m.name)} />
+                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => p.onFilter({ kind: "from", name: m.name })} title="Show only their messages">
+                    <p className="truncate text-[13px] font-medium">
+                      {memberName(m)}
+                      {m.pk === p.myKey && <span className="font-normal text-ink-3"> (you)</span>}
+                    </p>
+                    <p className="truncate text-[12px] text-ink-2" title={`Key ${m.pk.slice(0, 16)}`}>
+                      {memberLine(m)}
+                    </p>
+                    {showLoad && load.level !== "free" && <p className="truncate text-[12px] text-ink-3">{loadLine(load)}</p>}
+                  </button>
+                  {showLoad && (
+                    <span
+                      title={loadDetail(load)}
+                      className={cx(
+                        "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                        load.level === "free" && "bg-wash text-ink-3",
+                        load.level === "busy" && "bg-wash-2 text-ink-2",
+                        load.level === "overloaded" && "bg-wash-2 text-alert",
+                      )}
+                    >
+                      {LEVEL[load.level]}
+                    </span>
+                  )}
+                  {p.isOwner && !m.owner && (
+                    <Button size="sm" variant="danger" className="opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={() => setConfirm({ kind: "remove", member: m })}>
+                      Remove
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
           </div>
           {former.length > 0 && <p className="mt-2 text-[12px] text-ink-3">Left: {former.map((m) => m.name).join(", ")}</p>}
         </Part>
