@@ -220,9 +220,10 @@ describe("channelFiles", () => {
     expect(text).not.toContain(intern.xsk!);
     expect(text).not.toContain(human.sk);
     for (const path of Object.keys(files)) {
-      expect(path.startsWith("/channel/") || path.startsWith("/channels/alpha/")).toBe(true);
+      expect(path.startsWith("/channel/")).toBe(true);
       expect(path).not.toContain("cursor");
     }
+    expect(Object.keys(files).some((path) => path.startsWith("/channels/"))).toBe(false);
     expect(files["/etc/passwd"]).toBeUndefined();
     const me = JSON.parse(files["/channel/me"] ?? "");
     expect(Object.keys(me).sort()).toEqual(["channel", "name", "role"]);
@@ -276,9 +277,8 @@ describe("channelFiles", () => {
         if (text.includes(secret)) throw new Error(`channel FS leaked ${secret.slice(0, 24)}`);
       }
       expect(text).toContain("verified-hello");
-      for (const path of Object.keys(files)) {
-        expect(path.startsWith("/channel/") || path.startsWith("/channels/escape/")).toBe(true);
-      }
+      for (const path of Object.keys(files)) expect(path.startsWith("/channel/")).toBe(true);
+      expect(Object.keys(files).some((path) => path.startsWith("/channels/"))).toBe(false);
       const me = JSON.parse(files["/channel/me"] ?? "");
       expect(Object.keys(me).sort()).toEqual(["channel", "name", "role"]);
       expect(me).toEqual({ name: "intern", role: "intern", channel: "escape" });

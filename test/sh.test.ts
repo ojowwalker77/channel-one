@@ -59,12 +59,31 @@ beforeAll(async () => {
 });
 
 describe("channel files", () => {
-  test("lays out the channel at /channel and /channels/<alias>", () => {
+  test("lays out the current channel at /channel, and not again under /channels", () => {
     for (const p of ["README", "me", "status", "status.json", "log.jsonl", "claims", "msgs/000001.txt", "tasks/T2.md", "members/mac.json", "facts/build.cmd"]) {
       expect(files[`/channel/${p}`]).toBeDefined();
-      expect(files[`/channels/proj/${p}`]).toBe(files[`/channel/${p}`]!);
     }
     expect(files["/channel/facts/build.cmd"]).toBe("bun test\n");
+    expect(Object.keys(files).some((p) => p.startsWith("/channels/"))).toBe(false);
+  });
+
+  test("the current alias is a symlink to /channel, and find and grep -r don't count it twice", async () => {
+    const link = await runSh(files, "readlink /channels/proj && cat /channels/proj/facts/build.cmd");
+    expect(link.exitCode).toBe(0);
+    expect(link.stdout).toBe("/channel\nbun test\n");
+    const found = await runSh(files, "find /channel /channels -name build.cmd");
+    expect(found.stdout.trim().split("\n")).toEqual(["/channel/facts/build.cmd"]);
+    // just-bash 3.6.0 grep -r follows the link for files directly in the directory, so this checks a nested file.
+    const grepped = await runSh(files, "grep -r -l 'bun test' /channel/facts /channels/proj/facts");
+    expect(grepped.stdout.trim().split("\n")).toEqual(["/channel/facts/build.cmd"]);
+  });
+
+  test("later views are the other channels, and the current alias is not one of them", () => {
+    const other: ChannelView = { ...view, alias: "other" };
+    const both = channelFiles([view, other]);
+    expect(both["/channel/facts/build.cmd"]).toBe("bun test\n");
+    expect(both["/channels/other/facts/build.cmd"]).toBe("bun test\n");
+    expect(Object.keys(both).some((p) => p.startsWith("/channels/proj/"))).toBe(false);
   });
 
   test("forged messages appear nowhere", () => {

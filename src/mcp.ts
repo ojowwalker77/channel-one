@@ -182,7 +182,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
       description:
         "Query the channel as read-only files with a sandboxed shell (grep, jq, awk, sed, find…), in one script. " +
         "/channel has log.jsonl, msgs/, inbox/, tasks/T<n>.md, members/<name>.json, facts/<key>, claims, status, status.json; " +
-        "/channels/<alias>/ has every channel you're in. `cat README` for the layout. " +
+        "/channels/<alias>/ has every other channel you're in; this channel's entry is a symlink to /channel. `cat README` for the layout. " +
         "Read-only: no disk, no network, no writes; use the other tools to send or change anything.",
       inputSchema: { script: z.string().describe("a bash script, e.g. jq -r 'select(.kind==\"ask\") | .body' log.jsonl") },
     },
