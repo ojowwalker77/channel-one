@@ -117,19 +117,32 @@ export function Spinner({ className }: { className?: string }) {
   return <span aria-label="Loading" className={cx("inline-block size-4 animate-spin rounded-full border-[1.5px] border-wash-2 border-t-ink-2", className)} />
 }
 
-/** Text tabs: the current one in ink, the rest quiet. */
-export function Tabs<T extends string>({ value, options, onChange }: { value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void }) {
+/** Text tabs: the current one in ink, the rest quiet. Arrow keys move between them. */
+export function Tabs<T extends string>({ value, options, onChange, stretch }: { value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void; stretch?: boolean }) {
   return (
-    <div className="flex items-center gap-0.5" role="tablist">
+    <div
+      className={cx("flex items-center gap-0.5", stretch && "rounded-[9px] bg-wash p-0.5")}
+      role="tablist"
+      onKeyDown={(e) => {
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return
+        e.preventDefault()
+        const at = options.findIndex((o) => o.value === value)
+        const next = options[(at + (e.key === "ArrowRight" ? 1 : -1) + options.length) % options.length]!
+        onChange(next.value)
+        requestAnimationFrame(() => (e.currentTarget.querySelector<HTMLElement>('[aria-selected="true"]') ?? null)?.focus())
+      }}
+    >
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
           role="tab"
           aria-selected={o.value === value}
+          tabIndex={o.value === value ? 0 : -1}
           onClick={() => onChange(o.value)}
           className={cx(
-            "flex h-7 items-center gap-1.5 rounded-[7px] px-2.5 text-[13px] font-medium transition-colors duration-150",
+            "flex h-7 items-center justify-center gap-1.5 rounded-[7px] px-2.5 text-[13px] font-medium transition-colors duration-150",
+            stretch && "flex-1",
             o.value === value ? "bg-wash-2 text-ink" : "text-ink-2 hover:text-ink"
           )}
         >

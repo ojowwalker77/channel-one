@@ -1,4 +1,4 @@
-import { ArrowDown01Icon, ArrowLeft01Icon, Cancel01Icon, Search01Icon, SidebarRightIcon } from "@hugeicons/core-free-icons"
+import { ArrowDown01Icon, ArrowLeft01Icon, Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { Message } from "@mc/protocol.ts"
@@ -7,11 +7,10 @@ import { channelTitle, forgetChannel, loadRecent, saveRecent, useChannel, useKno
 import { excerpt, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
 import { Composer } from "./composer"
-import { Details, type Filter } from "./details"
+import { ChannelControls, ChannelMenu, InviteButton, People, RequestsBanner, type Filter } from "./controls"
 import { Icon } from "./icon"
-import { Button, IconButton, Monogram, Spinner, Tabs, TextField } from "./kit"
+import { Button, IconButton, Spinner, Tabs, TextField } from "./kit"
 import { DayMark, EventGroup, EventRow, MessageRow, isAgent, standsAlone } from "./message"
-import { ResizablePanel } from "./ui/panel"
 import { TaskDetail, Tasks } from "./tasks"
 
 /** Messages this close together from one sender read as one run. */
@@ -52,7 +51,6 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const { ch, connection, gone, messages, roster, state, online, isOwner, requests, send, refreshRequests, refreshRoster } = useChannel(member, auth.token)
   const now = useNow()
   const [tab, setTab] = useState<"chat" | "tasks">("chat")
-  const [details, setDetails] = useState(false)
   const [filter, setFilter] = useState<Filter | null>(null)
   const [search, setSearch] = useState<string | null>(null)
   const [replyTo, setReplyTo] = useState<Message | null>(null)
@@ -221,204 +219,196 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         : online.size
           ? `${memberCount} members, ${online.size} online`
           : `${memberCount} ${memberCount === 1 ? "member" : "members"}`
-  const asking = isOwner ? requests : []
   // Who's here right now, people first: a glance at the header says who's working.
   const here = active.filter((m) => online.has(m.name)).sort((a, b) => Number(isAgent(a)) - Number(isAgent(b)))
 
+  const chips: { label: string; f: Filter | null; n?: number }[] = [
+    { label: "Everything", f: null },
+    { label: "To you", f: { kind: "mine" }, n: forMe.length },
+    { label: "Unanswered", f: { kind: "open" }, n: state.openAsks.length },
+  ]
+
   return (
-    <div className="flex h-full min-w-0 flex-1">
-      <div className={cx("relative flex min-w-0 flex-1 flex-col", details && "hidden md:flex")}>
-        <header className="flex h-[56px] shrink-0 items-center gap-2 px-3 shadow-[inset_0_-0.5px_0_var(--line)] md:px-5">
-          <IconButton label="Channels" className="md:hidden" onClick={onBack}>
-            <Icon icon={ArrowLeft01Icon} size={20} />
-          </IconButton>
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-[15px] leading-tight font-semibold tracking-[-0.015em]">{title}</h1>
-            <button type="button" onClick={() => setDetails(true)} className="mt-0.5 flex max-w-full items-center gap-1.5 rounded-[6px] text-left transition-colors hover:text-ink">
-              {connection === "live" && here.length > 0 && (
-                <span className="flex shrink-0 -space-x-1" aria-hidden>
-                  {here.slice(0, 5).map((m) => (
-                    <span key={m.name} className="flex bg-canvas p-px" style={{ borderRadius: isAgent(m) ? 6 : 999 }}>
-                      <Monogram name={memberName(m)} agent={isAgent(m)} size={16} />
-                    </span>
-                  ))}
-                </span>
-              )}
-              <span className={cx("truncate text-[12px] leading-tight", connection === "live" ? "text-ink-2" : "text-ink-3")}>{subtitle}</span>
-            </button>
-          </div>
-          <Tabs
-            value={tab}
-            onChange={setTab}
-            options={[
-              { value: "chat", label: "Chat" },
-              { value: "tasks", label: <>Tasks{openTasks > 0 && <span className="text-ink-3 tabular-nums">{openTasks}</span>}</> },
-            ]}
-          />
-          <span className="mx-1 h-4 w-px bg-line" />
-          <IconButton label="Search" active={search !== null} onClick={() => setSearch((s) => (s === null ? "" : null))} disabled={tab !== "chat"}>
-            <Icon icon={Search01Icon} size={17} />
-          </IconButton>
-          <IconButton label="Details" active={details} onClick={() => setDetails((d) => !d)}>
-            <Icon icon={SidebarRightIcon} size={17} />
-            {asking.length > 0 && <span className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-accent" />}
-          </IconButton>
-        </header>
+    <ChannelControls
+      code={member.code}
+      myKey={member.identity.pk}
+      isOwner={isOwner}
+      roster={roster}
+      requests={requests}
+      online={online}
+      state={state}
+      now={now}
+      onFilter={(f) => {
+        setFilter(f)
+        setTab("chat")
+      }}
+      onApprove={async (r) => {
+        await ch.approve(r)
+        await Promise.all([refreshRequests(), refreshRoster()])
+      }}
+      onReclaim={async (r, opts) => {
+        await ch.reclaim(r, opts)
+        await Promise.all([refreshRequests(), refreshRoster()])
+      }}
+      onRole={async (ev) => {
+        await send(ev.op === "role.set" ? `made ${ev.member} ${ev.role ?? "unassigned"}` : `kept ${ev.member}'s role`, { kind: "event", ev })
+      }}
+      onDeny={async (r) => {
+        await ch.deny(r.id)
+        await refreshRequests()
+      }}
+      onCheck={async (r) => {
+        await ch.checkRequest(r)
+        await refreshRequests()
+      }}
+      onRemove={async (m) => {
+        await ch.remove(m.pk)
+        await refreshRoster()
+      }}
+      onCloseChannel={async () => {
+        await ch.close()
+        forgetChannel(member.code)
+        onGone()
+      }}
+      onLeaveChannel={async () => {
+        await ch.leave()
+        forgetChannel(member.code)
+        onGone()
+      }}
+    >
+      <div className="flex h-full min-w-0 flex-1">
+        <div className="relative flex min-w-0 flex-1 flex-col">
+          <header className="flex h-[56px] shrink-0 items-center gap-2 px-3 shadow-[inset_0_-0.5px_0_var(--line)] md:px-5">
+            <IconButton label="Channels" className="md:hidden" onClick={onBack}>
+              <Icon icon={ArrowLeft01Icon} size={20} />
+            </IconButton>
+            <div className="min-w-0 flex-1">
+              <h1 className="truncate text-[15px] leading-tight font-semibold tracking-[-0.015em]">{title}</h1>
+              <People here={here} subtitle={subtitle} live={connection === "live"} />
+            </div>
+            <Tabs
+              value={tab}
+              onChange={setTab}
+              options={[
+                { value: "chat", label: "Chat" },
+                { value: "tasks", label: <>Tasks{openTasks > 0 && <span className="text-ink-3 tabular-nums">{openTasks}</span>}</> },
+              ]}
+            />
+            <span className="mx-1 h-4 w-px bg-line" />
+            <InviteButton />
+            <IconButton label="Search" active={search !== null} onClick={() => setSearch((s) => (s === null ? "" : null))} disabled={tab !== "chat"}>
+              <Icon icon={Search01Icon} size={17} />
+            </IconButton>
+            <ChannelMenu />
+          </header>
 
-        {asking.length > 0 && !details && (
-          <div className="flex shrink-0 items-center gap-3 bg-accent-wash px-5 py-2 text-[13px]">
-            <span className="min-w-0 flex-1 truncate">
-              {asking.length === 1 ? (
-                <>
-                  <span className="font-medium">{asking[0]!.name}</span> wants to join this channel.
-                </>
-              ) : (
-                `${asking.length} people and agents want to join this channel.`
-              )}
-            </span>
-            <button type="button" onClick={() => setDetails(true)} className="shrink-0 font-medium text-accent hover:underline">
-              Review
-            </button>
-          </div>
-        )}
+          <RequestsBanner />
 
-        {tab === "tasks" ? (
-          <Tasks state={state} now={now} onOpen={setOpenTask} />
-        ) : (
-          <>
-            {(search !== null || filterLabel) && (
-              <div className="mx-auto flex w-full max-w-[760px] shrink-0 items-center gap-2 px-4 pt-3 md:px-8">
+          {tab === "tasks" ? (
+            <Tasks state={state} now={now} onOpen={setOpenTask} onForgetFact={async (key) => void (await send(`cleared ${key}`, { kind: "event", ev: { op: "fact.del", key } }))} />
+          ) : (
+            <>
+              <div className="mx-auto flex w-full max-w-[760px] shrink-0 flex-wrap items-center gap-1.5 px-4 pt-3 pb-1 md:px-8">
                 {search !== null && (
-                  <TextField autoFocus value={search} placeholder="Search messages" onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setSearch(null)} />
+                  <TextField
+                    autoFocus
+                    value={search}
+                    placeholder="Search messages"
+                    className="mb-1.5 basis-full"
+                    onChange={(e) => setSearch(e.target.value)}
+                    onKeyDown={(e) => e.key === "Escape" && setSearch(null)}
+                  />
                 )}
-                {filterLabel && (
+                {chips.map((c) => {
+                  const on = c.f === null ? filter === null : filter?.kind === c.f.kind
+                  return (
+                    <button
+                      key={c.label}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => setFilter(c.f)}
+                      className={cx(
+                        "flex h-7 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium transition-colors",
+                        on ? "bg-ink text-canvas" : "text-ink-2 shadow-[inset_0_0_0_1px_var(--line)] hover:text-ink"
+                      )}
+                    >
+                      {c.label}
+                      {!!c.n && <span className="tabular-nums opacity-70">{c.n}</span>}
+                    </button>
+                  )
+                })}
+                {filter?.kind === "from" && (
                   <button
                     type="button"
                     onClick={() => setFilter(null)}
-                    className="flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] bg-wash-2 pr-2 pl-3 text-[13px] font-medium transition-colors hover:bg-wash"
+                    className="flex h-7 items-center gap-1 rounded-full bg-ink pr-2 pl-3 text-[12.5px] font-medium text-canvas"
                     title="Show everything"
                   >
                     {filterLabel}
-                    <Icon icon={Cancel01Icon} size={13} />
+                    <Icon icon={Cancel01Icon} size={12} />
                   </button>
                 )}
               </div>
-            )}
 
-            <div
-              ref={scroller}
-              className="flex-1 overflow-y-auto"
-              onScroll={(e) => {
-                const el = e.currentTarget
-                atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-                if (atBottom.current && behind) setBehind(0)
-              }}
-            >
-              {connection === "connecting" && messages.length === 0 ? (
-                <Centered>
-                  <Spinner />
-                </Centered>
-              ) : visible.length === 0 ? (
-                <Centered>
-                  <p className="text-[14px] font-semibold">{search ? "No results" : filter ? "Nothing here" : "No messages yet"}</p>
-                  <p className="mt-1 max-w-xs text-[13px] leading-normal text-ink-2">
-                    {search
-                      ? `No message mentions “${search}”.`
-                      : filter
-                        ? "Clear the filter to see the whole conversation."
-                        : "Invite an agent from Details. What it says shows up here the moment it’s sent."}
-                  </p>
-                </Centered>
-              ) : (
-                <div className="mx-auto w-full max-w-[760px] px-4 pb-6 md:px-8">{rows}</div>
-              )}
-            </div>
-
-            {behind > 0 && (
-              <button
-                type="button"
-                onClick={toBottom}
-                className="animate-rise absolute bottom-[132px] left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-raised py-1.5 pr-3.5 pl-2.5 text-[12.5px] font-medium shadow-pop"
+              <div
+                ref={scroller}
+                className="flex-1 overflow-y-auto"
+                onScroll={(e) => {
+                  const el = e.currentTarget
+                  atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+                  if (atBottom.current && behind) setBehind(0)
+                }}
               >
-                <Icon icon={ArrowDown01Icon} size={15} />
-                {behind === 1 ? "1 new message" : `${behind} new messages`}
-              </button>
-            )}
+                {connection === "connecting" && messages.length === 0 ? (
+                  <Centered>
+                    <Spinner />
+                  </Centered>
+                ) : visible.length === 0 ? (
+                  <Centered>
+                    <p className="text-[14px] font-semibold">{search ? "No results" : filter ? "Nothing here" : "No messages yet"}</p>
+                    <p className="mt-1 max-w-xs text-[13px] leading-normal text-ink-2">
+                      {search
+                        ? `No message mentions “${search}”.`
+                        : filter
+                          ? "Clear the filter to see the whole conversation."
+                          : "Invite an agent with the Invite button above. What it says shows up here the moment it’s sent."}
+                    </p>
+                  </Centered>
+                ) : (
+                  <div className="mx-auto w-full max-w-[760px] px-4 pb-6 md:px-8">{rows}</div>
+                )}
+              </div>
 
-            <Composer
-              me={me}
-              people={people}
-              replyTo={replyTo}
-              nameOf={nameOf}
-              onClearReply={() => setReplyTo(null)}
-              disabled={connection === "connecting"}
-              send={async (body, opts) => {
-                atBottom.current = true
-                return send(body, opts)
-              }}
-            />
-          </>
-        )}
+              {behind > 0 && (
+                <button
+                  type="button"
+                  onClick={toBottom}
+                  className="animate-rise absolute bottom-[132px] left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-raised py-1.5 pr-3.5 pl-2.5 text-[12.5px] font-medium shadow-pop"
+                >
+                  <Icon icon={ArrowDown01Icon} size={15} />
+                  {behind === 1 ? "1 new message" : `${behind} new messages`}
+                </button>
+              )}
+
+              <Composer
+                me={me}
+                people={people}
+                replyTo={replyTo}
+                nameOf={nameOf}
+                onClearReply={() => setReplyTo(null)}
+                disabled={connection === "connecting"}
+                send={async (body, opts) => {
+                  atBottom.current = true
+                  return send(body, opts)
+                }}
+              />
+            </>
+          )}
+        </div>
+
+        <TaskDetail id={openTask} state={state} messages={messages} now={now} onClose={() => setOpenTask(null)} onOpen={setOpenTask} />
       </div>
-
-      {details && (
-        <ResizablePanel>
-          <Details
-            code={member.code}
-            me={me}
-            myKey={member.identity.pk}
-            isOwner={isOwner}
-            roster={roster}
-            requests={requests}
-            online={online}
-            state={state}
-            mentions={forMe.length}
-            now={now}
-            onDismiss={() => setDetails(false)}
-            onFilter={(f) => {
-              setFilter(f)
-              setTab("chat")
-              if (window.innerWidth < 768) setDetails(false)
-            }}
-            onApprove={async (r) => {
-              await ch.approve(r)
-              await Promise.all([refreshRequests(), refreshRoster()])
-            }}
-            onReclaim={async (r, opts) => {
-              await ch.reclaim(r, opts)
-              await Promise.all([refreshRequests(), refreshRoster()])
-            }}
-            onRole={async (ev) => {
-              await send(ev.op === "role.set" ? `made ${ev.member} ${ev.role ?? "unassigned"}` : `kept ${ev.member}'s role`, { kind: "event", ev })
-            }}
-            onDeny={async (r) => {
-              await ch.deny(r.id)
-              await refreshRequests()
-            }}
-            onCheck={async (r) => {
-              await ch.checkRequest(r)
-              await refreshRequests()
-            }}
-            onRemove={async (m) => {
-              await ch.remove(m.pk)
-              await refreshRoster()
-            }}
-            onCloseChannel={async () => {
-              await ch.close()
-              forgetChannel(member.code)
-              onGone()
-            }}
-            onLeaveChannel={async () => {
-              await ch.leave()
-              forgetChannel(member.code)
-              onGone()
-            }}
-          />
-        </ResizablePanel>
-      )}
-
-      <TaskDetail id={openTask} state={state} messages={messages} now={now} onClose={() => setOpenTask(null)} onOpen={setOpenTask} />
-    </div>
+    </ChannelControls>
   )
 }
 
