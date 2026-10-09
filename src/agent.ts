@@ -2,7 +2,7 @@
 // and MCP tool. Keeps a local cache of the decrypted log so folding shared
 // state (tasks, claims, facts, members) costs one incremental fetch.
 
-import { Channel, isDirectedAt, isForAgent, type SendOptions } from "./client.ts";
+import { Channel, ChannelGone, isDirectedAt, isForAgent, QUIET_DROP_MS, RelayError, type SendOptions } from "./client.ts";
 import { appendCache, loadIdentity, markSeen, readCache, readCursor, readSeen, saveAccess, signingBudget, writeCursor, type ChannelConfig } from "./config.ts";
 import { TOO_MANY_REQUESTS } from "./sas.ts";
 import type { ChannelAccess } from "./crypto.ts";
@@ -13,13 +13,19 @@ import { claimConflict, fold, overlaps, taskId, waitingOn, wouldCycle, type Chan
 
 /** How often a listening agent re-announces itself. Receivers treat 2.5x this as offline. */
 export const PRESENCE_EVERY_MS = 60_000;
+/** What `--to` takes for "everyone, on purpose". */
+const EVERYONE = new Set(["all", "everyone", "*"]);
 export const PRESENCE_TTL_MS = 150_000;
 
 export interface Delivery {
   /** Show every message, including all coordination events. */
   all?: boolean;
+  /** Every chat message, whoever it's for (what a coordinator wants). */
+  chat?: boolean;
   /** Only messages addressed to this agent (by name or role, or broadcast asks). */
   forMe?: boolean;
+  /** Only messages in the thread this message (root or reply) is in. */
+  thread?: number;
 }
 
 export class Rejected extends Error {}
@@ -143,12 +149,31 @@ export class AgentSession {
     onMessage: (m: Message, state: ChannelState) => void | Promise<void>,
     opts: Delivery & { signal?: AbortSignal; client: string; onStatus?: (s: string) => void; onNotice?: (text: string) => void | Promise<void> },
   ): Promise<void> {
-    await this.ownerChores();
     // Lets the Claude Code Stop hook know this agent can hear the channel.
     const { registerListener } = await import("./hooks.ts");
     registerListener(this.alias, this.me);
-    const since = await this.cursor();
-    let { messages, state } = await this.state();
+    // Starting up when the relay is briefly out of reach (a deploy, a blip) waits and retries, like any drop later.
+    let since = 0;
+    let messages: Message[] = [];
+    let state!: ChannelState;
+    for (let backoff = 500, downSince = Date.now(), told = false; ; backoff = Math.min(backoff * 2, 30_000)) {
+      try {
+        await this.ownerChores();
+        since = await this.cursor();
+        ({ messages, state } = await this.state());
+        if (told) opts.onStatus?.(`reached the relay after ${Math.round((Date.now() - downSince) / 1000)}s`);
+        break;
+      } catch (err) {
+        // Gone (removed, closed) and refusals are answers, not outages.
+        if (err instanceof ChannelGone || err instanceof Rejected || (err instanceof RelayError && err.status < 500 && err.status !== 429)) throw err;
+        if (opts.signal?.aborted) return;
+        if (!told && Date.now() - downSince >= QUIET_DROP_MS) {
+          told = true;
+          opts.onStatus?.(`can't reach the relay (${err instanceof Error ? err.message : String(err)}); still retrying`);
+        }
+        await Bun.sleep(backoff);
+      }
+    }
     const seen = readSeen(this.alias, this.me);
     const role = state.members.get(this.me)?.role;
     let lastQueryReply = 0;
@@ -247,6 +272,8 @@ export class AgentSession {
 
   /** Expand `role:x` recipients to the members holding that role. */
   async resolveTo(to: string[] | undefined, state?: ChannelState): Promise<string[] | undefined> {
+    // "--to all": for everyone, on purpose. It reaches every agent; a message with no --to only reaches those following all chat.
+    if (to?.some((t) => EVERYONE.has(t.toLowerCase()))) return ["*"];
     if (!to?.length || !to.some((t) => t.startsWith("role:"))) return to;
     const s = state ?? (await this.state()).state;
     const out = new Set<string>();
@@ -455,14 +482,27 @@ export class AgentSession {
 
 export type { Presence };
 
-/** `AgentSession.wants`, for callers that have the state but no session (kiwi sh). */
+/**
+ * `AgentSession.wants`, for callers that have the state but no session (kiwi sh).
+ * By default an agent gets what's for it: messages to it or its role, broadcasts
+ * from people and broadcast questions, and every message in a thread it's in.
+ * Other agents' conversations stay out unless it asks for all chat.
+ */
 export function wants(me: string, m: Message, state: ChannelState | null, d: Delivery = {}): boolean {
   if (m.from === me) return false;
   // Forged messages never reach an agent: they're noise at best, prompt injection at worst.
   if (state?.trust.get(m.seq) === "forged") return false;
   if (d.all) return true;
+  // Any message of a thread names it: its root, or a reply in it.
+  if (d.thread !== undefined) return m.kind !== "event" && (state?.threadOf.get(m.seq) ?? m.seq) === (state?.threadOf.get(d.thread) ?? d.thread);
   const role = state?.members.get(me)?.role;
-  const addressed = isDirectedAt(m, me) || (!!role && !!m.to?.includes(`role:${role}`));
+  const addressed = isDirectedAt(m, me) || !!m.to?.includes("*") || (!!role && !!m.to?.includes(`role:${role}`));
   if (m.kind === "event") return addressed || m.ev?.op === "hello";
-  return d.forMe ? addressed || isForAgent(m, me) && (m.kind === "ask" || m.kind === "blocking") : true;
+  if (d.chat) return true;
+  const asking = isForAgent(m, me) && (m.kind === "ask" || m.kind === "blocking");
+  if (d.forMe) return addressed || asking;
+  const sender = state?.members.get(m.from);
+  const fromPerson = !m.to?.length && (sender?.kind === "human" || !!sender?.owner);
+  const inMyThread = !!state?.threadPeople.get(state.threadOf.get(m.seq) ?? m.seq)?.has(me);
+  return addressed || asking || fromPerson || inMyThread;
 }

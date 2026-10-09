@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
-import { workosFromSettings, type HumanAuth } from "./human.ts";
+import { devHostOk, devHumanAuth, devRequestOk, HUMAN_HEADER, workosFromSettings, type HumanAuth } from "./human.ts";
 import { onDeviceHttp, type DeviceStore, type DeviceTransfer } from "./devices.ts";
 import { onVaultHttp, vaultSwap, type VaultRecord, type VaultStore } from "./vault.ts";
 import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
@@ -168,6 +168,10 @@ export function startRelay(
     async fetch(req, server) {
       try {
         const url = new URL(req.url);
+        // Dev sign-in answers only this machine, directly: never a request a proxy passed on.
+        if (human?.dev && req.headers.has(HUMAN_HEADER) && !devRequestOk(req, server.requestIP(req)?.address)) {
+          return Response.json({ error: "dev sign-in only takes requests made on this machine, not through a proxy" }, { status: 403 });
+        }
         if (web && !url.pathname.startsWith("/v1/") && (req.method === "GET" || req.method === "HEAD")) return web(url.pathname);
         if (url.pathname === "/") return new Response("Kiwi Channels relay (bun)\n");
         if (url.pathname === "/v1/config") return relayConfig(human);
@@ -306,6 +310,8 @@ Usage: ${cmd} [options]
   --no-web                      don't serve the dashboard
   --workos-client-id <id>       turn on sign-in with your WorkOS AuthKit app (env WORKOS_CLIENT_ID)
   --workos-authkit-domain <url> your AuthKit domain, https://….authkit.app (env WORKOS_AUTHKIT_DOMAIN)
+  --dev-sign-in                 testing only: the token "dev:<name>" signs in as <name>, no password.
+                                Needs --hostname 127.0.0.1 (or localhost); refused on any other address.
 
   WORKOS_API_KEY (env only, it's a secret) lets the relay show people's real names.
   Without a WorkOS client id the relay has no sign-in: anyone can create channels.
@@ -324,19 +330,25 @@ export function runRelay(argv: string[], cmd = "bun src/relay/bun.ts"): void {
     return (i >= 0 ? argv[i + 1] : undefined) ?? (process.env[env] || undefined);
   };
   const authkitDomain = arg("--workos-authkit-domain", "WORKOS_AUTHKIT_DOMAIN")?.replace(/\/$/, "");
-  const human = workosFromSettings({ clientId: arg("--workos-client-id", "WORKOS_CLIENT_ID"), authkitDomain, apiKey: process.env.WORKOS_API_KEY || undefined });
+  const hostname = arg("--hostname", "KIWI_HOSTNAME");
+  const dev = argv.includes("--dev-sign-in");
+  if (dev && !devHostOk(hostname)) {
+    process.stderr.write("--dev-sign-in lets anyone sign in as anyone: it needs --hostname 127.0.0.1 (or localhost).\n");
+    process.exit(2);
+  }
+  const human = dev ? devHumanAuth() : workosFromSettings({ clientId: arg("--workos-client-id", "WORKOS_CLIENT_ID"), authkitDomain, apiKey: process.env.WORKOS_API_KEY || undefined });
   const builtWeb = resolve(import.meta.dir, "../../web/dist");
   const webDir = argv.includes("--no-web") ? undefined : (arg("--web", "KIWI_WEB") ?? (existsSync(join(builtWeb, "index.html")) ? builtWeb : undefined));
   const connect = human ? ["https://api.workos.com", ...(authkitDomain ? [authkitDomain] : [])] : [];
   const server = startRelay({
     port: Number(arg("--port", "PORT") ?? 8787),
-    hostname: arg("--hostname", "KIWI_HOSTNAME"),
+    hostname,
     dataDir: arg("--data", "KIWI_DATA"),
     human,
     web: webDir ? { dir: webDir, connect } : null,
   });
   console.log(`Kiwi Channels relay listening on ${server.url}`);
-  console.log(`  sign-in: ${human ? `WorkOS ${human.clientId}${human.profile ? " (with names)" : ""}` : "off"}`);
+  console.log(`  sign-in: ${human?.dev ? 'DEV: the token "dev:<name>" is <name>, no password (this machine only)' : human ? `WorkOS ${human.clientId}${human.profile ? " (with names)" : ""}` : "off"}`);
   console.log(`  dashboard: ${webDir ? resolve(webDir) : "not served"}`);
 }
 

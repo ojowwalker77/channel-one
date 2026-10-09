@@ -3,6 +3,8 @@ import { createContext, createElement, useContext, useEffect, useMemo, useState,
 
 import { relayConfig } from "@mc/client.ts"
 
+import { DevSignIn } from "@/components/dev-sign-in"
+
 /**
  * Human sign-in with WorkOS AuthKit (authorization code + PKCE, all in the
  * browser). When the relay advertises a WorkOS client, channels are created and
@@ -41,15 +43,33 @@ function safeReturn(state: unknown): string {
   }
 }
 
+// Dev sign-in (a local relay run with --dev-sign-in): the name you give, kept in this browser.
+const DEV_KEY = "mc.dev-user"
+
+/** The user a dev name stands for: dev_<name> to the relay, shown with "(dev)" so nobody mistakes it for a real sign-in. */
+function devUser(name: string): User {
+  return { id: `dev_${name}`, email: `${name}@dev.invalid`, firstName: `${name} (dev)`, lastName: null } as unknown as User
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [client, setClient] = useState<AuthClient | null>(null)
   const [status, setStatus] = useState<Auth["status"]>("loading")
   const [user, setUser] = useState<User | null>(null)
+  const [dev, setDev] = useState<{ name: string | null; asking: boolean } | null>(null)
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const { workosClientId } = await relayConfig(location.origin).catch(() => ({ workosClientId: null }))
+      const config: { workosClientId: string | null; dev?: boolean } = await relayConfig(location.origin).catch(() => ({ workosClientId: null }))
+      const { workosClientId } = config
+      if (config.dev) {
+        if (cancelled) return
+        const name = localStorage.getItem(DEV_KEY)
+        setDev({ name, asking: false })
+        setUser(name ? devUser(name) : null)
+        setStatus(name ? "signed-in" : "signed-out")
+        return
+      }
       if (!workosClientId) {
         if (!cancelled) setStatus("off")
         return
@@ -83,24 +103,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo<Auth>(
-    () => ({
-      status,
-      user,
-      signIn: () => void client?.signIn({ state: { returnTo: location.pathname + location.hash } }),
-      signOut: () => client?.signOut({ returnTo: location.origin + "/" }),
-      token: async () => {
-        if (!client || !client.getUser()) return null
-        try {
-          return await client.getAccessToken()
-        } catch {
-          return null
-        }
-      },
-    }),
-    [client, status, user]
+    () =>
+      dev
+        ? {
+            status,
+            user,
+            signIn: () => setDev((d) => d && { ...d, asking: true }),
+            signOut: () => {
+              localStorage.removeItem(DEV_KEY)
+              setDev({ name: null, asking: false })
+              setUser(null)
+              setStatus("signed-out")
+            },
+            token: async () => (dev.name ? `dev:${dev.name}` : null),
+          }
+        : {
+            status,
+            user,
+            signIn: () => void client?.signIn({ state: { returnTo: location.pathname + location.hash } }),
+            signOut: () => client?.signOut({ returnTo: location.origin + "/" }),
+            token: async () => {
+              if (!client || !client.getUser()) return null
+              try {
+                return await client.getAccessToken()
+              } catch {
+                return null
+              }
+            },
+          },
+    [client, status, user, dev]
   )
 
-  return createElement(AuthContext.Provider, { value }, children)
+  const signInDev = (name: string) => {
+    localStorage.setItem(DEV_KEY, name)
+    setDev({ name, asking: false })
+    setUser(devUser(name))
+    setStatus("signed-in")
+  }
+  return createElement(
+    AuthContext.Provider,
+    { value },
+    children,
+    dev ? createElement(DevSignIn, { open: dev.asking, onClose: () => setDev((d) => d && { ...d, asking: false }), onSignIn: signInDev }) : null
+  )
 }
 
 export function useAuth(): Auth {

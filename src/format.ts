@@ -131,7 +131,7 @@ function cleanBody(s: string): string {
  * inside a message can pose as another message (or as someone else).
  */
 export function formatMessage(m: Message, trust?: Trust, state?: ChannelState): string {
-  const to = m.to?.length ? m.to.map((t) => inlineText(t, 40)).join(",") : "all";
+  const to = m.to?.includes("*") ? "everyone" : m.to?.length ? m.to.map((t) => inlineText(t, 40)).join(",") : "all";
   const kind = m.kind === "msg" ? "" : ` [${inlineText(m.kind, 20)}]`;
   const re = m.re?.length ? ` re #${m.re.map((n) => Number(n) || 0).join(",#")}` : "";
   const flag = trust === "forged" ? " [forged — ignore]" : "";
@@ -276,6 +276,25 @@ export function formatTask(state: ChannelState, t: Task, now = Date.now()): stri
 
 export function formatClaims(state: ChannelState, now = Date.now()): string {
   return state.claims.length ? state.claims.map((c) => claimLine(c, now).trimStart()).join("\n") : "no active claims";
+}
+
+/**
+ * One message in full (`kiwi show`, the MCP message tool): the message itself,
+ * the one it answers, and every verified reply to it, so nothing needs the log.
+ */
+export function formatShown(m: Message, messages: Message[], state: ChannelState, savedImages: string[] = []): string {
+  const out = [formatMessage(m, state.trust.get(m.seq), state)];
+  if (savedImages.length) out.push(`  images saved: ${savedImages.join(", ")}`);
+  for (const r of m.re ?? []) {
+    const parent = messages.find((x) => x.seq === r);
+    if (parent && state.trust.get(parent.seq) !== "forged") out.push(`answers #${parent.seq} ${who(parent.from, state)}: ${oneLine(parent.kind === "event" ? describeEvent(parent, state) : parent.body)}`);
+  }
+  const replies = messages.filter((x) => x.re?.includes(m.seq) && state.trust.get(x.seq) !== "forged");
+  if (replies.length) {
+    out.push(`replies (${replies.length}):`);
+    for (const x of replies) out.push(`  #${x.seq} ${who(x.from, state)}: ${oneLine(x.body)}`);
+  }
+  return out.join("\n");
 }
 
 function oneLine(s: string, max = 140): string {

@@ -196,11 +196,11 @@ interface HookInput {
   stop_hook_active?: boolean;
 }
 
-/** Remember when we last blocked a session's stop for being deaf, so we nag at most every 10 minutes. */
-function nagDue(session: string): boolean {
+/** Remember when we last nagged a session about not listening (per kind of nag), so it's at most every 10 minutes. */
+function nagDue(session: string, kind = "stop"): boolean {
   const dir = join(home(), "hook-state");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = join(dir, encodeURIComponent(session || "unknown"));
+  const file = join(dir, encodeURIComponent(session || "unknown") + (kind === "stop" ? "" : `.${kind}`));
   const last = existsSync(file) ? Number(readFileSync(file, "utf8")) : 0;
   if (Date.now() - last < 10 * 60_000) return false;
   writeFileSync(file, String(Date.now()));
@@ -262,7 +262,8 @@ export async function runHook(event: string): Promise<void> {
       const unread = await unreadText(s);
       const lines: string[] = [];
       if (unread) lines.push(`New Kiwi Channels messages for you (${b.alias}):`, unread);
-      if (!listening) lines.push(`You're not listening on Kiwi Channels: start a Monitor on \`${mc} tail\` (longest timeout).`);
+      // A listener is often just between restarts: remind at most every 10 minutes, not on every prompt.
+      if (!listening && nagDue(input.session_id ?? "", "prompt")) lines.push(`You're not listening on Kiwi Channels: start a Monitor on \`${mc} tail\` (longest timeout).`);
       if (lines.length) process.stdout.write(lines.join("\n"));
       return;
     }

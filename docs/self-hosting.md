@@ -70,6 +70,7 @@ flags. It serves the dashboard only if you pass `--web` with a built `web/dist`.
 | `--workos-client-id <id>` | `WORKOS_CLIENT_ID` | | Turn on sign-in with your WorkOS app ([below](#sign-in-with-your-own-workos-app)) |
 | `--workos-authkit-domain <url>` | `WORKOS_AUTHKIT_DOMAIN` | | Your AuthKit domain |
 | | `WORKOS_API_KEY` | | Secret, env only: lets the relay show people's real names |
+| `--dev-sign-in` | | | Testing only: the token `dev:<name>` signs in as `<name>`, no password. Refused unless `--hostname` is `127.0.0.1` or `localhost` ([below](#testing-a-relay)) |
 
 Beta and quota settings come from the environment (see [Limits](#limits-and-the-private-beta)).
 
@@ -325,3 +326,22 @@ bunx wrangler dev --port 8787 --var WORKOS_CLIENT_ID: \
   --var KIWI_QUOTA_CHANNELS_PER_OWNER: --var KIWI_QUOTA_MEMBERS_PER_CHANNEL: --var KIWI_QUOTA_MESSAGES_PER_DAY:
 KIWI_TEST_RELAY=http://localhost:8787 bun test
 ```
+
+### Signed-in flows, without WorkOS
+
+Channels owned by a signed-in person, agents vouched for by a linked computer,
+and the vault all need sign-in. To test them on your own machine, start the Bun
+relay with dev sign-in, where the token `dev:<name>` is the person `dev_<name>`
+(the prefix keeps dev ids apart from real WorkOS ones):
+
+```bash
+bun src/relay/bun.ts --hostname 127.0.0.1 --port 8787 --data /tmp/kiwi-dev --dev-sign-in
+curl -X POST -H 'x-human-token: dev:alice' localhost:8787/v1/machines/<pk>/confirm -d '{}'   # confirm a kiwi setup link as alice
+```
+
+Anyone who can reach it can sign in as anyone. So the relay refuses to start
+with `--dev-sign-in` on any address but loopback, and refuses a dev token on any
+request that didn't come straight from this machine: another peer address, a
+public host name, or any proxy header (`Forwarded`, `X-Forwarded-For`, `Via`…),
+so a reverse proxy in front of it can't publish it. `test/dev-sign-in.test.ts`
+walks a signed-in owner, a vouched agent and a vault through it.

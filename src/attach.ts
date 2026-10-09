@@ -1,8 +1,8 @@
 // Loading local image files into message attachments. Bun/Node only: reads
 // from disk, so the web app and the Worker never import this.
 
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, extname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, extname, join } from "node:path";
 import { MAX_IMAGE_BYTES, MAX_IMAGES, type ImageAttachment } from "./protocol.ts";
 
 export type { ImageAttachment };
@@ -32,5 +32,16 @@ export function loadImages(paths: string[]): ImageAttachment[] {
       throw new Error(`${p} is ${kb(raw.length)} (limit ${kb(MAX_IMAGE_BYTES)}); shrink or convert it to jpeg first`);
     }
     return { name: basename(p), mime, data: raw.toString("base64") };
+  });
+}
+
+/** Write message #seq's images into `dir` as `#<seq>-<name>`; returns the paths. */
+export function saveImages(seq: number, imgs: ImageAttachment[], dir: string): string[] {
+  mkdirSync(dir, { recursive: true });
+  return imgs.map((img) => {
+    const safe = img.name.replace(/[^A-Za-z0-9_.-]/g, "_") || "image";
+    const path = join(dir, `#${seq}-${safe}`);
+    writeFileSync(path, Buffer.from(img.data, "base64"));
+    return path;
   });
 }

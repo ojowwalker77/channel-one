@@ -580,7 +580,7 @@ describe("MCP server", () => {
       expect(init.instructions).toContain('You are "agent-a"');
       p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
       const tools = ((await rpc("tools/list")) as { tools: { name: string }[] }).tools.map((t) => t.name).sort();
-      expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "read", "release", "reply", "save", "send", "sh", "status", "task_add", "task_update", "tasks", "who"]);
+      expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "message", "read", "release", "reply", "save", "send", "sh", "status", "task_add", "task_update", "tasks", "who"]);
 
       expect(await call("task_add", { title: "write docs" })).toMatch(/^added T\d+$/);
       expect(await call("claim", { paths: ["docs/"], ttl: "10m" })).toContain("docs/  @agent-a");
@@ -604,6 +604,10 @@ describe("MCP server", () => {
       const imgBlock = logRes.content.find((c) => c.type === "image") as unknown as { data: string; mimeType: string };
       expect(imgBlock.mimeType).toBe("image/png");
       expect(await call("save", { seq })).toContain(`#${seq}-shot.png`);
+      const shown = (await rpc("tools/call", { name: "message", arguments: { seq } })) as { content: { type: string; text?: string }[] };
+      expect(shown.content[0]!.text).toContain("the dialog");
+      expect(shown.content[0]!.text).toContain("images saved:");
+      expect(shown.content.some((c) => c.type === "image")).toBe(true);
       expect(await ok(other, "who")).toContain("nobody else is listening right now");
     } finally {
       p.kill();

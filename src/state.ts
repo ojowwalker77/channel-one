@@ -99,6 +99,10 @@ export interface ChannelState {
   rejected: Map<number, string>;
   /** Asks and blockers nobody else has replied to. */
   openAsks: Message[];
+  /** Each verified chat message's thread: the seq at the top of its reply chain (itself if it starts one). */
+  threadOf: Map<number, number>;
+  /** Who's in each thread (by its root): everyone who wrote in it or was named in it. */
+  threadPeople: Map<number, Set<string>>;
   head: number;
 }
 
@@ -187,6 +191,8 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
   const trust = new Map<number, Trust>();
   const rejected = new Map<number, string>();
   const answered = new Map<number, Set<string>>();
+  const threadOf = new Map<number, number>();
+  const threadPeople = new Map<number, Set<string>>();
   let head = 0;
 
   for (const m of messages) {
@@ -210,6 +216,17 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
         let set = answered.get(r);
         if (!set) answered.set(r, (set = new Set()));
         set.add(m.from);
+      }
+
+      // Threads: a reply joins the thread of the message it answers (its first re).
+      if (m.kind !== "event") {
+        const parent = m.re?.[0];
+        const root = parent === undefined ? m.seq : (threadOf.get(parent) ?? parent);
+        threadOf.set(m.seq, root);
+        let people = threadPeople.get(root);
+        if (!people) threadPeople.set(root, (people = new Set()));
+        people.add(m.from);
+        for (const t of m.to ?? []) if (!t.startsWith("role:")) people.add(t);
       }
 
       const ev = m.ev;
@@ -377,6 +394,8 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
     trust,
     rejected,
     openAsks,
+    threadOf,
+    threadPeople,
     head,
   };
 }

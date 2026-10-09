@@ -1006,5 +1006,5 @@ export async function myUsage(
 
 /** Relay-wide settings the web app needs: which WorkOS client to sign in with, if any. */
 export function relayConfig(human: HumanAuth | null): Response {
-  return Response.json({ workosClientId: human?.clientId ?? null });
+  return Response.json({ workosClientId: human?.clientId ?? null, ...(human?.dev ? { dev: true } : {}) });
 }

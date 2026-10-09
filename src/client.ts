@@ -66,7 +66,9 @@ export class ChannelGone extends Error {
 export interface StreamOptions {
   signal?: AbortSignal;
   onReady?: (head: number) => void;
+  /** Connection trouble worth a line: only once the relay has been out of reach for `quietMs` (default QUIET_DROP_MS). */
   onStatus?: (s: string) => void;
+  quietMs?: number;
   /** Called on every (re)connect with a way to send ephemeral presence. */
   onOpen?: (live: { presence: (p: Omit<Presence, "v" | "type" | "from" | "ts">) => Promise<void> }) => void;
   onPresence?: (p: Presence & { sigOk: boolean }) => void;
@@ -171,6 +173,9 @@ async function unwrapKeys(id: Identity, roomId: string, wrapped: Record<string, 
   }
   return out;
 }
+
+/** How long a dropped connection may stay down before listeners hear about it. */
+export const QUIET_DROP_MS = 30_000;
 
 export class Channel {
   readonly name: string;
@@ -710,6 +715,9 @@ export class Channel {
   async stream(since: number, onMessage: (m: Message) => void | Promise<void>, opts: StreamOptions = {}): Promise<void> {
     let last = since;
     let backoff = 500;
+    // Drops are routine (relay deploys, sleep, networks): say nothing unless the relay stays out of reach.
+    let downSince: number | null = null;
+    let reported = false;
     while (!opts.signal?.aborted) {
       const auth = await signRequest(this.identity, this.roomId, "GET", "/ws");
       const closed = await new Promise<{ code: number; reason: string }>((resolve) => {
@@ -723,6 +731,9 @@ export class Channel {
         opts.signal?.addEventListener("abort", abort, { once: true });
         ws.onopen = () => {
           backoff = 500;
+          if (reported) opts.onStatus?.(`reconnected after ${Math.round((Date.now() - downSince!) / 1000)}s; nothing was missed`);
+          downSince = null;
+          reported = false;
           ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(PING), 25_000);
           opts.onOpen?.({
             presence: async (p) => {
@@ -778,7 +789,11 @@ export class Channel {
       if (closed.code === 4000) continue;
       if (closed.code === CLOSE_REMOVED) throw new ChannelGone("removed");
       if (closed.code === CLOSE_CLOSED) throw new ChannelGone("closed");
-      opts.onStatus?.(`disconnected (${closed.code}${closed.reason ? ` ${closed.reason}` : ""}), retrying in ${backoff}ms`);
+      downSince ??= Date.now();
+      if (!reported && Date.now() - downSince >= (opts.quietMs ?? QUIET_DROP_MS)) {
+        reported = true;
+        opts.onStatus?.(`can't reach the relay for ${Math.round((Date.now() - downSince) / 1000)}s (${closed.code}${closed.reason ? ` ${closed.reason}` : ""}); still retrying`);
+      }
       // Upgrade failures (removed, closed) look like plain drops; check before retrying.
       try {
         await this.head();

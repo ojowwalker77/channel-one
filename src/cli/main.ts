@@ -7,13 +7,13 @@ import { join as joinPath, join } from "node:path";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { AgentSession, Rejected } from "../agent.ts";
-import { loadImages } from "../attach.ts";
+import { loadImages, saveImages } from "../attach.ts";
 import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
 import { TOO_MANY_REQUESTS } from "../sas.ts";
 import { DEFAULT_RELAY, forgetIdentity, home, forgetMember, identitiesIn, loadConfig, loadIdentity, readCursor, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId, type ChannelAccess } from "../crypto.ts";
 import { describeMember, handleFor, type JoinRequest } from "../membership.ts";
-import { ago, describeEvent, formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatStatus, formatTask, formatTasks, looksLikeLine, parseDuration, statusJson } from "../format.ts";
+import { ago, describeEvent, formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, parseDuration, statusJson } from "../format.ts";
 import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, COLORS, isColor, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
 import { parseTaskId, similarOpenTasks, taskId, type ChannelState } from "../state.ts";
@@ -55,11 +55,15 @@ Talk
   kiwi send "text" [--to a,b|role:x] [--kind K] [--re N] [--image f.png …]   (text from stdin if omitted)
   kiwi ask --to NAME "question" [--wait 10m]     with --wait, block until answered and print the answer
   kiwi reply N "text" [--kind done]              answer message #N (goes to its sender)
+  kiwi show N [dir]                              message #N in full: its replies, what it answers, its images saved
   kiwi save N [dir]                              download message #N's images into dir
-  kiwi tail [--for-me|--all] [--json]            stream messages for you, one per line (for a Monitor)
-  kiwi wait [--for-me|--all] [--timeout 10m]     block until the next message for you, print, exit
-  kiwi watch --webhook URL [--for-me|--all]      POST every message to URL as JSON (wakes threads, CI, phones)
-  kiwi read [--for-me|--all]                     print unread messages without blocking
+  kiwi tail [--chat|--for-me|--all|--thread N] [--json]   stream messages for you, one per line (for a Monitor)
+  kiwi wait [same] [--timeout 10m]               block until the next message for you, print, exit
+  kiwi watch --webhook URL [same]                POST every message to URL as JSON (wakes threads, CI, phones; all chat by default)
+  kiwi read [same]                               print unread messages without blocking
+     for you = to you or your role, --to all, people's broadcasts, broadcast questions, and threads you're in;
+     --chat adds everyone's conversations (coordinators), --all adds every event, --thread N is one thread
+  kiwi thread N                                  the whole thread message #N is in
   kiwi log [-n 30] [--all]                       recent history (doesn't mark read)
   kiwi sh 'SCRIPT'                               query the channel as read-only files with a sandboxed shell
                                                (grep, jq, awk…; no disk, network or writes; script from stdin if omitted)
@@ -112,6 +116,8 @@ const { values: opt, positionals: args } = parseArgs({
     note: { type: "string" },
     mine: { type: "boolean" },
     "for-me": { type: "boolean" },
+    chat: { type: "boolean" },
+    thread: { type: "string" },
     all: { type: "boolean" },
     global: { type: "boolean" },
     json: { type: "boolean" },
@@ -190,6 +196,12 @@ async function session(): Promise<AgentSession> {
 
 function render(m: Message, state?: ChannelState | null): string {
   return opt.json ? JSON.stringify({ ...m, trust: state?.trust.get(m.seq) }) : formatMessage(m, state?.trust.get(m.seq), state ?? undefined);
+}
+
+/** Which messages tail/wait/read/watch hand over: --chat, --for-me, --all or --thread N (default: those for you). */
+function delivery(): { forMe?: boolean; chat?: boolean; all?: boolean; thread?: number } {
+  const thread = opt.thread === undefined ? undefined : Number(opt.thread.replace(/^#/, "")) || die("--thread takes a message number");
+  return { forMe: opt["for-me"], chat: opt.chat, all: opt.all, ...(thread !== undefined ? { thread } : {}) };
 }
 
 function list(s: string | undefined): string[] | undefined {
@@ -715,14 +727,17 @@ const commands: Record<string, () => Promise<void>> = {
     const { messages } = await s.state();
     const m = messages.find((x) => x.seq === seq) ?? die(`no message #${seq}`);
     if (!m.imgs?.length) die(`message #${seq} has no images`);
-    const dir = args[2] ?? ".";
-    mkdirSync(dir, { recursive: true });
-    for (const img of m.imgs) {
-      const safe = img.name.replace(/[^A-Za-z0-9_.-]/g, "_") || "image";
-      const path = joinPath(dir, `#${seq}-${safe}`);
-      writeFileSync(path, Buffer.from(img.data, "base64"));
-      out(path);
-    }
+    for (const path of saveImages(seq, m.imgs, args[2] ?? ".")) out(path);
+  },
+
+  async show() {
+    const s = await session();
+    const seq = Number((args[1] ?? "").replace(/^#/, "")) || die("usage: kiwi show N [dir]");
+    const { messages, state } = await s.state();
+    const m = messages.find((x) => x.seq === seq) ?? die(`no message #${seq}`);
+    // Images land under the channel's own folder (closing it deletes them), or where asked.
+    const saved = m.imgs?.length ? saveImages(seq, m.imgs, args[2] ?? joinPath(home(), "downloads", s.ch.roomId)) : [];
+    out(formatShown(m, messages, state, saved));
   },
 
   async log() {
@@ -775,9 +790,18 @@ const commands: Record<string, () => Promise<void>> = {
     out(icon === null ? "cleared the channel's icon" : icon.kind === "emoji" ? `the channel's icon is ${icon.emoji}` : "the channel's icon is that image");
   },
 
+  async thread() {
+    const s = await session();
+    const seq = Number((args[1] ?? "").replace(/^#/, "")) || die("usage: kiwi thread N");
+    const { messages, state } = await s.state();
+    if (!messages.some((m) => m.seq === seq)) die(`no message #${seq}`);
+    const root = state.threadOf.get(seq) ?? seq;
+    for (const m of messages) if (state.threadOf.get(m.seq) === root && state.trust.get(m.seq) !== "forged") out(render(m, state));
+  },
+
   async read() {
     const s = await session();
-    const { messages, state } = await s.read({ forMe: opt["for-me"], all: opt.all });
+    const { messages, state } = await s.read(delivery());
     for (const m of messages) out(render(m, state));
   },
 
@@ -785,8 +809,7 @@ const commands: Record<string, () => Promise<void>> = {
     const s = await session();
     await s.listen((m, state) => out(render(m, state)), {
       client: "tail",
-      forMe: opt["for-me"],
-      all: opt.all,
+      ...delivery(),
       onStatus: (msg) => process.stderr.write(`kiwi: ${msg}\n`),
       onNotice: (text) => out(`* ${text}`),
     });
@@ -808,8 +831,7 @@ const commands: Record<string, () => Promise<void>> = {
       },
       {
         client: "wait",
-        forMe: opt["for-me"],
-        all: opt.all,
+        ...delivery(),
         signal: ac.signal,
         onStatus: (msg) => process.stderr.write(`kiwi: ${msg}\n`),
         onNotice: (text) => {
@@ -855,8 +877,9 @@ const commands: Record<string, () => Promise<void>> = {
       },
       {
         client: "watch",
-        forMe: opt["for-me"],
-        all: opt.all,
+        // A webhook stands in for a person watching (a phone, CI): all chat unless narrowed.
+        ...delivery(),
+        ...(!opt["for-me"] && opt.thread === undefined ? { chat: true } : {}),
         onStatus: (msg) => process.stderr.write(`kiwi: ${msg}\n`),
         onNotice: (text) =>
           void fetch(url, {
@@ -1068,6 +1091,7 @@ ${role}
 ## Stay reachable (always)
 Run a Monitor on \`${mc} tail\` with the longest timeout allowed. In Claude Code, hooks remind you if you stop listening and hand you anything you missed. Each line is a message for you:
   #42 win → mac [ask] re #40: <text>
+"For you" means: to you or your role, to everyone (\`--to all\`), people's broadcasts, broadcast questions, and every thread you're in (you wrote in it or were named). Other agents' conversations stay out; a coordinator follows them with \`tail --chat\`. \`${mc} show 42\` prints a message in full (with its images saved), \`${mc} thread 42\` its whole thread.
 When the monitor ends, start it again right away. It resumes from your read cursor, so nothing is lost.
 No Monitor tool? Run \`${mc} wait\` in the background instead, handle what it prints, then run it again.
 
@@ -1075,7 +1099,7 @@ No Monitor tool? Run \`${mc} wait\` in the background instead, handle what it pr
 \`${mc} status\` shows members (and who is online), each member's role and load (free, busy or overloaded, with what they're doing), open tasks and their owners, claimed paths, shared facts, and questions waiting on you. Run it when you start, and before picking up new work. Before assigning a task, pick someone whose role fits and who isn't overloaded (\`${mc} status --json\` gives the same as data).
 
 ## Talk
-  ${mc} send "text" [--to name|role:x] [--kind status|done|blocking]
+  ${mc} send "text" [--to name|role:x|all] [--kind status|done|blocking]   --to all for what every agent must see; with no --to only people and coordinators get it
   ${mc} send --image shot.png "this dialog, is it right?"   attach screenshots (png/jpg/gif/webp, ≤256KB each)
   ${mc} save 42 ~/shots                        download message #42's images
   ${mc} ask --to win "question" --wait 10m      blocks until win answers, then prints the answer

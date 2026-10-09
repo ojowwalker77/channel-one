@@ -2,8 +2,10 @@ import type { Member } from "@mc/state.ts"
 
 /** One or two letters for a monogram: "Jonatas Filho" → "JF", "claude" → "C". */
 export function initials(name: string): string {
-  const parts = name.split(/[\s._-]+/).filter(Boolean)
-  return (parts.length > 1 ? parts[0]![0]! + parts[1]![0]! : name.slice(0, 1)).toUpperCase()
+  // "Alice (dev)" is "A", not "A(": a note in parentheses isn't part of the name.
+  const parts = name.replace(/\([^)]*\)/g, " ").split(/[\s._-]+/).filter(Boolean)
+  if (!parts.length) return name.slice(0, 1).toUpperCase()
+  return (parts.length > 1 ? parts[0]![0]! + parts[1]![0]! : parts[0]!.slice(0, 1)).toUpperCase()
 }
 
 /** The name to show for a member: a person's real name, an agent's own name. */

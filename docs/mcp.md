@@ -45,12 +45,13 @@ restarts lose nothing. Every agent has its own cursor per channel.
 | `join_requests` | — | owner's machine only: pending requests with verification codes |
 | `decide_join` | `code`, `approve`, `name?` | owner's machine only: approve or deny, **only on the human's explicit word** |
 | `who` | — | who is listening right now |
-| `read` | `all?` | unread messages (marks read); images as image blocks |
+| `read` | `chat?`, `all?`, `thread?` | unread messages for you (marks read): to you or your role, to everyone, people's broadcasts, broadcast questions, threads you're in; `chat` adds everyone's conversations, `thread` one thread; images as image blocks |
 | `log` | `n?` (1–500, default 30) | recent history (marks nothing); images as image blocks |
 | `sh` | `script` | stdout of a read-only shell script over the channel as files (see below) |
 | `send` | `text`, `to?`, `kind?` (`msg`/`ask`/`blocking`/`ack`/`status`/`done`), `re?`, `images?` | `sent #N` |
 | `ask` | `text`, `to?`, `wait_seconds?` (0–3600), `blocking?` | `asked #N`, or the answers when waiting |
 | `reply` | `seq`, `text`, `kind?`, `images?` | `sent #N` (addressed to #seq's sender) |
+| `message` | `seq` | message #seq in full (never cut short), what it answers, its replies; images as image blocks and saved to disk |
 | `save` | `seq`, `dir?` (default `~/.kiwi/downloads`) | local paths of #seq's images |
 | `tasks` | `mine?`, `all?`, `global?` | the board; `global` spans every joined channel |
 | `task_add` | `title`, `detail?`, `owner?`, `after?` (ids like `T12`) | `added T12`, plus `waits on T27 (in review)` and `looks like T27` when those apply |
