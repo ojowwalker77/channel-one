@@ -191,7 +191,7 @@ describe("the join code check", () => {
   });
 
   test("an owner device signs a few checks a day on its own, then only at a click", async () => {
-    const { code, ownerCh } = await ownedChannel();
+    const { code, access, ownerCh } = await ownedChannel();
     const budget = memoryBudget();
     const asks = [];
     for (let i = 0; i <= AUTO_SIGN_PER_DAY; i++) {
@@ -202,6 +202,9 @@ describe("the join code check", () => {
     expect(reqs.filter((r) => r.check === "ready").length).toBe(AUTO_SIGN_PER_DAY);
     const unchecked = reqs.filter((r) => r.check === "unchecked");
     expect(unchecked.length).toBe(1);
+    // A relay that strips the owner's halves gets the same signatures again, without draining the allowance.
+    for (const r of reqs.filter((x) => x.check === "ready")) tamper(access.roomId, "UPDATE requests SET owner_nonce = NULL, reveal = NULL WHERE id = ?", r.id);
+    expect((await checked(ownerCh, relay, code, asks, budget)).filter((r) => r.check === "ready").length).toBe(AUTO_SIGN_PER_DAY);
     // A person's click signs it anyway.
     await ownerCh.checkRequest(unchecked[0]!);
     const after = await checked(ownerCh, relay, code, asks, budget);

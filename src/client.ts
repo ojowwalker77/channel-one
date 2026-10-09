@@ -411,7 +411,7 @@ export class Channel {
     const statement = ownerNonceStatement(this.roomId, r.pk, r.commit);
     let ownerNonce = r.ownerNonce;
     if (ownerNonce && !(await verifyText(this.access.ownerPk, ownerNonce, statement))) throw new Error("not the owner's signature");
-    if (!ownerNonce && budget && spendAuto(budget, this.roomId)) ownerNonce = await this.signHalf(r.id, statement);
+    if (!ownerNonce && budget && spendAuto(budget, this.roomId, r.commit)) ownerNonce = await this.signHalf(r.id, statement);
     if (!ownerNonce) return { code: null, check: "unchecked" };
     if (!r.reveal) return { code: null, check: "waiting" };
     if ((await commitTo(this.roomId, r.pk, r.reveal)) !== r.commit) throw new Error("the reveal doesn't match the commit");

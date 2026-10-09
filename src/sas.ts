@@ -76,17 +76,27 @@ export const AUTO_SIGN_PER_DAY = 10;
 export const TOO_MANY_REQUESTS =
   "That's unusually many join requests for one channel in a day. If you're not expecting them, the relay may be misbehaving: check each request by hand, and only approve codes you've compared.";
 
-/** Where a device remembers what it signed (localStorage in the browser, a file for the CLI). */
-export interface SigningBudget {
-  /** Timestamps of nonces this device signed for a channel. */
-  load(roomId: string): number[];
-  save(roomId: string, times: number[]): void;
+/** One owner nonce a device signed: which commit, and when. */
+export interface Signed {
+  commit: string;
+  at: number;
 }
 
-/** Spend one automatic signature if the day's allowance has room. */
-export function spendAuto(budget: SigningBudget, roomId: string, now = Date.now()): boolean {
-  const recent = budget.load(roomId).filter((t) => now - t < 86_400_000);
+/** Where a device remembers what it signed (localStorage in the browser, a file for the CLI). */
+export interface SigningBudget {
+  load(roomId: string): Signed[];
+  save(roomId: string, signed: Signed[]): void;
+}
+
+/**
+ * Whether this device may sign a commit on its own. Signing a commit it already
+ * signed is free: Ed25519 gives the same signature, so a relay that strips the
+ * owner's half learns nothing new and can't drain the allowance that way.
+ */
+export function spendAuto(budget: SigningBudget, roomId: string, commit: string, now = Date.now()): boolean {
+  const recent = budget.load(roomId).filter((s) => s && typeof s.commit === "string" && typeof s.at === "number" && now - s.at < 86_400_000);
+  if (recent.some((s) => s.commit === commit)) return true;
   if (recent.length >= AUTO_SIGN_PER_DAY) return false;
-  budget.save(roomId, [...recent, now]);
+  budget.save(roomId, [...recent, { commit, at: now }]);
   return true;
 }

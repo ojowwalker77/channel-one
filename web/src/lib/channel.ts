@@ -5,7 +5,7 @@ import { decodeJoinCode, fromB64url, newRoomId, ownerFingerprint, type ChannelAc
 import { generateIdentity, withExchangeKey, type Identity } from "@mc/identity.ts"
 import { handleFor, type JoinRequest, type Member } from "@mc/membership.ts"
 import type { Message, Presence } from "@mc/protocol.ts"
-import type { SigningBudget } from "@mc/sas.ts"
+import type { Signed, SigningBudget } from "@mc/sas.ts"
 import { fold, type ChannelState, type Roster } from "@mc/state.ts"
 
 /** How much history to load when the page opens. */
@@ -439,11 +439,11 @@ export async function checkJoin(p: PendingJoin): Promise<{ code: string | null }
 const browserBudget: SigningBudget = {
   load: (roomId) => {
     const t = read<unknown>(`mc.checks.${roomId}`)
-    return Array.isArray(t) ? t.filter((x): x is number => typeof x === "number") : []
+    return Array.isArray(t) ? (t as Signed[]) : []
   },
-  save: (roomId, times) => {
+  save: (roomId, signed) => {
     try {
-      localStorage.setItem(`mc.checks.${roomId}`, JSON.stringify(times))
+      localStorage.setItem(`mc.checks.${roomId}`, JSON.stringify(signed))
     } catch {}
   },
 }

@@ -3,12 +3,12 @@
 import { Channel } from "../src/client.ts";
 import type { Identity } from "../src/identity.ts";
 import type { JoinRequest } from "../src/membership.ts";
-import type { SigningBudget } from "../src/sas.ts";
+import type { Signed, SigningBudget } from "../src/sas.ts";
 
 /** One owner device's record of what it signed, in memory. */
 export function memoryBudget(): SigningBudget {
-  const signed = new Map<string, number[]>();
-  return { load: (room) => signed.get(room) ?? [], save: (room, times) => void signed.set(room, times) };
+  const signed = new Map<string, Signed[]>();
+  return { load: (room) => signed.get(room) ?? [], save: (room, list) => void signed.set(room, list) };
 }
 
 /**

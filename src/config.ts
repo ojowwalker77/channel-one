@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { ChannelAccess } from "./crypto.ts";
 import { generateIdentity, withExchangeKey, type Identity } from "./identity.ts";
 import type { Message } from "./protocol.ts";
-import type { SigningBudget } from "./sas.ts";
+import type { Signed, SigningBudget } from "./sas.ts";
 
 /** Public relay used when neither --relay nor KIWI_RELAY is given. */
 export const DEFAULT_RELAY = "https://channels.kiwiinit.com";
@@ -81,13 +81,13 @@ export const signingBudget: SigningBudget = {
   load(roomId) {
     try {
       const t = JSON.parse(readFileSync(join(home(), "checks", `${safe(roomId)}.json`), "utf8")) as unknown;
-      return Array.isArray(t) ? t.filter((x): x is number => typeof x === "number") : [];
+      return Array.isArray(t) ? (t as Signed[]) : [];
     } catch {
       return [];
     }
   },
-  save(roomId, times) {
-    writePrivate(join(home(), "checks", `${safe(roomId)}.json`), JSON.stringify(times));
+  save(roomId, signed) {
+    writePrivate(join(home(), "checks", `${safe(roomId)}.json`), JSON.stringify(signed));
   },
 };
 
