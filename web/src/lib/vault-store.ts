@@ -29,8 +29,9 @@ async function run<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRe
 
 /** Keep a copy of the vault key that can sync but can't be exported. */
 export async function keepVaultKey(user: string, key: CryptoKey): Promise<void> {
-  const raw = await crypto.subtle.exportKey("raw", key)
-  const locked = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"])
+  // vaultKey() already makes it non-extractable, and exporting one throws: store it as it is.
+  // Only an extractable key (none today) is re-imported first, so what's kept can never be read out.
+  const locked = key.extractable ? await crypto.subtle.importKey("raw", await crypto.subtle.exportKey("raw", key), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]) : key
   await run("readwrite", (s) => s.put(locked, user))
 }
 
