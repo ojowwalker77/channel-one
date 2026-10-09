@@ -9,14 +9,17 @@ import { join } from "node:path";
 
 const dir = join(import.meta.dir, "../src/relay");
 
-/** (file, status, text) for every HttpError thrown and every error body written by hand. */
+/**
+ * (status, text) for every refusal: HttpError thrown, refuse() in the router, and
+ * error bodies written by hand. Which file a text lives in isn't API, so it isn't pinned.
+ */
 function errorTexts(): string[] {
   const out = new Set<string>();
   for (const f of readdirSync(dir).filter((f) => f.endsWith(".ts")).sort()) {
     const src = readFileSync(join(dir, f), "utf8");
-    for (const m of src.matchAll(/new HttpError\(\s*(\d{3}),\s*([`"'])((?:\\.|(?!\2).)*)\2/g)) out.add(`${f} ${m[1]} ${m[3]}`);
-    for (const m of src.matchAll(/new HttpError\(\s*(\d{3}),\s*([A-Za-z_][\w.]*(?:\([^)]*\))?)\s*\)/g)) out.add(`${f} ${m[1]} <${m[2]}>`);
-    for (const m of src.matchAll(/error:\s*([`"'])((?:\\.|(?!\1).)*)\1/g)) out.add(`${f} body ${m[2]}`);
+    for (const m of src.matchAll(/(?:new HttpError|refuse)\(\s*(\d{3}),\s*([`"'])((?:\\.|(?!\2).)*)\2/g)) out.add(`${m[1]} ${m[3]}`);
+    for (const m of src.matchAll(/(?:new HttpError|refuse)\(\s*(\d{3}),\s*([A-Za-z_][\w.]*(?:\([^)]*\))?)\s*\)/g)) out.add(`${m[1]} <${m[2]}>`);
+    for (const m of src.matchAll(/error:\s*([`"'])((?:\\.|(?!\1).)*)\1/g)) out.add(`body ${m[2]}`);
   }
   return [...out].sort();
 }

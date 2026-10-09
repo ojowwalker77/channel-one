@@ -22,7 +22,6 @@ import {
   myChannels,
   myUsage,
   onClientFrame,
-  onHttp,
   parseRoomPath,
   requireInfoFingerprint,
   welcomeFrames,
@@ -30,6 +29,7 @@ import {
   type DirectoryEntry,
   type Effects,
 } from "./room.ts";
+import { onHttp } from "./route.ts";
 
 interface SocketData {
   roomId: string;
