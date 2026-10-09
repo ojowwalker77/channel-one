@@ -6,18 +6,23 @@ Wants=network-online.target
 [Service]
 Type=simple
 # The process holds room databases. It does not need root.
-# Before enabling: useradd --system --create-home --home-dir /var/lib/kiwi kiwi
-# and clone the repo to /opt/kiwi (`bun install --frozen-lockfile --production`).
+# Before enabling:
+#   useradd --system --create-home --home-dir /var/lib/kiwi kiwi
+#   clone the repo to /opt/kiwi, then:
+#   bun install --frozen-lockfile --production && bun run web:build
 User=kiwi
 Group=kiwi
 WorkingDirectory=/opt/kiwi
-Environment=KIWI_DATA=/var/lib/kiwi
 # Loopback only. deploy/Caddyfile is the public TLS listener.
 # `kiwi relay` takes these same flags when the machine has the binary instead of a checkout.
-ExecStart=/usr/local/bin/bun src/relay/bun.ts --hostname 127.0.0.1 --port 8787 --data /var/lib/kiwi --no-web
+ExecStart=/usr/local/bin/bun src/relay/bun.ts --hostname 127.0.0.1 --port 8787 --data /var/lib/kiwi
 Restart=on-failure
 RestartSec=2
+UMask=0077
 NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/kiwi
+ProtectHome=true
 PrivateTmp=true
 
 [Install]
