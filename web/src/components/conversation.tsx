@@ -10,7 +10,7 @@ import { Composer } from "./composer"
 import { Details, type Filter } from "./details"
 import { Icon } from "./icon"
 import { Button, IconButton, Monogram, Spinner, Tabs, TextField } from "./kit"
-import { DayMark, EventRow, MessageRow, isAgent } from "./message"
+import { DayMark, EventGroup, MessageRow, isAgent } from "./message"
 import { TaskDetail, Tasks } from "./tasks"
 
 /** Messages this close together from one sender read as one run. */
@@ -127,14 +127,15 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         const el = document.getElementById(`m${seq}`)
         if (!el) return
         el.scrollIntoView({ block: "center", behavior: "smooth" })
-        setHighlight(seq)
         setTimeout(() => setHighlight((h) => (h === seq ? null : h)), 1600)
       }
+      // Open a collapsed event run before scrolling to it.
+      setHighlight(seq)
       if (!visible.some((m) => m.seq === seq)) {
         setFilter(null)
         setSearch(null)
         requestAnimationFrame(() => requestAnimationFrame(go))
-      } else go()
+      } else requestAnimationFrame(go)
     },
     [visible]
   )
@@ -163,7 +164,14 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
     const newDay = !prev || !sameDay(prev.ts, m.ts)
     if (newDay) rows.push(<DayMark key={`d${m.seq}`} ts={m.ts} />)
     if (m.kind === "event") {
-      rows.push(<EventRow key={m.seq} m={m} state={state} onOpenTask={setOpenTask} />)
+      const run: Message[] = [m]
+      let j = i + 1
+      while (j < visible.length && visible[j]!.kind === "event" && sameDay(m.ts, visible[j]!.ts)) {
+        run.push(visible[j]!)
+        j++
+      }
+      i = j - 1
+      rows.push(<EventGroup key={`e${m.seq}`} messages={run} state={state} onOpenTask={setOpenTask} highlight={highlight} />)
       continue
     }
     const adjacentReply = m.re?.length === 1 && prev?.seq === m.re[0]

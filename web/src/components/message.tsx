@@ -1,12 +1,12 @@
-import { ArrowTurnBackwardIcon, CheckListIcon, Copy01Icon, Key01Icon, LockIcon, SquareUnlock02Icon } from "@hugeicons/core-free-icons"
-import { memo } from "react"
+import { ArrowTurnBackwardIcon, Copy01Icon } from "@hugeicons/core-free-icons"
+import { memo, useEffect, useState } from "react"
 
 import { describeEvent } from "@mc/format.ts"
-import type { Event, Message, Trust } from "@mc/protocol.ts"
+import type { Message, Trust } from "@mc/protocol.ts"
 import type { ChannelState, Member } from "@mc/state.ts"
 import { excerpt, formatDay, formatFull, formatTime, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
-import { Icon, type IconSvgElement } from "./icon"
+import { Icon } from "./icon"
 import { IconButton, Monogram, toast } from "./kit"
 import { Markdown } from "./markdown"
 
@@ -26,40 +26,43 @@ export function DayMark({ ts }: { ts: number }) {
   )
 }
 
-const EVENT_ICON: Record<Event["op"], IconSvgElement> = {
-  hello: CheckListIcon,
-  "task.add": CheckListIcon,
-  "task.claim": CheckListIcon,
-  "task.update": CheckListIcon,
-  claim: LockIcon,
-  release: SquareUnlock02Icon,
-  "fact.set": Key01Icon,
-  "fact.del": Key01Icon,
-  "role.set": CheckListIcon,
-  "role.refuse": CheckListIcon,
-  "seat.reclaim": Key01Icon,
-}
-
-/** Coordination (tasks, claims, facts): one quiet line under the conversation. */
+/** Coordination (tasks, claims, facts): one centred, muted line. */
 export function EventRow({ m, state, onOpenTask }: { m: Message; state: ChannelState; onOpenTask: (id: number) => void }) {
   const taskRef = m.ev && "task" in m.ev ? m.ev.task : m.ev?.op === "task.add" ? m.seq : null
   const forged = state.trust.get(m.seq) === "forged"
   return (
-    <div id={`m${m.seq}`} className={cx("-mx-3 grid grid-cols-[28px_minmax(0,1fr)] gap-x-3 px-3 py-[3px]", forged && "line-through opacity-50")}>
-      <span className="flex justify-center pt-[3px] text-ink-3">
-        <Icon icon={m.ev ? EVENT_ICON[m.ev.op] : CheckListIcon} size={14} />
-      </span>
-      <p className="text-[12.5px] leading-[1.55] text-ink-2">
-        <span className="font-medium text-ink">{memberName(state.members.get(m.from), m.from)}</span> {describeEvent(m, state)}
-        <time className="ml-2 text-[11.5px] text-ink-3 tabular-nums" title={formatFull(m.ts)}>
+    <div id={`m${m.seq}`} className={cx("my-0.5 flex justify-center px-6", forged && "line-through opacity-50")}>
+      <p className="max-w-[36rem] text-center text-[12.5px] leading-[1.45] text-ink-3">
+        <span className="text-ink-2">{memberName(state.members.get(m.from), m.from)}</span> {describeEvent(m, state)}
+        <time className="ml-1.5 text-[11.5px] tabular-nums" title={formatFull(m.ts)}>
           {formatTime(m.ts)}
         </time>
         {taskRef !== null && (
-          <button type="button" onClick={() => onOpenTask(taskRef)} className="ml-2 text-[12px] font-medium text-accent hover:underline">
+          <button type="button" onClick={() => onOpenTask(taskRef)} className="ml-1.5 font-medium text-link hover:underline">
             Open task
           </button>
         )}
       </p>
+    </div>
+  )
+}
+
+/** A run of consecutive events. One stays a line; two or more collapse into "N updates". */
+export function EventGroup({ messages, state, onOpenTask, highlight }: { messages: Message[]; state: ChannelState; onOpenTask: (id: number) => void; highlight: number | null }) {
+  const [open, setOpen] = useState(false)
+  const seqs = messages.map((m) => m.seq).join(",")
+  useEffect(() => {
+    if (highlight !== null && messages.some((m) => m.seq === highlight)) setOpen(true)
+  }, [highlight, seqs, messages])
+  const row = (m: Message) => <EventRow key={m.seq} m={m} state={state} onOpenTask={onOpenTask} />
+  if (messages.length < 2) return <>{messages.map(row)}</>
+  const n = messages.length
+  return (
+    <div className="my-2">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="mx-auto block text-[12.5px] text-ink-3 hover:text-ink-2">
+        {open ? `Hide ${n} updates` : `${n} updates`}
+      </button>
+      {open && <div className="mt-1">{messages.map(row)}</div>}
     </div>
   )
 }
