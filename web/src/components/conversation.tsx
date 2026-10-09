@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 import type { Message } from "@mc/protocol.ts"
 import { useAuth } from "@/lib/auth"
-import { channelTitle, forgetChannel, loadRecent, saveRecent, useChannel, useClock, useKnownChannels, type StoredMember } from "@/lib/channel"
+import { channelTitle, forgetChannel, loadMember, loadRecent, saveMember, saveRecent, useChannel, useClock, useKnownChannels, type StoredMember } from "@/lib/channel"
 import { refreshIcon, useIcons, useLiveIcon } from "@/lib/icons"
 import { excerpt, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
@@ -70,7 +70,8 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   // The channel's name can arrive after this view opens (members decrypt it), so follow the list.
   const known = useKnownChannels()
   const title = channelTitle(
-    { name: member.name ?? known.find((c) => c.code === member.code)?.name },
+    // The list has the latest name (a rename lands there); the member record this view opened with may be older.
+    { name: known.find((c) => c.code === member.code)?.name ?? member.name },
     others.length ? { from: "", text: "", ts: 0, people: others.map((m) => memberName(m)) } : loadRecent(member.code)
   )
   const forMe = useMemo(() => messages.filter((m) => m.from !== me && m.to?.includes(me)), [messages, me])
@@ -269,6 +270,17 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         await refreshRoster()
       }}
       roomId={member.access.roomId}
+      title={title}
+      onRename={
+        isOwner
+          ? async (name) => {
+              await ch.setTitle(name)
+              // Show it here at once; other members pick it up from the relay's info frame.
+              const stored = loadMember(member.code)
+              if (stored) saveMember({ ...stored, name: name.trim().slice(0, 80) })
+            }
+          : undefined
+      }
       onSetIcon={
         isOwner
           ? async (next) => {

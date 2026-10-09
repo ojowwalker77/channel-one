@@ -536,17 +536,18 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
   const now = useClock(15_000)
   const isOwner = ch.isOwner
 
-  // Members can read the channel's sealed name; remember it for the channel list.
+  // Members can read the channel's sealed name; remember it for the channel list. Read it again
+  // whenever the relay says the channel's info changed, so a rename reaches every member.
+  const [infoAt, setInfoAt] = useState(0)
   useEffect(() => {
-    if (member.name) return
     void ch
       .title()
       .then((name) => {
         const stored = loadMember(member.code)
-        if (name && stored && !stored.name) saveMember({ ...stored, name })
+        if (name && stored && stored.name !== name) saveMember({ ...stored, name })
       })
       .catch(() => {})
-  }, [ch, member])
+  }, [ch, member.code, infoAt])
 
   const onGone = useCallback(
     (err: unknown) => {
@@ -613,7 +614,10 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
         onPresence,
         onRoster: () => void refreshRoster(),
         onRequest: () => void refreshRequests(),
-        onInfo: () => window.dispatchEvent(new CustomEvent(ICON_LIVE, { detail: member.code })),
+        onInfo: () => {
+          setInfoAt(Date.now())
+          window.dispatchEvent(new CustomEvent(ICON_LIVE, { detail: member.code }))
+        },
       })
     })().catch((err: unknown) => {
       if (!cancelled) onGone(err)

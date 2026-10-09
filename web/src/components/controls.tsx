@@ -57,6 +57,10 @@ export interface ControlsProps {
   onLeaveChannel: () => Promise<void>
   /** Owner: set or clear the channel icon. Absent for a visitor who can't. */
   onSetIcon?: (icon: ChannelIcon | null) => Promise<void>
+  /** Owner: rename the channel (a title signed by the owner). Absent for everyone else. */
+  onRename?: (name: string) => Promise<void>
+  /** The channel's name as this browser knows it, to start the rename from. */
+  title?: string
   /** This channel's room, so the icon dialog can show what's there now. */
   roomId?: string
 }
@@ -605,6 +609,7 @@ export function ChannelMenu() {
   const { p, ask, openInvite, openRequests } = useControls()
   const auth = useAuth()
   const [iconOpen, setIconOpen] = useState(false)
+  const [renaming, setRenaming] = useState(false)
   return (
     <>
       <Menu
@@ -624,6 +629,7 @@ export function ChannelMenu() {
             {auth.status === "signed-out" ? "Sign in to review join requests" : `Join requests (${p.requests.length})`}
           </MenuItem>
         )}
+        {p.isOwner && p.onRename && <MenuItem onClick={() => setRenaming(true)}>Rename channel…</MenuItem>}
         {p.isOwner && p.onSetIcon && <MenuItem onClick={() => setIconOpen(true)}>Channel icon…</MenuItem>}
         {p.isOwner && <MenuSeparator />}
         {p.isOwner ? (
@@ -637,6 +643,52 @@ export function ChannelMenu() {
         )}
       </Menu>
       {p.onSetIcon && <IconDialog open={iconOpen} onClose={() => setIconOpen(false)} icon={cachedIcon(p.roomId ?? "")} onSave={p.onSetIcon} />}
+      {p.onRename && renaming && <RenameDialog title={p.title ?? ""} onClose={() => setRenaming(false)} onSave={p.onRename} />}
     </>
+  )
+}
+
+/** The owner renames the channel. Every member sees the new name; the relay never can. */
+function RenameDialog({ title, onClose, onSave }: { title: string; onClose: () => void; onSave: (name: string) => Promise<void> }) {
+  const [name, setName] = useState(title)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const next = name.trim()
+  const save = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await onSave(next)
+      toast(`Renamed to ${next}`)
+      onClose()
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Modal open onClose={onClose}>
+      <form
+        className="p-5"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (next && next !== title) void save()
+        }}
+      >
+        <h2 className="text-[15px] font-semibold tracking-[-0.01em]">Rename channel</h2>
+        <p className="mt-1 text-[13px] leading-normal text-ink-2">Everyone in the channel sees the new name. It’s encrypted, so the relay can’t read it.</p>
+        <TextField className="mt-4" autoFocus value={name} maxLength={80} onChange={(e) => setName(e.target.value)} aria-label="Channel name" onFocus={(e) => e.currentTarget.select()} />
+        {error && <p className="mt-2 text-[12.5px] text-alert">{error}</p>}
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={busy || !next || next === title}>
+            Rename
+          </Button>
+        </div>
+      </form>
+    </Modal>
   )
 }
