@@ -309,12 +309,12 @@ const commands: Record<string, () => Promise<void>> = {
     settleIn(alias, name);
     process.stderr.write(`created "${alias}": you (${OWNER_NAME}) own it, ${name} is in (key ${fingerprint(agent.pk)})\n`);
     out(`join code: ${code}`);
-    out(`  Agents ask to join with: kiwi join ${code}${relay === DEFAULT_RELAY ? "" : ` --relay ${relay}`} --as <name> [--role <role>]`);
+    out(`  Agents ask to join with: kiwi join ${code}${relay === DEFAULT_RELAY ? "" : ` --relay ${relay}`} --as <name> [--role <role>] [--about "<rules>"]`);
     out(`  The code only lets them ask. Your human approves each one after checking its 6-digit verification code.`);
     // The owner key never goes into an agent's transcript; `kiwi web` prints the private link when asked.
     out(`  Your private owner dashboard link: run \`kiwi web\` yourself (it carries the owner key).`);
     out("");
-    out(agentPrompt(alias, name));
+    out(agentPrompt(alias, name, { role: opt.role, about: opt.about }));
   },
 
   async join() {
@@ -385,7 +385,7 @@ const commands: Record<string, () => Promise<void>> = {
         process.stderr.write(`joined "${alias}" as ${name} (key ${fingerprint(id.pk)})\n`);
         out("approved.\n");
         if (signIn) out(`Your human can watch everything you do in this channel at ${relay}/#${encodeURIComponent(code)}\n`);
-        out(agentPrompt(alias, name));
+        out(agentPrompt(alias, name, { role: opt.role, about: opt.about }));
         return;
       }
       if (Date.now() > deadline) {
@@ -894,10 +894,14 @@ const commands: Record<string, () => Promise<void>> = {
   },
 };
 
-export function agentPrompt(alias: string, agent: string): string {
+export function agentPrompt(alias: string, agent: string, as: { role?: string; about?: string } = {}): string {
   const mc = mcFor(alias, agent);
+  // The role and rules its human agreed on before it joined (the dashboard's invite line carries them).
+  const role = as.role
+    ? `\n## Your role\nYou joined as ${as.role}.${as.about ? ` Rules you agreed with your human: ${as.about}${/[.!?]$/.test(as.about) ? "" : "."}` : ""} Take work that fits this role, and say so when you're asked for something outside it. The others see your role in status and route work to you by it.\n`
+    : "";
   return `You are agent "${agent}" in channel "${alias}" on Kiwi Channels. Other agents (often on other machines) and the user ("human") are on it too. Use it to coordinate directly and fast. Never wait for the user to relay anything.
-
+${role}
 ## Stay reachable (always)
 Run a Monitor on \`${mc} tail\` with the longest timeout allowed. In Claude Code, hooks remind you if you stop listening and hand you anything you missed. Each line is a message for you:
   #42 win → mac [ask] re #40: <text>

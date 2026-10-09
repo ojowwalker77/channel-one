@@ -2,7 +2,7 @@ import { Cancel01Icon, Copy01Icon } from "@hugeicons/core-free-icons"
 import { useState, type ReactNode } from "react"
 
 import { loadLine, memberLoad, showsLoad, type Load } from "@mc/load.ts"
-import type { JoinRequest, Member as RosterMember } from "@mc/membership.ts"
+import { NAME_RE, type JoinRequest, type Member as RosterMember } from "@mc/membership.ts"
 import { TOO_MANY_REQUESTS } from "@mc/sas.ts"
 import { taskId } from "@mc/state.ts"
 import type { ChannelState } from "@mc/state.ts"
@@ -10,7 +10,7 @@ import { useAuth } from "@/lib/auth"
 import { formatAgo, memberLine, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
 import { Icon } from "./icon"
-import { Alert, Button, IconButton, Monogram, errorText, toast } from "./kit"
+import { Alert, Button, IconButton, Monogram, TextField, errorText, toast } from "./kit"
 
 export type Filter = { kind: "from"; name: string } | { kind: "open" } | { kind: "mine" }
 
@@ -75,6 +75,54 @@ function loadDetail(l: Load): string {
   return lines.length ? lines.join("\n") : "Nothing assigned"
 }
 
+/**
+ * Single-quoted for the agent's shell. Apostrophes become ’ so the same line works in sh, bash, zsh
+ * and PowerShell, which escape a quote inside quotes differently.
+ */
+const quoted = (s: string) => `'${s.replace(/'/g, "’")}'`
+
+/** The CLI's default relay (DEFAULT_RELAY in src/config.ts, which the browser can't import). */
+const PUBLIC_RELAY = "https://channels.kiwiinit.com"
+
+const ROLES = ["designer", "frontend", "backend", "reviewer", "tester", "docs", "intern"]
+
+/** The join line for one agent, with the role and rules its human agreed on before it joins. */
+function InviteAgent({ code }: { code: string }) {
+  const [name, setName] = useState("")
+  const [role, setRole] = useState("")
+  const [rules, setRules] = useState("")
+  const n = name.trim()
+  const badName = !!n && !NAME_RE.test(n)
+  const command = [
+    `kiwi join ${code}`,
+    // On any other relay, the agent's CLI has to be told where to go.
+    location.origin !== PUBLIC_RELAY && `--relay ${location.origin}`,
+    `--as ${n && !badName ? n : "<name>"}`,
+    role.trim() && `--role ${quoted(role.trim())}`,
+    rules.trim() && `--about ${quoted(rules.trim())}`,
+  ]
+    .filter(Boolean)
+    .join(" ")
+  const field = "h-8 text-[13px]"
+  return (
+    <div className="mt-2 grid gap-2">
+      <div className="grid grid-cols-2 gap-2">
+        <TextField className={field} value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" maxLength={32} aria-invalid={badName} aria-label="Agent name" />
+        <TextField className={field} value={role} onChange={(e) => setRole(e.target.value)} placeholder="Role" maxLength={60} list="kiwi-roles" aria-label="Role" />
+        <datalist id="kiwi-roles">
+          {ROLES.map((r) => (
+            <option key={r} value={r} />
+          ))}
+        </datalist>
+      </div>
+      <TextField className={field} value={rules} onChange={(e) => setRules(e.target.value)} placeholder="Rules, e.g. only web/; ask before changing APIs" maxLength={200} aria-label="Rules" />
+      {badName && <p className="text-[12px] text-ink-2">Names are letters, digits, dot, dash or underscore, up to 32.</p>}
+      <CopyBox text={command} label="Copy command" done={n && !badName ? "Join command copied" : "Copied. Replace <name> with the agent’s name."} />
+      <p className="text-[12px] leading-snug text-ink-3">The role shows on the member list and the agent is told its rules. You still approve it with a code.</p>
+    </div>
+  )
+}
+
 function minutesLeft(expires: number, now: number) {
   const m = Math.max(0, Math.round((expires - now) / 60_000))
   return m < 60 ? `${m} min left` : `${Math.floor(m / 60)} h ${m % 60} min left`
@@ -91,7 +139,6 @@ export function Details(p: Props) {
   const former = p.roster.filter((m) => !m.active)
   const facts = [...p.state.facts.values()].sort((a, b) => a.key.localeCompare(b.key))
   const inviteLink = `${location.origin}/#${p.code}`
-  const joinCommand = `kiwi join ${p.code} --as <name>`
   const taken = confirm?.kind === "approve" && active.some((m) => m.name === confirm.req.name)
 
   const run = async (fn: () => Promise<void>, done: string) => {
@@ -183,7 +230,7 @@ export function Details(p: Props) {
                       {memberName(m)}
                       {m.pk === p.myKey && <span className="font-normal text-ink-3"> (you)</span>}
                     </p>
-                    <p className="truncate text-[12px] text-ink-2" title={`Key ${m.pk.slice(0, 16)}`}>
+                    <p className="truncate text-[12px] text-ink-2" title={`${m.about ? `Rules: ${m.about}\n` : ""}Key ${m.pk.slice(0, 16)}`}>
                       {memberLine(m)}
                     </p>
                     {showLoad && load.level !== "free" && <p className="truncate text-[12px] text-ink-3">{loadLine(load)}</p>}
@@ -229,9 +276,9 @@ export function Details(p: Props) {
             <p className="text-[12px] leading-snug text-ink-2">People open this link and ask to join with their account.</p>
             <CopyBox text={inviteLink} label="Copy link" done="Invite link copied" />
             <p className="mt-4 text-[12px] leading-snug text-ink-2">
-              Agents join from a computer their person set up with <span className="font-mono text-[11.5px]">kiwi setup</span>. Tell the agent to run:
+              Agents join from a computer their person set up with <span className="font-mono text-[11.5px]">kiwi setup</span>. Agree on its role and rules, then tell it to run:
             </p>
-            <CopyBox text={joinCommand} label="Copy command" done="Copied. Replace <name> with the agent’s name." />
+            <InviteAgent code={p.code} />
           </Part>
         )}
 
