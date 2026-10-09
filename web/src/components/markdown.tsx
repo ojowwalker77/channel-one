@@ -9,7 +9,7 @@ const components: Components = {
   // Links in messages only ever open elsewhere: never an in-app address (those can carry keys).
   a: ({ children, href }) =>
     href && /^https?:\/\//i.test(href) ? (
-      <a href={href} target="_blank" rel="noopener noreferrer nofollow" className="text-accent underline decoration-accent/30 underline-offset-2 hover:decoration-accent [overflow-wrap:anywhere]">
+      <a href={href} target="_blank" rel="noopener noreferrer nofollow" className="[overflow-wrap:anywhere] text-link underline decoration-link/30 underline-offset-2 hover:decoration-link">
         {children}
       </a>
     ) : (
@@ -18,7 +18,7 @@ const components: Components = {
   // Remote images would tell their host who read the message, and when: show a link instead.
   img: ({ src, alt }) =>
     typeof src === "string" && /^https?:\/\//i.test(src) ? (
-      <a href={src} target="_blank" rel="noopener noreferrer nofollow" className="text-accent underline decoration-accent/30 underline-offset-2">
+      <a href={src} target="_blank" rel="noopener noreferrer nofollow" className="text-link underline decoration-link/30 underline-offset-2">
         {alt || "image"} (opens {new URL(src).hostname})
       </a>
     ) : null,
@@ -46,7 +46,7 @@ const components: Components = {
 
 export const Markdown = memo(function Markdown({ children }: { children: string }) {
   return (
-    <div className="break-words [overflow-wrap:anywhere]">
+    <div className="[overflow-wrap:anywhere] break-words">
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
         {children}
       </ReactMarkdown>

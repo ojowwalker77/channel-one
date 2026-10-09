@@ -3,50 +3,91 @@
 
 /*
  * Channels is a room you watch more than you talk in. So the page is
- * paper and ink: one neutral family, one blue for the few things you act on,
- * red and green only when they mean something. Agents and people are told
- * apart by shape (agents are squares, people are circles), never by colour.
+ * monochrome: warm paper by day, near-black by night, ink for the few things
+ * you act on, red and green only when they mean something. The one colour
+ * that isn't a state belongs to agents: each gets its own tint, people stay
+ * neutral. Agents are squares and people are circles, so shape still tells
+ * them apart without the colour.
+ *
+ * The palette follows rakazo (github.com/elie222/rakazo, Apache-2.0); see NOTICE.
+ * With no data-theme on <html> the system decides; lib/theme.ts sets one when
+ * the person picks.
  */
 :root {
-  --canvas: #ffffff;
-  --rail: #f7f7f8;
+  --canvas: #fafaf8;
+  --rail: #ecece9;
   --raised: #ffffff;
-  --ink: #1d1d1f;
-  --ink-2: #6e6e73;
-  --ink-3: #a1a1a6;
-  --line: rgba(0, 0, 0, 0.08);
+  --ink: #1a1a1a;
+  --ink-2: #6c6c70;
+  --ink-3: #a3a39e;
+  --line: #e8e8e4;
   --wash: rgba(0, 0, 0, 0.04);
   --wash-2: rgba(0, 0, 0, 0.07);
-  --accent: #0071e3;
-  --accent-wash: rgba(0, 113, 227, 0.09);
-  --alert: #d70015;
-  --live: #28a745;
-  --shadow-pop: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 12px 32px -8px rgba(0, 0, 0, 0.18);
+  --accent: #1a1a1a;
+  --accent-ink: #f1f1ef;
+  --accent-wash: rgba(0, 0, 0, 0.08);
+  --link: #2563eb;
+  --ring: #6c6c70;
+  --alert: #dc2626;
+  --live: #228b3b;
+  --warn: #b7791f;
+  --overlay: rgba(20, 20, 22, 0.45);
+  --shadow-pop:
+    0 0 0 1px rgba(0, 0, 0, 0.06), 0 12px 32px -8px rgba(0, 0, 0, 0.16);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --canvas: #1c1c1e;
-    --rail: #232325;
-    --raised: #2c2c2e;
-    --ink: #f5f5f7;
-    --ink-2: #98989d;
-    --ink-3: #636366;
-    --line: rgba(255, 255, 255, 0.09);
-    --wash: rgba(255, 255, 255, 0.05);
-    --wash-2: rgba(255, 255, 255, 0.09);
-    --accent: #2997ff;
-    --accent-wash: rgba(41, 151, 255, 0.14);
-    --alert: #ff6961;
-    --live: #32d74b;
-    --shadow-pop: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 16px 40px -8px rgba(0, 0, 0, 0.6);
+  :root:not([data-theme="light"]) {
+    --canvas: #0b0c0e;
+    --rail: #111215;
+    --raised: #141518;
+    --ink: #ececee;
+    --ink-2: #85858a;
+    --ink-3: #56565c;
+    --line: #1e2026;
+    --wash: rgba(255, 255, 255, 0.04);
+    --wash-2: rgba(255, 255, 255, 0.075);
+    --accent: #f1f1ef;
+    --accent-ink: #0b0c0e;
+    --accent-wash: rgba(255, 255, 255, 0.12);
+    --link: #3b82f6;
+    --ring: #3b82f6;
+    --alert: #ef4444;
+    --live: #4ecb71;
+    --warn: #e9c46a;
+    --overlay: rgba(4, 4, 5, 0.72);
+    --shadow-pop: 0 0 0 1px #1e2026, 0 16px 40px -8px rgba(0, 0, 0, 0.7);
     color-scheme: dark;
   }
 }
 
+:root[data-theme="dark"] {
+  --canvas: #0b0c0e;
+  --rail: #111215;
+  --raised: #141518;
+  --ink: #ececee;
+  --ink-2: #85858a;
+  --ink-3: #56565c;
+  --line: #1e2026;
+  --wash: rgba(255, 255, 255, 0.04);
+  --wash-2: rgba(255, 255, 255, 0.075);
+  --accent: #f1f1ef;
+  --accent-ink: #0b0c0e;
+  --accent-wash: rgba(255, 255, 255, 0.12);
+  --link: #3b82f6;
+  --ring: #3b82f6;
+  --alert: #ef4444;
+  --live: #4ecb71;
+  --warn: #e9c46a;
+  --overlay: rgba(4, 4, 5, 0.72);
+  --shadow-pop: 0 0 0 1px #1e2026, 0 16px 40px -8px rgba(0, 0, 0, 0.7);
+  color-scheme: dark;
+}
+
 @theme inline {
-  --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-sans:
+    "Inter Variable", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
   --color-canvas: var(--canvas);
   --color-rail: var(--rail);
@@ -58,9 +99,14 @@
   --color-wash: var(--wash);
   --color-wash-2: var(--wash-2);
   --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
   --color-accent-wash: var(--accent-wash);
+  --color-link: var(--link);
+  --color-ring: var(--ring);
   --color-alert: var(--alert);
   --color-live: var(--live);
+  --color-warn: var(--warn);
+  --color-overlay: var(--overlay);
   --shadow-pop: var(--shadow-pop);
 }
 
@@ -92,7 +138,7 @@ button {
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--ring);
   outline-offset: 1px;
   border-radius: 6px;
 }
