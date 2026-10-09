@@ -6,6 +6,8 @@ Version 2.0. A copy of that license is in licenses/rakazo-LICENSE.
 
 Adapted from Rakazo:
 - The colour palette in web/src/index.css (from packages/ui-tokens).
+- The eight agent body shapes in web/src/lib/characters.ts (from
+  packages/core/src/bot-avatar-shapes.ts).
 - The menu, tooltip, popover and dialog primitives in web/src/components/ui/
   and web/src/components/kit.tsx, following packages/ui-web/components/ui.
 - Message markdown in web/src/components/markdown.tsx (from packages/chat-ui):

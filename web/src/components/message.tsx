@@ -2,7 +2,7 @@ import { ArrowTurnBackwardIcon, Copy01Icon } from "@hugeicons/core-free-icons"
 import { memo, useState } from "react"
 
 import { describeEvent } from "@mc/format.ts"
-import type { Message, Trust } from "@mc/protocol.ts"
+import type { Color, Message, Trust } from "@mc/protocol.ts"
 import type { ChannelState, Member } from "@mc/state.ts"
 import { excerpt, formatDay, formatFull, formatTime, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
@@ -129,17 +129,19 @@ interface RowProps {
   onOpenThread?: (root: number) => void
   /** Anchor ids are `m<seq>` in the timeline; the thread panel uses its own prefix so a root can appear in both. */
   anchor?: string
+  /** The author's colour: a person's own pick, or their person's for an agent (colorOf). */
+  color?: Color | null
 }
 
 export interface ThreadSummary {
   count: number
   last: number
-  people: { name: string; label: string; agent: boolean }[]
+  people: { name: string; label: string; agent: boolean; color?: Color | null }[]
   /** A reply is addressed to the reader. */
   forYou: boolean
 }
 
-export const MessageRow = memo(function MessageRow({ m, me, author, trust, online, head, adjacentReply, highlighted, quoted, nameOf, onReply, onJump, thread, onOpenThread, anchor = "m" }: RowProps) {
+export const MessageRow = memo(function MessageRow({ m, me, author, trust, online, head, adjacentReply, highlighted, quoted, nameOf, onReply, onJump, thread, onOpenThread, anchor = "m", color }: RowProps) {
   const forged = trust === "forged"
   const repliedTo = new Set((m.re ?? []).map((seq) => quoted(seq)?.from).filter((f): f is string => !!f))
   const said = phrase(m, me, nameOf, repliedTo)
@@ -159,7 +161,7 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
     >
       <div>
         {head ? (
-          <Monogram name={who} agent={isAgent(author)} online={online} className="mt-0.5" />
+          <Monogram name={who} agent={isAgent(author)} online={online} color={color} className="mt-0.5" />
         ) : (
           <time className="invisible block pt-[3px] text-right text-[10.5px] text-ink-3 tabular-nums group-hover:visible" title={formatFull(m.ts)}>
             {formatTime(m.ts).replace(/\s?[AP]M$/i, "")}
@@ -224,7 +226,7 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
             <span className="flex shrink-0 -space-x-1" aria-hidden>
               {thread.people.slice(0, 4).map((p) => (
                 <span key={p.name} className="flex bg-canvas p-px" style={{ borderRadius: p.agent ? 6 : 999 }}>
-                  <Monogram name={p.label} agent={p.agent} size={16} />
+                  <Monogram name={p.label} agent={p.agent} color={p.color} size={16} />
                 </span>
               ))}
             </span>

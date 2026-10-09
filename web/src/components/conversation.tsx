@@ -1,7 +1,8 @@
 import { ArrowDown01Icon, ArrowLeft01Icon, Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
-import type { Message } from "@mc/protocol.ts"
+import type { Color, Message } from "@mc/protocol.ts"
+import { colorOf } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
 import { channelTitle, forgetChannel, loadMember, loadRecent, saveMember, saveRecent, useChannel, useClock, useKnownChannels, type StoredMember } from "@/lib/channel"
 import { refreshIcon, useIcons, useLiveIcon } from "@/lib/icons"
@@ -69,7 +70,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const memberCount = roster.filter((r) => r.active).length || state.members.size
   const active = useMemo(() => [...state.members.values()].filter((m) => m.active), [state.members])
   const others = useMemo(() => active.filter((m) => m.name !== me), [active, me])
-  const people = useMemo(() => active.map((m) => ({ name: m.name, label: memberName(m), agent: isAgent(m) })), [active])
+  const people = useMemo(() => active.map((m) => ({ name: m.name, label: memberName(m), agent: isAgent(m), color: colorOf(state, m.name) })), [active, state])
   // The channel's name can arrive after this view opens (members decrypt it), so follow the list.
   const known = useKnownChannels()
   const title = channelTitle(
@@ -181,11 +182,11 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const onReply = useCallback((m: Message) => setThreadRoot(rootOf(m.seq) ?? m.seq), [rootOf])
   const peopleOf = useCallback(
     (list: Message[]) => {
-      const seen = new Map<string, { name: string; label: string; agent: boolean }>()
-      for (const r of list) if (!seen.has(r.from)) seen.set(r.from, { name: r.from, label: nameOf(r.from), agent: isAgent(state.members.get(r.from)) })
+      const seen = new Map<string, { name: string; label: string; agent: boolean; color: Color | null }>()
+      for (const r of list) if (!seen.has(r.from)) seen.set(r.from, { name: r.from, label: nameOf(r.from), agent: isAgent(state.members.get(r.from)), color: colorOf(state, r.from) })
       return [...seen.values()]
     },
-    [nameOf, state.members]
+    [nameOf, state]
   )
   const summaryOf = (seq: number): ThreadSummary | undefined => {
     const list = threads.get(seq)
@@ -247,6 +248,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         author={(m.pk && byKey.get(m.pk)) || state.members.get(m.from)}
         trust={state.trust.get(m.seq)}
         online={online.has(m.from)}
+        color={colorOf(state, m.from)}
         head={head}
         adjacentReply={adjacentReply}
         highlighted={highlight === m.seq}
@@ -278,6 +280,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
           author={(m.pk && byKey.get(m.pk)) || state.members.get(m.from)}
           trust={state.trust.get(m.seq)}
           online={online.has(m.from)}
+          color={colorOf(state, m.from)}
           head={head}
           // Inside a thread, answering the root needs no quote; a reply to a reply still shows what it answers.
           adjacentReply={i > 0 && (m.re?.length ?? 0) === 1 && (m.re![0] === root.seq || m.re![0] === prev?.seq)}
@@ -331,6 +334,9 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       onReclaim={async (r, opts) => {
         await ch.reclaim(r, opts)
         await Promise.all([refreshRequests(), refreshRoster()])
+      }}
+      onColor={async (color) => {
+        await send(color ? `took ${color}` : "cleared their colour", { kind: "event", ev: { op: "color.set", member: me, color } })
       }}
       onRole={async (ev) => {
         await send(ev.op === "role.set" ? `made ${ev.member} ${ev.role ?? "unassigned"}` : `kept ${ev.member}'s role`, { kind: "event", ev })

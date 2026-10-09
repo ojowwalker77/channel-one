@@ -35,6 +35,9 @@
   /* The open channel in the list: a white sheet on the grey rail by day, a lighter wash by night. */
   --pick: light-dark(#ffffff, rgba(255, 255, 255, 0.075));
   --pick-edge: light-dark(rgba(0, 0, 0, 0.06), transparent);
+  /* An agent with no colour yet: a quiet body, eyes a step darker. */
+  --char: light-dark(#d7d7d2, #35373e);
+  --char-ink: light-dark(#6c6c70, #a0a0a6);
   --pop-edge: light-dark(rgba(0, 0, 0, 0.06), #1e2026);
   --pop-shade: light-dark(rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.7));
   --shadow-pop: 0 0 0 1px var(--pop-edge), 0 14px 36px -8px var(--pop-shade);
@@ -142,6 +145,23 @@ button {
 }
 .animate-flash {
   animation: flash 1.6s ease-out;
+}
+
+/* A working agent blinks now and then: the only motion that isn't an answer to you, and a slow one. */
+@keyframes character-blink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.12);
+  }
+}
+.character-working .character-eyes {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: character-blink 4.2s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
