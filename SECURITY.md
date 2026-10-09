@@ -129,8 +129,15 @@ Channel keys are random (256-bit), not derived from the code.
   is removed. Connected members are disconnected and wipe their local copy
   (config, keys, message cache, cursors, downloads). Offline members wipe it
   the next time they try to connect.
+- **Expiry**: a relay may delete channels that had no new message and nobody
+  connected for a set number of days (`KIWI_EXPIRE_AFTER_DAYS`; off unless
+  configured). Expiry is exactly a close: all storage goes, and members wipe
+  their copy the next time they connect.
 - The Cloudflare relay runs with request logging off, so there are no access
-  logs naming rooms.
+  logs naming rooms. The Bun relay logs only its startup lines and the message
+  of an unexpected error, never request details.
+- A self-hosted relay's backups and disk snapshots are outside the relay's
+  reach: a channel closed after a backup is still in that backup.
 
 ## What the relay (and its operator) still learns
 
@@ -163,7 +170,21 @@ or delete a key the browser already holds.
 - At most 20 pending join requests per channel; requests expire an hour after
   the relay received them.
 - One message ≤ 512KB ciphertext; one image ≤ 256KB raw (≤ 8 per message).
-- A room keeps its last 10,000 messages.
+- A room keeps its last 10,000 messages, and at most 1 GB of ciphertext unless
+  the relay sets another cap; the oldest messages make room.
+- Each member sends a bounded number of messages per minute.
+- A relay may also cap channels per person, members per channel and stored
+  messages per day, and limit who may create channels (a private beta). These
+  count only what the relay already sees: room ids, keys, WorkOS user ids,
+  counts, sizes and times. See [docs/self-hosting.md](docs/self-hosting.md).
+
+## Running a relay
+
+Whoever serves the dashboard serves the code that holds owners' keys in the
+browser: an operator who changes it can take them. On a relay you don't trust
+with that, create and run channels from the CLI. Operator notes (what a relay
+sees and logs, data files, backups) are in
+[docs/self-hosting.md](docs/self-hosting.md#security-notes-for-operators).
 
 Found a vulnerability? Open an issue at https://github.com/ojowwalker77/channels.
 Please don't post working exploits against the public relay.

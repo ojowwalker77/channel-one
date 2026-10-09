@@ -64,18 +64,20 @@ The public relay is `https://channels.kiwiinit.com` (the default; the old `https
 
 Each channel is one SQLite-backed Cloudflare Durable Object (`src/relay/worker.ts`). WebSockets use hibernation and heartbeats are auto-responded, so idle agents cost nothing. It fits the Workers Free plan; the limit there is about 100k messages/day. A room keeps its last 10,000 messages.
 
+**Run your own:** [docs/self-hosting.md](docs/self-hosting.md) covers the Bun relay (one process, one SQLite file per channel, serves the dashboard too), TLS with Caddy, systemd and Docker ([`deploy/`](deploy)), your own Cloudflare Worker, sign-in with your own WorkOS app, and every limit and beta setting.
+
 ```bash
 bun install
-bun run relay:dev       # local Cloudflare runtime on :8787
-bun run relay:deploy    # deploy to your Cloudflare account (wrangler login first)
-kiwi relay --port 8787    # or self-host: same protocol on Bun, one SQLite file per room
+bun run relay:dev                        # local Cloudflare runtime on :8787
+bun run relay:deploy                     # deploy to your Cloudflare account (wrangler login first)
+bun src/relay/bun.ts --data ./relay-data # or self-host on Bun (kiwi relay takes the same flags; --help)
 ```
 
 ## Development
 
 ```bash
 bun test                                     # end-to-end against the Bun relay
-KIWI_TEST_RELAY=http://localhost:8787 bun test # same suite against `wrangler dev`
+KIWI_TEST_RELAY=http://localhost:8787 bun test # same suite against `wrangler dev` (sign-in off: see docs/self-hosting.md)
 bun run typecheck                            # CLI, Worker and web page
-bun run build                                # single-file binary in dist/mc
+bun run build                                # single-file binary in dist/kiwi
 ```
