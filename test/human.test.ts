@@ -319,7 +319,7 @@ describe("usage", () => {
       await ownerCh.send("two");
 
       // Anyone with the code sees who invited them, as sign-in knows the owner.
-      expect((await (await fetch(`${at}/v1/rooms/${access.roomId}/info`)).json()).ownerName).toBe("Alice Owner");
+      expect(((await (await fetch(`${at}/v1/rooms/${access.roomId}/info`)).json()) as { ownerName?: string }).ownerName).toBe("Alice Owner");
       const u = await myUsage(at, await alice());
       expect(u.limits).toMatchObject({ channelsPerOwner: 2, messagesPerDay: 2000, membersPerChannel: null });
       expect(u.owned).toBe(1);
