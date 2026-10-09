@@ -143,6 +143,14 @@ describe("kiwi join, again", () => {
     const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
     return { code: await p.exited, out, err };
   };
+  /** Retry `check` until it holds (a request reaching the relay takes a moment): no fixed sleeps. */
+  const until = async (check: () => Promise<boolean>, ms = 20_000) => {
+    const end = Date.now() + ms;
+    while (!(await check())) {
+      if (Date.now() > end) throw new Error("timed out waiting");
+      await Bun.sleep(200);
+    }
+  };
   /** Wait for a line matching `re` on a running process's stdout. */
   const waitFor = async (p: ReturnType<typeof spawn>, re: RegExp, seen: string[]) => {
     const reader = p.stdout.getReader();
@@ -170,9 +178,8 @@ describe("kiwi join, again", () => {
     // win joins from its own computer, says something, then loses its key (a new home).
     const first = home();
     const joining = spawn(first, "join", code, "--as", "win", "--role", "windows");
-    // The owner's machine opens the request (signing its half), then the joiner shows the code.
-    await Bun.sleep(1500);
-    await run(owner, "-c", "proj", "--as", "lead", "requests");
+    // The owner's machine opens the request (signing its half) once it has arrived; then the joiner shows the code.
+    await until(async () => /\bwin\b/.test((await run(owner, "-c", "proj", "--as", "lead", "requests")).out));
     let shown = await waitFor(joining, /verification code (\d{3}-\d{3})/, []);
     expect((await run(owner, "-c", "proj", "--as", "lead", "approve", shown[1]!, "--yes")).code).toBe(0);
     expect(await joining.exited).toBe(0);
@@ -181,8 +188,8 @@ describe("kiwi join, again", () => {
 
     const second = home();
     const reclaiming = spawn(second, "join", code, "--as", "win", "--reclaim");
-    await Bun.sleep(1500);
-    const listed = await run(owner, "-c", "proj", "--as", "lead", "requests");
+    let listed = { out: "" };
+    await until(async () => /RECLAIMS win's seat/.test((listed = await run(owner, "-c", "proj", "--as", "lead", "requests")).out));
     expect(listed.out).toMatch(/unchecked RECLAIMS win's seat · old key \S+, last seen/);
     const newKey = /new key (\S+)/.exec(listed.out)![1]!;
     expect((await run(owner, "-c", "proj", "--as", "lead", "check", newKey, "--yes")).code).toBe(0);
