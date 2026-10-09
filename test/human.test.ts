@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Channel, myChannels, relayConfig } from "../src/client.ts";
+import { Channel, myChannels, myUsage, relayConfig } from "../src/client.ts";
 import { decodeJoinCode } from "../src/crypto.ts";
 import { machineStatus, newMachine, registerMachine, unlinkMachine, vouchFor, type MachineFile } from "../src/machine.ts";
 import { b64url } from "../src/crypto.ts";
@@ -292,6 +292,43 @@ describe("expiry and channel lists", () => {
       clock.now += 91 * 86_400_000;
       expect(r.sweep()).toBe(1);
       expect((await myChannels(r.url.origin, await token("user_alice"))).some((c) => c.room === access.roomId)).toBe(false);
+    } finally {
+      r.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("usage", () => {
+  test("a person sees their channels' use against the relay's limits; only they can", async () => {
+    const { OPEN_POLICY } = await import("../src/relay/policy.ts");
+    const dir = mkdtempSync(join(tmpdir(), "mc-usage-"));
+    const r = startRelay({ port: 0, hostname: "127.0.0.1", dataDir: dir, human, policy: { ...OPEN_POLICY, channelsPerOwner: 2, messagesPerDay: 2000 } });
+    const at = r.url.origin;
+    try {
+      const [owner, agent] = await Promise.all([generateIdentity("a"), generateIdentity("helper")]);
+      const alice = () => token("user_alice");
+      const { code, access } = await Channel.create(at, owner, { name: "alice-owner", kind: "human" }, [], undefined, await alice());
+      const ownerCh = new Channel(access, at, owner, undefined, alice);
+      const m = await newMachine(at);
+      await registerMachine(m);
+      await fetch(`${at}/v1/machines/${m.identity.pk}/confirm`, { method: "POST", headers: { "x-human-token": await alice() }, body: "{}" });
+      await Channel.requestJoin(at, code, agent, { name: "helper" }, null, await vouchFor(m, access.roomId, agent.pk));
+      await ownerCh.approve((await ownerCh.requests())[0]!);
+      await ownerCh.send("one");
+      await ownerCh.send("two");
+
+      // Anyone with the code sees who invited them, as sign-in knows the owner.
+      expect((await (await fetch(`${at}/v1/rooms/${access.roomId}/info`)).json()).ownerName).toBe("Alice Owner");
+      const u = await myUsage(at, await alice());
+      expect(u.limits).toMatchObject({ channelsPerOwner: 2, messagesPerDay: 2000, membersPerChannel: null });
+      expect(u.owned).toBe(1);
+      expect(u.channels[0]).toMatchObject({ room: access.roomId, messagesToday: 2, members: 2 });
+      expect(u.channels[0]!.bytes).toBeGreaterThan(0);
+      // Someone else sees only their own (none), and can't read this channel's counts.
+      expect((await myUsage(at, await token("user_bob"))).owned).toBe(0);
+      const peek = await fetch(`${at}/v1/rooms/${access.roomId}/usage`, { headers: { "x-human-token": await token("user_bob") } });
+      expect(peek.status).toBe(403);
     } finally {
       r.stop(true);
       rmSync(dir, { recursive: true, force: true });

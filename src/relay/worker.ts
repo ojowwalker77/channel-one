@@ -17,6 +17,7 @@ import {
   authenticateSocket,
   errorResponse,
   myChannels,
+  myUsage,
   onClientFrame,
   onHttp,
   parseRoomPath,
@@ -225,6 +226,24 @@ export default {
     if (url.pathname.startsWith("/v1/machines") || url.pathname.startsWith("/v1/me/machines")) {
       try {
         return (await onMachineHttp(req, machineStore(env), human(env))) ?? errorResponse(new HttpError(404, "not found"));
+      } catch (err) {
+        return errorResponse(err);
+      }
+    }
+    if (url.pathname === "/v1/me/usage" && req.method === "GET") {
+      try {
+        const people = (user: string) => env.PEOPLE.get(env.PEOPLE.idFromName(user));
+        return await myUsage(
+          req,
+          human(env),
+          policyFrom(env as unknown as Record<string, string | undefined>),
+          async (user) => (await people(user).fetch("https://directory/list")).json(),
+          // Each channel answers for itself, to the same signed-in person.
+          async (room) => {
+            const res = await env.CHANNELS.get(env.CHANNELS.idFromName(room)).fetch(new Request(`https://relay/v1/rooms/${room}/usage`, { headers: req.headers }));
+            return res.ok ? res.json() : null;
+          },
+        );
       } catch (err) {
         return errorResponse(err);
       }

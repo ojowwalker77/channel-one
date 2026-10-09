@@ -18,6 +18,7 @@ import {
   authenticateSocket,
   errorResponse,
   myChannels,
+  myUsage,
   onClientFrame,
   onHttp,
   parseRoomPath,
@@ -141,6 +142,15 @@ export function startRelay(
         if (url.pathname === "/v1/config") return relayConfig(human);
         const machine = await onMachineHttp(req, machines, human);
         if (machine) return machine;
+        if (url.pathname === "/v1/me/usage" && req.method === "GET") {
+          return await myUsage(
+            req,
+            human,
+            policy,
+            async (user) => (people.query("SELECT entry FROM entries WHERE user = ?").all(user) as { entry: string }[]).map((r) => JSON.parse(r.entry) as DirectoryEntry),
+            async (room) => (existsSync(file(room)) ? storeFor(room, false).usage() : null),
+          );
+        }
         if (url.pathname === "/v1/me/channels" && req.method === "GET") {
           return await myChannels(req, human, async (user) =>
             (people.query("SELECT entry FROM entries WHERE user = ?").all(user) as { entry: string }[]).map((r) => JSON.parse(r.entry) as DirectoryEntry),

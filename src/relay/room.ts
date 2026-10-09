@@ -80,6 +80,13 @@ export interface DirectoryEntry {
   at: number;
 }
 
+/** One channel's use of its quotas. */
+export interface RoomUsage {
+  messagesToday: number;
+  bytes: number;
+  members: number;
+}
+
 export interface DirectoryUpdate {
   user: string;
   room: string;
@@ -340,6 +347,11 @@ export class RoomStore {
   /** Expire exactly as a close would: off everyone's channel list, then every row gone. */
   expire(): Effects {
     return { directory: this.unlinkAll(), wipe: true };
+  }
+
+  /** What this channel uses, for its owner's usage page. Counts only: nothing sealed. */
+  usage(): RoomUsage {
+    return { messagesToday: this.messagesToday(), bytes: this.storedBytes(), members: this.activeMembers() };
   }
 
   /** How many members (people and agents) are in the channel now. */
@@ -683,7 +695,10 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
 
   if (path === "/info" && method === "GET") {
     const m = store.meta();
-    return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, epoch: m.epoch, rotate: m.rotate, title: store.title() });
+    // Who invited you, as sign-in knows them: anyone holding the code may see the owner's name.
+    const owner = store.ownerUser();
+    const ownerName = owner && human?.profile ? ((await human.profile(owner).catch(() => null))?.name ?? null) : null;
+    return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, epoch: m.epoch, rotate: m.rotate, title: store.title(), ownerName });
   }
   if (path === "/create" && method === "POST") {
     const signer = await verifyRequest(requestToken(req), store.roomId, method, path + url.search, body);
@@ -716,6 +731,12 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     if (human && !who && !vouchUser) throw new HttpError(403, "this computer isn't set up: its person runs `kiwi setup` once, then agents can join from it");
     const { id, fresh } = await store.request(b, who, vouchUser);
     return ok({ id }, fresh ? { broadcast: [frame({ t: "request" })] } : undefined);
+  }
+  // A channel's counts, for its owning person only (the relay's own usage page asks for them).
+  if (path === "/usage" && method === "GET") {
+    const user = await signedIn();
+    if (!user || user !== store.ownerUser()) throw new HttpError(403, "only the person who owns this channel can see its usage");
+    return ok(store.usage());
   }
   const reqMatch = /^\/requests\/([0-9a-f-]{36})$/.exec(path);
   if (reqMatch && method === "GET") {
@@ -825,6 +846,35 @@ export async function myChannels(req: Request, human: HumanAuth | null, list: (u
   if (!user) throw new HttpError(401, "sign in to see your channels");
   const channels = (await list(user)).sort((a, b) => b.at - a.at);
   return Response.json({ channels });
+}
+
+/**
+ * GET /v1/me/usage: what a signed-in person uses of this relay's limits: channels owned against
+ * the cap, and for each one messages today, stored bytes and members. Null limits are unlimited.
+ */
+export async function myUsage(
+  req: Request,
+  human: HumanAuth | null,
+  policy: RelayPolicy,
+  list: (user: string) => Promise<DirectoryEntry[]>,
+  usageOf: (room: string) => Promise<RoomUsage | null>,
+): Promise<Response> {
+  if (!human) throw new HttpError(404, "this relay has no sign-in");
+  const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
+  if (!user) throw new HttpError(401, "sign in to see your usage");
+  const owned = (await list(user)).filter((c) => c.owner);
+  const channels = await Promise.all(owned.map(async (c) => ({ room: c.room, code: c.code, ...((await usageOf(c.room)) ?? { messagesToday: 0, bytes: 0, members: 0 }) })));
+  return Response.json({
+    limits: {
+      channelsPerOwner: policy.channelsPerOwner,
+      membersPerChannel: policy.membersPerChannel,
+      messagesPerDay: policy.messagesPerDay,
+      bytesPerChannel: policy.bytesPerChannel,
+      expireAfterDays: policy.expireAfterDays,
+    },
+    owned: channels.length,
+    channels,
+  });
 }
 
 /** Relay-wide settings the web app needs: which WorkOS client to sign in with, if any. */

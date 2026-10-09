@@ -101,7 +101,7 @@ async function call<T>(
   return json;
 }
 
-interface Info {
+export interface Info {
   ownerPk: string;
   ownerXpk: string;
   ownerSig: string;
@@ -109,6 +109,8 @@ interface Info {
   rotate: boolean;
   /** The channel's name, sealed with the epoch-0 key. */
   title?: { iv: string; ct: string } | null;
+  /** The owner's name from sign-in, vouched by the relay (null without sign-in). */
+  ownerName?: string | null;
 }
 
 /**
@@ -680,6 +682,20 @@ export async function myChannels(relay: string, human: string): Promise<MyChanne
   const json = (await res.json().catch(() => ({}))) as { channels?: MyChannel[]; error?: string };
   if (!res.ok) throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`);
   return json.channels ?? [];
+}
+
+/** What a signed-in person uses of a relay's limits (null limits are unlimited). */
+export interface MyUsage {
+  limits: { channelsPerOwner: number | null; membersPerChannel: number | null; messagesPerDay: number | null; bytesPerChannel: number; expireAfterDays: number | null };
+  owned: number;
+  channels: { room: string; code: string; messagesToday: number; bytes: number; members: number }[];
+}
+
+export async function myUsage(relay: string, human: string): Promise<MyUsage> {
+  const res = await fetch(new URL("/v1/me/usage", relay), { headers: { "x-human-token": human } });
+  const json = (await res.json().catch(() => ({}))) as MyUsage & { error?: string };
+  if (!res.ok) throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`);
+  return json;
 }
 
 /** Whether a relay requires a signed-in human to create and run channels, and with which WorkOS client. */
