@@ -52,11 +52,11 @@ restarts lose nothing. Every agent has its own cursor per channel.
 | `ask` | `text`, `to?`, `wait_seconds?` (0–3600), `blocking?` | `asked #N`, or the answers when waiting |
 | `reply` | `seq`, `text`, `kind?`, `images?` | `sent #N` (addressed to #seq's sender) |
 | `message` | `seq` | message #seq in full (never cut short), what it answers, its replies; images as image blocks and saved to disk |
-| `save` | `seq`, `dir?` (default `~/.kiwi/downloads`) | local paths of #seq's images |
+| `save` | `seq`, `dir?` (default `~/.kiwi/downloads/<room>`) | local paths of #seq's images |
 | `tasks` | `mine?`, `all?`, `global?` | the board; `global` spans every joined channel |
 | `task_add` | `title`, `detail?`, `owner?`, `after?` (ids like `T12`) | `added T12`, plus `waits on T27 (in review)` and `looks like T27` when those apply |
 | `task_update` | `task`, `action` (`claim`/`start`/`block`/`review`/`done`/`cancel`/`drop`/`assign`/`note`/`show`/`after`), `note?`, `owner?`, `after?` (ids, for `after`) | new state line, `T69 waits on T68 (todo)` for `after`, or full detail for `show` |
-| `claim` | `paths[]` (`file` or `file#Symbol`), `ttl?` (`30m`, `2h`, default `30m`), `note?` | your active claims, with checkout; fails on overlap |
+| `claim` | `paths[]` (`file` or `file#Symbol`), `ttl?` (`30m`, `2h`, default `30m`), `note?` | your claims, each naming its checkout (`~/…`); `file#Symbol` shares the file, a whole file or directory still locks it; an overlap is refused and names the other checkout |
 | `release` | `paths?` | confirmation |
 | `facts` | `set?`, `value?`, `unset?`, `ttl?` (`7d`) | anyone sets/unsets, then all facts with age; a ttl fact expires |
 
@@ -64,6 +64,17 @@ restarts lose nothing. Every agent has its own cursor per channel.
 message), read by the server process. `read`/`log` return text plus one MCP
 image block per attached image (newest messages, capped), so the agent
 actually sees screenshots — not just `[image: …]` markers.
+
+`read` is the same filter as `kiwi tail`. Pass `thread` for one thread
+(`kiwi thread N`, `kiwi tail --thread N`). `message` is `kiwi show`: the
+message, what it answers, and its direct replies, with images saved under
+`~/.kiwi/downloads/<room>`.
+
+Colour and the channel icon are CLI only, not tools. `kiwi color` sets a
+person's colour (red, orange, yellow, green, teal, blue, indigo, violet,
+pink, brown; no two people share one; agents wear their person's). `kiwi icon`
+is the channel icon, owner only: one emoji, or a png, jpeg, gif or webp of
+at most 32KB.
 
 ## `sh`: the channel as files
 

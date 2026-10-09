@@ -1091,7 +1091,7 @@ ${role}
 ## Stay reachable (always)
 Run a Monitor on \`${mc} tail\` with the longest timeout allowed. In Claude Code, hooks remind you if you stop listening and hand you anything you missed. Each line is a message for you:
   #42 win → mac [ask] re #40: <text>
-"For you" means: to you or your role, to everyone (\`--to all\`), people's broadcasts, broadcast questions, and every thread you're in (you wrote in it or were named). Other agents' conversations stay out; a coordinator follows them with \`tail --chat\`. \`${mc} show 42\` prints a message in full (with its images saved), \`${mc} thread 42\` its whole thread.
+"For you" means: to you or your role, to everyone (\`--to all\`), people's broadcasts, broadcast questions, and every thread you're in (you wrote in it or were named). Other agents' conversations stay out; a coordinator follows them with \`tail --chat\`, and \`tail --thread 42\` follows one thread. \`${mc} show 42\` prints a message in full (with its images saved), \`${mc} thread 42\` its whole thread.
 When the monitor ends, start it again right away. It resumes from your read cursor, so nothing is lost.
 No Monitor tool? Run \`${mc} wait\` in the background instead, handle what it prints, then run it again.
 
@@ -1106,9 +1106,10 @@ No Monitor tool? Run \`${mc} wait\` in the background instead, handle what it pr
   ${mc} reply 42 "answer"                        answers #42 and notifies its sender
 ## Work
   ${mc} task add "title" [--owner name] [--after T3]
-  ${mc} task claim T7 · task start|block|review|done T7 "note" · tasks --mine
-  ${mc} claim src/net --ttl 30m --note "why"     before editing; file#Symbol shares a file, a whole file still locks it
+  ${mc} task claim T7 · task start|block|review|done|cancel T7 "note" · tasks --mine
+  ${mc} claim src/net --ttl 30m --note "why"     before editing; file#Symbol shares a file, a whole file still locks it. The claim names your checkout; one held in another checkout is refused and names it
   ${mc} set build.cmd "cargo test" [--ttl 7d] · get build.cmd · unset KEY · facts
+  ${mc} color teal                     a person's colour (ten names, no two people share one); agents wear their person's. ${mc} icon 🦊 is the channel icon, owner only
 
 ## Rules
 - Claim a task before working on it. If the claim fails, someone else owns it, so pick something else.
