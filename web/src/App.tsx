@@ -7,13 +7,15 @@ import { ChannelGate, JoinWithCode, NewChannel, Welcome } from "@/components/onb
 import { Sidebar } from "@/components/sidebar"
 import { Palette, usePaletteShortcut, type Command } from "@/components/ui/palette"
 import { UsageModal } from "@/components/usage"
-import { useAuth } from "@/lib/auth"
+import { PasskeysSheet } from "@/components/vault"
+import { displayName, useAuth } from "@/lib/auth"
 import { parseHash, useChannelList } from "@/lib/channel"
 import { parseLinkHash } from "@/lib/computers"
 import { readOfferHash } from "@/lib/devices"
 import { formatShort } from "@/lib/format"
 import { setAppearance } from "@/lib/theme"
 import { useUsage } from "@/lib/usage"
+import { startVault } from "@/lib/vault"
 import { cx } from "@/lib/utils"
 
 // The join code (and optionally a signing identity) live in the URL
@@ -32,7 +34,7 @@ export default function App() {
   const [link, setLink] = useState(() => parseLinkHash(location.hash))
   const [offer, setOffer] = useState(readOfferHash)
   const [{ code, identity }, setHash] = useState(readHash)
-  const [sheet, setSheet] = useState<"new" | "join" | "computers" | "usage" | "device" | null>(null)
+  const [sheet, setSheet] = useState<"new" | "join" | "computers" | "usage" | "device" | "passkeys" | null>(null)
   const rows = useChannelList(auth.status === "signed-in", auth.token)
   const usage = useUsage(auth.status === "signed-in", auth.token)
   const [palette, setPalette] = useState(false)
@@ -56,6 +58,12 @@ export default function App() {
     )
     return list
   }, [rows, signedIn, usage, auth.status, auth.signIn])
+
+  // Signed in, the vault brings this person's channels to this browser.
+  const user = auth.status === "signed-in" ? auth.user : null
+  useEffect(() => {
+    void startVault(user ? { user: user.id, email: user.email, name: displayName(user), token: auth.token } : null)
+  }, [user, auth.token])
 
   useEffect(() => {
     const onHash = () => {
@@ -100,6 +108,7 @@ export default function App() {
             onJoin={() => setSheet("join")}
             onComputers={() => setSheet("computers")}
             onAddDevice={() => setSheet("device")}
+            onPasskeys={() => setSheet("passkeys")}
             usage={usage}
             onUsage={() => setSheet("usage")}
             onPalette={() => setPalette(true)}
@@ -135,6 +144,7 @@ export default function App() {
       />
       <ComputersModal open={sheet === "computers"} onClose={() => setSheet(null)} />
       {sheet === "device" && <AddDeviceModal onClose={() => setSheet(null)} />}
+      <PasskeysSheet open={sheet === "passkeys"} onClose={() => setSheet(null)} />
       <UsageModal open={sheet === "usage"} onClose={() => setSheet(null)} usage={usage} rows={rows} />
       <Palette open={palette} onClose={() => setPalette(false)} commands={commands} />
       <Toaster />
