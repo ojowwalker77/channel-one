@@ -74,6 +74,16 @@ describe("relay", () => {
     expect(await putVault(relay, tok("alice"), "alice", 1, "v2", w)).toEqual({ version: 2 });
   });
 
+  test("setting up again over an existing vault is a conflict (go unlock it), not a signature error", async () => {
+    // Prod bug #403: a second setup, with a fresh writer key and version 0, got a 403.
+    const fresh = await writerKey();
+    expect(await putVault(relay, tok("alice"), "alice", 0, "a second setup", fresh, fresh.pk)).toEqual({ conflict: 2 });
+    const res = await fetch(`${relay}/v1/me/vault`, { method: "PUT", headers: { "x-human-token": tok("alice") }, body: JSON.stringify({ version: 0, blob: "x", writer: fresh.pk }) });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ version: 2, exists: true });
+    expect((await fetchVault(relay, tok("alice")))!.blob).toBe("v2");
+  });
+
   test("a stale version is refused with the current one", async () => {
     expect(await putVault(relay, tok("alice"), "alice", 1, "late", w)).toEqual({ conflict: 2 });
     expect((await fetchVault(relay, tok("alice")))!.blob).toBe("v2");

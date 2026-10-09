@@ -97,6 +97,15 @@ async function live(store: VaultStore, user: string, now: number): Promise<Vault
   return rec;
 }
 
+function conflict(current: VaultRecord | null): Response {
+  return Response.json(
+    current
+      ? { error: "the vault changed since you read it: read it again, merge, and save", version: current.version, exists: true }
+      : { error: "there's no vault any more: start a new one", version: 0, exists: false },
+    { status: 409 },
+  );
+}
+
 /** Routes under /v1/me/vault; null when the path isn't one of them. */
 export async function onVaultHttp(req: Request, store: VaultStore, human: HumanAuth | null, now = Date.now()): Promise<Response | null> {
   const path = new URL(req.url).pathname;
@@ -120,6 +129,10 @@ export async function onVaultHttp(req: Request, store: VaultStore, human: HumanA
     if (b.writer !== undefined && (typeof b.writer !== "string" || !b.writer)) throw new HttpError(400, "bad writer");
     const handover = b.writer as string | undefined;
     const current = await live(store, user, now);
+    // A stale version is a conflict, whoever signed it: a second setup on a vault that already
+    // exists must hear "it exists" (409) and go unlock it, not a signature error. The version
+    // is no secret (GET shows it) and nothing changes here.
+    if ((current?.version ?? 0) !== expected) return conflict(current);
     // The first save names its writer and signs with it; every later one is signed by the current writer.
     if (!current && !handover) throw new HttpError(400, "a new vault names its writer key");
     const signer = current?.writer ?? handover!;
@@ -129,7 +142,7 @@ export async function onVaultHttp(req: Request, store: VaultStore, human: HumanA
     // A signed save is proof a device still holds the vault: it cancels any pending reset.
     const rec: VaultRecord = { version: expected + 1, blob: b.blob, updated: now, writer: handover ?? signer, recent: [...recent, now] };
     const r = await store.put(user, expected, rec);
-    if (!r.ok) return Response.json({ error: "the vault changed since you read it: read it again, merge, and save", version: r.current?.version ?? 0 }, { status: 409 });
+    if (!r.ok) return conflict(r.current);
     return Response.json({ version: rec.version });
   }
 
