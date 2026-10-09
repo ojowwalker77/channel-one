@@ -119,6 +119,13 @@ describe("the shell", () => {
     expect((await runSh(files, "ls")).stdout).not.toMatch(/^(x|d|new)$/m);
   });
 
+  test("/dev/null swallows output and reads empty, and nothing else under /dev exists", async () => {
+    const r = await runSh(files, "cat nope 2>/dev/null; echo kept > /dev/null; grep -c . /dev/null; echo done >>/dev/null; echo ok");
+    expect(r).toEqual({ stdout: "0\nok\n", stderr: "", exitCode: 0 });
+    expect((await runSh(files, "ls /dev")).stdout).toBe("null\n");
+    expect((await runSh(files, "echo x > /dev/../channel/x")).exitCode).not.toBe(0);
+  });
+
   test("has no network, interpreters, databases, archives or sleeps", async () => {
     for (const cmd of ["curl", "wget", "python3", "python", "node", "js-exec", "sqlite3", "tar", "gzip", "sleep", "timeout", "html-to-markdown", "env", "printenv", "bash", "sh"]) {
       const r = await runSh(files, `${cmd} --help`);
@@ -127,9 +134,9 @@ describe("the shell", () => {
   });
 
   test("sees none of the real machine", async () => {
-    const r = await runSh(files, "cat /etc/passwd; ls /Users /home /tmp /proc /dev; cat ~/.kiwi/config.json; echo \"$HOME $KIWI_HOME $KIWI_AS $PATH\"");
+    const r = await runSh(files, "cat /etc/passwd; ls /Users /home /tmp /proc /etc; cat ~/.kiwi/config.json; echo \"$HOME $KIWI_HOME $KIWI_AS $PATH\"");
     expect(r.stdout.trim()).toBe("/channel   /usr/bin:/bin"); // the KIWI_* vars are empty
-    expect((await runSh(files, "ls /")).stdout).toBe("channel\nchannels\n");
+    expect((await runSh(files, "ls /")).stdout).toBe("channel\nchannels\ndev\n");
   });
 
   test("runaway scripts end with an error, never a hang", async () => {

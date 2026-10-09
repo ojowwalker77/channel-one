@@ -167,8 +167,10 @@ export async function runSh(files: Record<string, string>, script: string, opts:
   if (new TextEncoder().encode(script).length > MAX_SCRIPT_BYTES) return { stdout: "", stderr: `kiwi sh: script longer than ${MAX_SCRIPT_BYTES} bytes\n`, exitCode: 2 };
   const inner = new InMemoryFs(Object.fromEntries(Object.entries(files).filter(([p]) => !p.endsWith("/"))));
   for (const p of Object.keys(files)) if (p.endsWith("/")) inner.mkdirSync(p.slice(0, -1), { recursive: true });
+  inner.writeFileSync(DEV_NULL, "");
   const fs = new ReadOnlyFs(inner);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const stop = new AbortController();
   try {
     const bash = new Bash({
       fs,
@@ -183,9 +185,9 @@ export async function runSh(files: Record<string, string>, script: string, opts:
     // just-bash lays out /bin, /dev and friends while it's built; from here on nothing may change.
     fs.lock();
     const timeout = new Promise<ShResult>((resolve) => {
-      timer = setTimeout(() => resolve({ stdout: "", stderr: `kiwi sh: stopped after ${MAX_RUN_MS / 1000}s\n`, exitCode: 124 }), MAX_RUN_MS + 1_000);
+      timer = setTimeout(() => (stop.abort(), resolve({ stdout: "", stderr: `kiwi sh: stopped after ${MAX_RUN_MS / 1000}s\n`, exitCode: 124 })), MAX_RUN_MS + 1_000);
     });
-    const run = bash.exec(script, { replaceEnv: false }).then((r) => ({ stdout: r.stdout, stderr: r.stderr, exitCode: r.exitCode }));
+    const run = bash.exec(script, { replaceEnv: false, signal: stop.signal }).then((r) => ({ stdout: r.stdout, stderr: r.stderr, exitCode: r.exitCode }));
     const r = await Promise.race([run, timeout]);
     return { stdout: cap(r.stdout), stderr: cap(r.stderr), exitCode: r.exitCode };
   } catch (err) {
@@ -200,16 +202,22 @@ function cap(s: string): string {
   return s.length > MAX_OUTPUT_CHARS ? s.slice(0, MAX_OUTPUT_CHARS) + `\n[kiwi sh: output cut at ${MAX_OUTPUT_CHARS} characters; narrow the query]\n` : s;
 }
 
+/** The one writable path: a discard, so the usual `2>/dev/null` works. */
+const DEV_NULL = "/dev/null";
+
 function readOnly(path: string): never {
   throw Object.assign(new Error(`EROFS: read-only file system, '${path}'`), { code: "EROFS" });
 }
 
-/** Passes reads through; once locked, refuses every change. */
+/** Passes reads through; once locked, refuses every change (writes to /dev/null vanish). */
 class ReadOnlyFs implements IFileSystem {
   private locked = false;
   constructor(private readonly inner: InMemoryFs) {}
   lock(): void {
     this.locked = true;
+  }
+  private discards(path: string): boolean {
+    return this.locked && this.inner.resolvePath("/", path) === DEV_NULL;
   }
   private guard(path: string): void {
     if (this.locked) readOnly(path);
@@ -228,8 +236,8 @@ class ReadOnlyFs implements IFileSystem {
   resolvePath: IFileSystem["resolvePath"] = (b, p) => this.inner.resolvePath(b, p);
   getAllPaths: IFileSystem["getAllPaths"] = () => this.inner.getAllPaths();
 
-  writeFile: IFileSystem["writeFile"] = async (p, c, o) => (this.guard(p), this.inner.writeFile(p, c, o));
-  appendFile: IFileSystem["appendFile"] = async (p, c, o) => (this.guard(p), this.inner.appendFile(p, c, o));
+  writeFile: IFileSystem["writeFile"] = async (p, c, o) => (this.discards(p) ? undefined : (this.guard(p), this.inner.writeFile(p, c, o)));
+  appendFile: IFileSystem["appendFile"] = async (p, c, o) => (this.discards(p) ? undefined : (this.guard(p), this.inner.appendFile(p, c, o)));
   mkdir: IFileSystem["mkdir"] = async (p, o) => (this.guard(p), this.inner.mkdir(p, o));
   rm: IFileSystem["rm"] = async (p, o) => (this.guard(p), this.inner.rm(p, o));
   cp: IFileSystem["cp"] = async (s, d, o) => (this.guard(d), this.inner.cp(s, d, o));
