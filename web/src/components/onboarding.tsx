@@ -9,6 +9,7 @@ import {
   checkJoin,
   createChannel,
   forgetPending,
+  inviteInfo,
   isJoinCode,
   loadMember,
   loadPending,
@@ -351,13 +352,67 @@ function AskToJoin({ code, listed, onAsked, onCancel }: { code: string; listed?:
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const valid = NAME_RE.test(name.trim()) && name.trim() !== "human"
+  // Who sent this invite, as the relay knows them; "gone" when the channel was closed.
+  const [invite, setInvite] = useState<{ ownerName: string | null } | "gone" | "loading">("loading")
+  useEffect(() => {
+    let cancelled = false
+    inviteInfo(code)
+      .then((i) => !cancelled && setInvite(i ?? "gone"))
+      .catch(() => !cancelled && setInvite({ ownerName: null }))
+    return () => {
+      cancelled = true
+    }
+  }, [code])
 
+  if (invite === "loading") return <Spinner />
+  if (invite === "gone") {
+    return (
+      <>
+        <Heading title="This invite no longer works">The channel was closed, or the code is wrong. Ask whoever sent it for a new one.</Heading>
+        <Button variant="secondary" className="mt-6" onClick={onCancel}>
+          Back
+        </Button>
+      </>
+    )
+  }
+
+  const owner = invite.ownerName
   const intro =
     listed?.state === "elsewhere"
       ? { title: "You’re in this channel on another device", text: "Keys never leave the browser that holds them. Ask the owner to let this browser in too." }
       : listed?.state === "agents"
         ? { title: "Your agents are in this channel", text: "Ask the owner to let you in as well, so you can watch what they do." }
-        : { title: "Ask to join", text: "A join code only lets you ask. The owner approves every member, person or agent." }
+        : { title: owner ? `${owner} invited you to a channel` : "You’re invited to a channel", text: null }
+
+  // Before sign-in: what this is and what happens next, in plain words.
+  if (auth.status === "signed-out") {
+    const who = owner ?? "The owner"
+    return (
+      <>
+        <Heading title={intro.title}>{intro.text}</Heading>
+        {!intro.text && (
+          <>
+            <p className="mt-3 text-[14px] leading-normal text-ink-2">
+              Kiwi Channels is a private chat where people and their AI agents work together. Here’s what happens:
+            </p>
+            <ol className="mt-4 grid list-decimal gap-2 pl-5 text-[14px] leading-normal text-ink-2 marker:text-ink-3">
+              <li>Sign in, so {owner ?? "the owner"} sees who’s asking.</li>
+              <li>{who} lets you in after checking a short number with you.</li>
+              <li>Messages are end-to-end encrypted, and only your browser can read them.</li>
+            </ol>
+          </>
+        )}
+        <div className="mt-6 flex gap-2">
+          <Button size="lg" onClick={auth.signIn}>
+            Sign in to continue
+          </Button>
+          <Button size="lg" variant="secondary" onClick={onCancel}>
+            Not now
+          </Button>
+        </div>
+      </>
+    )
+  }
 
   return (
     <form
@@ -375,7 +430,7 @@ function AskToJoin({ code, listed, onAsked, onCancel }: { code: string; listed?:
         }
       }}
     >
-      <Heading title={intro.title}>{intro.text}</Heading>
+      <Heading title={intro.title}>{intro.text ?? `A code only lets you ask. ${owner ?? "The owner"} approves every member, person or agent.`}</Heading>
       <label className="mt-6 block text-[12px] font-medium text-ink-2" htmlFor="ask-name">
         Your name in the channel
       </label>
@@ -386,15 +441,9 @@ function AskToJoin({ code, listed, onAsked, onCancel }: { code: string; listed?:
       <TextField id="ask-role" className="mt-1.5" value={role} onChange={(e) => setRole(e.target.value)} placeholder="reviewer" />
       {error && <p className="mt-3 text-[13px] text-alert">{error}</p>}
       <div className="mt-6 flex gap-2">
-        {auth.status === "signed-out" ? (
-          <Button size="lg" onClick={auth.signIn}>
-            Sign in to ask
-          </Button>
-        ) : (
-          <Button size="lg" type="submit" disabled={!valid || busy}>
-            {busy ? <Spinner className="border-white/30 border-t-white" /> : "Ask to join"}
-          </Button>
-        )}
+        <Button size="lg" type="submit" disabled={!valid || busy}>
+          {busy ? <Spinner className="border-white/30 border-t-white" /> : "Ask to join"}
+        </Button>
         <Button size="lg" variant="secondary" onClick={onCancel}>
           Cancel
         </Button>

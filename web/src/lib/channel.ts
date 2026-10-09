@@ -385,6 +385,21 @@ export async function createChannel(name: string, token: string | null, me: Pers
   return m
 }
 
+/**
+ * What an invite can say before you join: who owns the channel, as the relay knows them from sign-in.
+ * The channel's name stays sealed until you're in. Null: the channel doesn't exist (anymore).
+ */
+export async function inviteInfo(code: string): Promise<{ ownerName: string | null } | null> {
+  const { roomId, ownerFp } = decodeJoinCode(code)
+  const res = await fetch(`${location.origin}/v1/rooms/${roomId}/info`)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`the relay returned ${res.status}`)
+  const info = (await res.json()) as { ownerPk: string; ownerName?: string | null }
+  // Only name the owner the code itself names.
+  if ((await ownerFingerprint(info.ownerPk)) !== ownerFp) throw new Error("The relay is serving a different owner than this code names.")
+  return { ownerName: info.ownerName ?? null }
+}
+
 /** Ask to join from this browser (as a signed-in person); resumes an earlier request for the same code. */
 export async function askToJoin(code: string, name: string, role?: string, token?: string | null): Promise<PendingJoin> {
   const prior = loadPending(code)
