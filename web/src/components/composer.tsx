@@ -1,4 +1,4 @@
-import { ArrowDown01Icon, ArrowUp02Icon, Attachment01Icon, Cancel01Icon } from "@hugeicons/core-free-icons"
+import { Add01Icon, ArrowDown01Icon, ArrowUp02Icon, Cancel01Icon } from "@hugeicons/core-free-icons"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import type { SendOptions } from "@mc/client.ts"
@@ -170,9 +170,9 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
         </div>
       )}
 
-      <div className="rounded-[12px] bg-canvas shadow-[inset_0_0_0_1px_var(--line),0_1px_2px_rgba(0,0,0,0.03)] transition-shadow focus-within:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--ink)_22%,transparent),0_0_0_3px_var(--wash)]">
+      <div className="rounded-[18px] bg-raised shadow-[0_0_0_1px_var(--line),0_2px_8px_-4px_rgba(0,0,0,0.08)] transition-shadow focus-within:shadow-[0_0_0_1px_color-mix(in_srgb,var(--ink)_24%,transparent),0_2px_8px_-4px_rgba(0,0,0,0.08)]">
         {replyTo && (
-          <div className="flex items-center gap-2 px-3.5 pt-2.5 text-[12.5px] text-ink-2">
+          <div className="flex items-center gap-2 px-4 pt-2.5 text-[12.5px] text-ink-2">
             <span className="min-w-0 truncate">
               Replying to <span className="font-medium text-ink">{nameOf(replyTo.from)}</span> <span className="text-ink-3">{excerpt(replyTo.body, 80)}</span>
             </span>
@@ -183,7 +183,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
         )}
 
         {files.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto px-3 pt-3">
+          <div className="flex gap-2 overflow-x-auto px-3.5 pt-3">
             {files.map((f, i) => (
               <span key={i} className="group relative shrink-0">
                 <img src={`data:${f.mime};base64,${f.data}`} alt={f.name} title={f.name} className="size-16 rounded-[8px] object-cover shadow-[0_0_0_0.5px_var(--line)]" />
@@ -234,12 +234,12 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
             }
             if (e.key === "Escape" && replyTo) onClearReply()
           }}
-          className="block max-h-[220px] min-h-[46px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-[14px] leading-[1.5] outline-none placeholder:text-ink-3 focus-visible:outline-none"
+          className="block max-h-[220px] min-h-[48px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[14.5px] leading-[1.5] outline-none placeholder:text-ink-3 focus-visible:outline-none"
         />
 
         <div className="flex items-center gap-1 px-2 pb-2">
-          <IconButton label="Attach images" className="size-7" onClick={() => picker.current?.click()} disabled={disabled || files.length >= 8}>
-            <Icon icon={Attachment01Icon} size={16} />
+          <IconButton label="Attach images" className="size-8 rounded-full" onClick={() => picker.current?.click()} disabled={disabled || files.length >= 8}>
+            <Icon icon={Add01Icon} size={18} />
           </IconButton>
           <Menu
             side="top"
@@ -249,7 +249,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
                 type="button"
                 disabled={disabled}
                 className={cx(
-                  "flex h-7 items-center gap-1 rounded-[7px] px-2 text-[12.5px] font-medium transition-colors",
+                  "flex h-8 items-center gap-1 rounded-full px-3 text-[12.5px] font-medium transition-colors",
                   kind === "msg" ? "text-ink-2 hover:bg-wash hover:text-ink data-popup-open:bg-wash" : "bg-wash-2 text-ink"
                 )}
               >
@@ -273,11 +273,11 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
             disabled={!canSend}
             onClick={() => void submit()}
             className={cx(
-              "ml-auto flex size-7 shrink-0 items-center justify-center rounded-[7px] transition-colors sm:ml-1",
+              "ml-auto flex size-8 shrink-0 items-center justify-center rounded-full transition-[background-color,color,opacity] sm:ml-1",
               canSend ? "bg-accent text-accent-ink hover:opacity-90" : "bg-wash-2 text-ink-3"
             )}
           >
-            <Icon icon={ArrowUp02Icon} size={15} strokeWidth={2.2} />
+            <Icon icon={ArrowUp02Icon} size={16} strokeWidth={2.2} />
           </button>
         </div>
       </div>

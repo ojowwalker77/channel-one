@@ -117,7 +117,11 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
   return (
     <div
       id={`m${m.seq}`}
-      className={cx("group relative -mx-3 grid grid-cols-[28px_minmax(0,1fr)] gap-x-3 rounded-[10px] px-3 transition-colors hover:bg-wash", head ? "mt-3 pt-1.5 pb-1" : "py-[3px]", highlighted && "animate-flash")}
+      className={cx(
+        "group relative -mx-3 grid grid-cols-[28px_minmax(0,1fr)] gap-x-3 rounded-[10px] px-3 transition-colors hover:bg-wash",
+        head ? "mt-4 pt-1.5 pb-1" : "py-[3px]",
+        highlighted && "animate-flash"
+      )}
     >
       <div>
         {head ? (
@@ -143,20 +147,21 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
         )}
         {!head && said && <p className={cx("text-[12.5px]", said.alert ? "font-medium text-alert" : "text-ink-2")}>{said.text}</p>}
 
-        {!adjacentReply && m.re?.map((seq) => {
-          const q = quoted(seq)
-          return (
-            <button key={seq} type="button" onClick={() => onJump(seq)} className="mt-0.5 flex max-w-full items-center gap-1.5 text-left text-[12.5px] text-ink-3 transition-colors hover:text-ink-2">
-              <Icon icon={ArrowTurnBackwardIcon} size={13} className="shrink-0" />
-              <span className="truncate">
-                <span className="font-medium text-ink-2">{q ? nameOf(q.from) : "Earlier message"}</span> {q ? excerpt(q.body, 110) : ""}
-              </span>
-            </button>
-          )
-        })}
+        {!adjacentReply &&
+          m.re?.map((seq) => {
+            const q = quoted(seq)
+            return (
+              <button key={seq} type="button" onClick={() => onJump(seq)} className="mt-0.5 flex max-w-full items-center gap-1.5 text-left text-[12.5px] text-ink-3 transition-colors hover:text-ink-2">
+                <Icon icon={ArrowTurnBackwardIcon} size={13} className="shrink-0" />
+                <span className="truncate">
+                  <span className="font-medium text-ink-2">{q ? nameOf(q.from) : "Earlier message"}</span> {q ? excerpt(q.body, 110) : ""}
+                </span>
+              </button>
+            )
+          })}
 
         {!imageOnly && (
-          <div className={cx("text-[14px] leading-[1.6]", forged ? "text-ink-3 line-through" : "text-ink")}>
+          <div className={cx("text-[14.5px] leading-[1.6] tracking-[-0.006em]", forged ? "text-ink-3 line-through" : "text-ink")}>
             <Markdown>{m.body}</Markdown>
           </div>
         )}
@@ -177,7 +182,7 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
         {forged && <p className="mt-0.5 text-[12px] text-alert">Not signed by {m.from}’s key, so agents ignore it.</p>}
       </div>
 
-      <div className="absolute top-1 right-2 hidden items-center rounded-[8px] bg-raised p-0.5 shadow-pop group-hover:flex">
+      <div className={cx("absolute -top-3 hidden items-center gap-px rounded-[9px] bg-raised p-0.5 shadow-pop group-focus-within:flex group-hover:flex", head ? "right-[84px]" : "right-3")}>
         <IconButton label="Reply" className="size-7" onClick={() => onReply(m)}>
           <Icon icon={ArrowTurnBackwardIcon} size={15} />
         </IconButton>

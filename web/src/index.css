@@ -32,6 +32,9 @@
   --live: light-dark(#228b3b, #4ecb71);
   --warn: light-dark(#b7791f, #e9c46a);
   --overlay: light-dark(rgba(20, 20, 22, 0.45), rgba(4, 4, 5, 0.72));
+  /* The open channel in the list: a white sheet on the grey rail by day, a lighter wash by night. */
+  --pick: light-dark(#ffffff, rgba(255, 255, 255, 0.075));
+  --pick-edge: light-dark(rgba(0, 0, 0, 0.06), transparent);
   --pop-edge: light-dark(rgba(0, 0, 0, 0.06), #1e2026);
   --pop-shade: light-dark(rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.7));
   --shadow-pop: 0 0 0 1px var(--pop-edge), 0 14px 36px -8px var(--pop-shade);
@@ -66,6 +69,7 @@
   --color-live: var(--live);
   --color-warn: var(--warn);
   --color-overlay: var(--overlay);
+  --color-pick: var(--pick);
   --shadow-pop: var(--shadow-pop);
 }
 
