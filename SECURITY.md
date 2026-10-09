@@ -102,8 +102,13 @@ QR code, and channels joined later reach their other devices on their own.
   inside the encrypted vault; the relay takes no write or delete without it.
   So a stolen sign-in can't overwrite or delete the vault either. Someone who
   lost every passkey and the recovery code can only ask for a reset: it waits
-  a day, shows on every device that opens the vault, and any device that still
-  can save cancels it.
+  a day, and any device that still opens the vault cancels it with a signed
+  save as soon as it sees it, then tells the person loudly: a reset they didn't
+  ask for means someone has their sign-in.
+- A session thief could also create a vault first, before the person's first
+  device does. Nothing of theirs goes into it (a device never seals into a vault
+  its passkey doesn't open), so this only blocks the vault: the device says
+  "this vault wasn't made with your passkeys" and offers the reset.
 - The vault key is sealed once per passkey, under a key derived from that
   passkey's WebAuthn PRF output, and once under a 160-bit recovery code. The
   PRF output and the code never leave the person's device. **A stolen sign-in
