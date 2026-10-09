@@ -78,6 +78,15 @@ export type Kind = (typeof KINDS)[number];
 export const CHAT_KINDS: readonly Kind[] = KINDS.filter((k) => k !== "event");
 
 export const TASK_STATES = ["todo", "doing", "blocked", "review", "done"] as const;
+
+/**
+ * The colours a person can pick: ids, not values (the web app maps each to its
+ * light and dark shades), and few enough to tell apart at avatar size. No two
+ * people in a channel share one; their agents wear their person's.
+ */
+export const COLORS = ["red", "orange", "yellow", "green", "teal", "blue", "indigo", "violet", "pink", "brown"] as const;
+export type Color = (typeof COLORS)[number];
+export const isColor = (x: unknown): x is Color => typeof x === "string" && (COLORS as readonly string[]).includes(x);
 export type TaskState = (typeof TASK_STATES)[number];
 
 /** Coordination events. Clients fold these, in sequence order, into shared state. */
@@ -95,7 +104,9 @@ export type Event =
   /** Owner only: turn down the role a member asked for. */
   | { op: "role.refuse"; member: string }
   /** Owner only: a member's seat moved to a new key (fingerprints, for the record). */
-  | { op: "seat.reclaim"; member: string; from: string; to: string };
+  | { op: "seat.reclaim"; member: string; from: string; to: string }
+  /** A person's colour (null clears it): set by that person, or by the owner for anyone. */
+  | { op: "color.set"; member: string; color: Color | null };
 
 /** One image attached to a message, encrypted with everything else. */
 export interface ImageAttachment {
@@ -203,6 +214,8 @@ export function wellFormedEvent(ev: unknown): ev is Event {
       return str(e.member, 64);
     case "seat.reclaim":
       return str(e.member, 64) && str(e.from, 64) && str(e.to, 64);
+    case "color.set":
+      return str(e.member, 64) && (e.color === null || isColor(e.color));
     default:
       return false;
   }

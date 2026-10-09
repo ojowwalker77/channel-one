@@ -8,6 +8,7 @@
 
 import { openWith, sealWith } from "./crypto.ts";
 import { sign, verify, type Identity } from "./identity.ts";
+import { isColor, type Color } from "./protocol.ts";
 
 /** The signed-in person an agent acts for, as the relay verified them with WorkOS. */
 export interface Sponsor {
@@ -30,6 +31,8 @@ export interface MemberInfo {
   display?: string;
   /** For an agent: the person it acts for. For a person: themself. */
   sponsor?: Sponsor;
+  /** A person's colour, if the owner set one when admitting them (later changes are color.set events). */
+  color?: Color;
   /** In a join request only: the requester means to take over the seat under this name with a new key. */
   reclaim?: boolean;
 }
@@ -113,6 +116,7 @@ export async function makeRecord(owner: Identity, room: string, m: MemberInfo & 
     ...(m.kind ? { kind: m.kind } : {}),
     ...(m.display ? { display: m.display } : {}),
     ...(m.sponsor ? { sponsor: m.sponsor } : {}),
+    ...(m.color && (m.kind === "human" || m.owner) ? { color: m.color } : {}),
     at: Date.now(),
   });
 }
@@ -138,6 +142,7 @@ export async function openRecord(key: string, sealed: string, room: string, owne
       kind: rec.kind,
       display: rec.display,
       sponsor: rec.sponsor,
+      ...(isColor(rec.color) ? { color: rec.color } : {}),
       owner: !!rec.owner && rec.member === ownerPk,
       at: rec.at,
       active: true,

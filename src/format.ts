@@ -4,7 +4,7 @@ import { loadJson, loadSummary, memberLoad, showsLoad } from "./load.ts";
 import { inlineText } from "./membership.ts";
 import { imageMarker } from "./protocol.ts";
 import type { Message, Trust } from "./protocol.ts";
-import { taskId, waitingOn, type ChannelState, type Claim, type Task } from "./state.ts";
+import { colorOf, taskId, waitingOn, type ChannelState, type Claim, type Task } from "./state.ts";
 
 export function ago(ts: number, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - ts) / 1000));
@@ -58,6 +58,8 @@ export function describeEvent(m: Message, state?: ChannelState): string {
       return ev.role ? `made ${ev.member} ${ev.role}${ev.about ? ` (${ev.about})` : ""}` : `cleared ${ev.member}'s role`;
     case "role.refuse":
       return `kept ${ev.member}'s role as it was`;
+    case "color.set":
+      return ev.color ? `${ev.member === m.from ? "picked" : `gave ${ev.member}`} the colour ${ev.color}` : `cleared ${ev.member === m.from ? "their" : `${ev.member}'s`} colour`;
     case "seat.reclaim":
       return `moved ${ev.member}'s seat to a new key (${ev.from} → ${ev.to}): the old key is out`;
     case "task.add":
@@ -143,6 +145,7 @@ export function memberJson(state: ChannelState, name: string, online: Snapshot["
     kind: m?.kind ?? (m?.owner ? "human" : "agent"),
     owner: !!m?.owner,
     sponsor: m?.sponsor ? (m.sponsor.handle ?? m.sponsor.name) : null,
+    color: colorOf(state, name),
     online: !!on,
     lastSeen: m?.lastSeen ?? null,
     load: loadJson(memberLoad(state, name, now)),

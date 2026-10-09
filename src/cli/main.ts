@@ -15,7 +15,7 @@ import { b64url, decodeJoinCode, newRoomId, type ChannelAccess } from "../crypto
 import { describeMember, handleFor, type JoinRequest } from "../membership.ts";
 import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration, statusJson } from "../format.ts";
 import { fingerprint } from "../identity.ts";
-import { CHAT_KINDS, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
+import { CHAT_KINDS, COLORS, isColor, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
 import { parseTaskId, taskId, type ChannelState } from "../state.ts";
 import { VERSION } from "../version.ts";
 import { channelFiles, runSh, sessionViews } from "../sh.ts";
@@ -76,6 +76,7 @@ Coordinate
 
 More
   kiwi hello [--role R] [--about "…"]            update your role/description
+  kiwi color [COLOR | NAME COLOR|none]           the colours and who has them; pick yours; the owner sets anyone's
   kiwi mcp [--push]                              serve the channel as MCP tools (--push: Claude Code channel)
   kiwi channels    kiwi use ALIAS --as NAME (bind this directory)    kiwi web [--sign-in]    kiwi relay --help
 
@@ -734,6 +735,20 @@ const commands: Record<string, () => Promise<void>> = {
     process.stdout.write(r.stdout);
     process.stderr.write(r.stderr);
     process.exit(r.exitCode);
+  },
+
+  async color() {
+    const s = await session();
+    const [a, b] = args.slice(1);
+    if (!a) {
+      const { state } = await s.state();
+      const held = new Map([...state.members.values()].filter((m) => m.active && m.color).map((m) => [m.color!, m.name]));
+      return out(COLORS.map((c) => `${c.padEnd(7)} ${held.get(c) ?? "free"}`).join("\n"));
+    }
+    const [member, pick] = b === undefined ? [s.me, a] : [a, b];
+    const color = pick === "none" ? null : isColor(pick) ? pick : die(`"${pick}" isn't a colour: ${COLORS.join(", ")} (or none)`);
+    await s.setColor(member, color);
+    out(color ? `${member}'s colour is ${color}` : `cleared ${member}'s colour`);
   },
 
   async read() {

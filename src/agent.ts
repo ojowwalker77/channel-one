@@ -8,7 +8,7 @@ import { TOO_MANY_REQUESTS } from "./sas.ts";
 import type { ChannelAccess } from "./crypto.ts";
 import type { JoinRequest } from "./membership.ts";
 import type { Identity } from "./identity.ts";
-import { TASK_STATES, type Event, type ImageAttachment, type Kind, type Message, type Presence, type TaskState } from "./protocol.ts";
+import { TASK_STATES, type Color, type Event, type ImageAttachment, type Kind, type Message, type Presence, type TaskState } from "./protocol.ts";
 import { fold, overlaps, taskId, waitingOn, type ChannelState, type Roster } from "./state.ts";
 
 /** How often a listening agent re-announces itself. Receivers treat 2.5x this as offline. */
@@ -60,6 +60,7 @@ export class AgentSession {
         kind: m.kind,
         display: m.display,
         sponsor: m.sponsor,
+        color: m.color,
       }));
     }
     return this.roster;
@@ -336,6 +337,18 @@ export class AgentSession {
       ev = { op: "role.set", member, role: m.roleRequest.role ?? null, about: m.roleRequest.about ?? null };
     } else ev = { op: "role.set", member, ...decision };
     return this.ownerCh.send(ev.op === "role.refuse" ? `kept ${member}'s role` : `made ${member} ${ev.role ?? "unassigned"}`, { kind: "event", ev });
+  }
+
+  /**
+   * A person's colour (null clears it). Signed by the person themself when it's
+   * this session's own name, else by the owner key on this machine. The fold
+   * refuses a colour someone else has, and colours on agents.
+   */
+  async setColor(member: string, color: Color | null): Promise<ChannelState> {
+    const ch = member === this.me ? this.ch : this.ownerCh;
+    if (!ch) throw new Rejected("only that person, or the channel owner's machine, sets their colour");
+    const ev: Event = { op: "color.set", member, color };
+    return this.confirm(await ch.send(color ? `${member}'s colour is ${color}` : `cleared ${member}'s colour`, { kind: "event", ev }));
   }
 
   // ---------- events ----------

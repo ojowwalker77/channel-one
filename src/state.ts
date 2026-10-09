@@ -5,7 +5,7 @@
 // and what the facts are, without the relay ever reading any of it.
 // Conflicts resolve deterministically: the earlier sequence number wins.
 
-import type { Message, TaskState, Trust } from "./protocol.ts";
+import type { Color, Message, TaskState, Trust } from "./protocol.ts";
 
 export interface Member {
   name: string;
@@ -18,6 +18,8 @@ export interface Member {
   about?: string;
   /** A role (or rules) they asked for and the owner hasn't decided on yet. */
   roleRequest?: { role?: string; about?: string; seq: number; at: number };
+  /** A person's colour; agents wear their person's (colorOf). */
+  color?: Color;
   owner: boolean;
   /** When the owner admitted them. */
   joined: number;
@@ -39,6 +41,7 @@ export type Roster = {
   kind?: "human" | "agent";
   display?: string;
   sponsor?: { user: string; name: string; handle?: string };
+  color?: Color;
 }[];
 
 export interface TaskNote {
@@ -128,6 +131,7 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
       kind: r.kind,
       display: r.display,
       sponsor: r.sponsor,
+      color: r.color,
       owner: r.owner,
       joined: r.at,
       lastSeen: r.at,
@@ -137,6 +141,12 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
   }
   // Every key the owner ever admitted under each name. Normally one per name; a name can have
   // had an earlier holder who left, and the owner may (wrongly) have admitted two keys under one.
+  // Colours from admission records are unique too: if two people's records share one, who joined first keeps it.
+  const worn = new Set<string>();
+  for (const m of [...members.values()].filter((x) => x.active && isPerson(x)).sort((a, b) => a.joined - b.joined)) {
+    if (m.color && worn.has(m.color)) m.color = undefined;
+    else if (m.color) worn.add(m.color);
+  }
   const keysByName = new Map<string, Set<string>>();
   for (const r of roster) {
     let set = keysByName.get(r.name);
@@ -217,6 +227,20 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
           if (!member.owner) reject("only the owner moves a seat to a new key");
           else if (!members.has(ev.member)) reject(`no member named ${ev.member}`);
           break;
+
+        case "color.set": {
+          // A person picks their own colour; the owner may set or clear anyone's.
+          const target = members.get(ev.member);
+          if (!target?.active) reject(`no member named ${ev.member}`);
+          else if (ev.member !== m.from && !member.owner) reject("only that person or the owner sets a colour");
+          else if (!isPerson(target)) reject("agents wear their person's colour; they don't have their own");
+          else {
+            const holder = ev.color && [...members.values()].find((x) => x.active && x.name !== target.name && isPerson(x) && x.color === ev.color);
+            if (holder) reject(`${ev.color} is ${holder.name}'s colour`);
+            else target.color = ev.color ?? undefined;
+          }
+          break;
+        }
 
         case "task.add":
           tasks.set(m.seq, {
@@ -319,4 +343,15 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
 /** Tasks still waiting on unfinished dependencies. */
 export function waitingOn(state: ChannelState, task: Task): number[] {
   return task.after.filter((d) => state.tasks.get(d)?.state !== "done");
+}
+
+const isPerson = (m: { kind?: string; owner?: boolean }) => m.kind === "human" || !!m.owner;
+
+/** The colour someone shows: a person's own, an agent's person's (when that person is a member here), else null. */
+export function colorOf(state: ChannelState, name: string): Color | null {
+  const m = state.members.get(name);
+  if (!m) return null;
+  if (isPerson(m)) return m.color ?? null;
+  const person = m.sponsor && [...state.members.values()].find((x) => x.active && isPerson(x) && x.sponsor?.user === m.sponsor!.user);
+  return person ? (person.color ?? null) : null;
 }
