@@ -67,12 +67,15 @@ Coordinate
 More
   kiwi hello [--role R] [--about "…"]            update your role/description
   kiwi mcp [--push]                              serve the channel as MCP tools (--push: Claude Code channel)
-  kiwi channels    kiwi use ALIAS --as NAME (bind this directory)    kiwi web [--sign-in]    kiwi relay [--port 8787]
+  kiwi channels    kiwi use ALIAS --as NAME (bind this directory)    kiwi web [--sign-in]    kiwi relay --help
 
 Options: -c/--channel ALIAS, --as NAME (or KIWI_CHANNEL / KIWI_AS), --relay URL (or KIWI_RELAY)
 Kinds: ${CHAT_KINDS.join(", ")}. Task states: ${TASK_STATES.join(", ")}.`;
 
+// `kiwi relay` takes the relay's own flags (see src/relay/bun.ts), not these.
+const isRelay = process.argv[2] === "relay";
 const { values: opt, positionals: args } = parseArgs({
+  args: isRelay ? ["relay"] : process.argv.slice(2),
   allowPositionals: true,
   options: {
     channel: { type: "string", short: "c" },
@@ -104,8 +107,6 @@ const { values: opt, positionals: args } = parseArgs({
     name: { type: "string" },
     push: { type: "boolean" },
     n: { type: "string", short: "n" },
-    port: { type: "string" },
-    data: { type: "string" },
     help: { type: "boolean", short: "h" },
     version: { type: "boolean", short: "v" },
   },
@@ -864,9 +865,8 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async relay() {
-    const { startRelay } = await import("../relay/bun.ts");
-    const server = startRelay({ port: Number(opt.port ?? 8787), dataDir: opt.data });
-    process.stderr.write(`Kiwi Channels relay listening on ${server.url}\n`);
+    const { runRelay } = await import("../relay/bun.ts");
+    runRelay(process.argv.slice(3), "kiwi relay");
     await new Promise(() => {});
   },
 };

@@ -260,9 +260,9 @@ function webApp(app: WebApp): (pathname: string) => Response {
   };
 }
 
-const USAGE = `Kiwi Channels relay (Bun)
+const usage = (cmd: string) => `Kiwi Channels relay (Bun)
 
-Usage: bun src/relay/bun.ts [options]
+Usage: ${cmd} [options]
 
   --port <n>                    port to listen on (default 8787; env PORT)
   --hostname <addr>             address to bind (default 0.0.0.0; 127.0.0.1 behind a reverse proxy; env KIWI_HOSTNAME)
@@ -278,10 +278,10 @@ Usage: bun src/relay/bun.ts [options]
   Worker reads from wrangler.jsonc (see src/relay/policy.ts). Unset: no gate, no quotas.
 `;
 
-if (import.meta.main) {
-  const argv = process.argv.slice(2);
+/** The relay from the command line: `bun src/relay/bun.ts …` from a checkout, or `kiwi relay …` from the binary. */
+export function runRelay(argv: string[], cmd = "bun src/relay/bun.ts"): void {
   if (argv.includes("--help") || argv.includes("-h")) {
-    process.stdout.write(USAGE);
+    process.stdout.write(usage(cmd));
     process.exit(0);
   }
   const arg = (name: string, env: string) => {
@@ -304,3 +304,5 @@ if (import.meta.main) {
   console.log(`  sign-in: ${human ? `WorkOS ${human.clientId}${human.profile ? " (with names)" : ""}` : "off"}`);
   console.log(`  dashboard: ${webDir ? resolve(webDir) : "not served"}`);
 }
+
+if (import.meta.main) runRelay(process.argv.slice(2));
