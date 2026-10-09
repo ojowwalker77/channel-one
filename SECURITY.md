@@ -172,6 +172,11 @@ Channel keys are random (256-bit), not derived from the code.
   seat acts for, when the seat is the owner's or a person's own, and, unless
   forced, while the old key was active in the last ten minutes (it may be
   someone else taking the seat). Agents can't approve it (the MCP tools refuse).
+- Two limits of those guards. On a relay without sign-in nobody is vouched
+  for, so the same-person check passes trivially: there the code check and the
+  owner's click are the whole guard. And "online" comes from relay presence and
+  the old key's last message, which a malicious relay can hide: it's a speed
+  bump, not a guarantee.
 - Approving is one relay step: the old key is removed and the new one admitted
   under the same name, role, rules and person, with no moment when both are
   members. Then the channel key rotates, as after any removal, and the owner
