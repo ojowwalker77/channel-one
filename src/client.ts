@@ -271,19 +271,6 @@ export class Channel {
     return { status: "approved", sponsored, access: { roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: r.epoch ?? 0, keys, signedKeys } };
   }
 
-  /** What an agent's human sees before vouching for it: its kind, state and verification code. Nothing secret. */
-  static async publicRequest(relay: string, code: string, requestId: string): Promise<{ kind: string; status: string; sponsored: boolean; verify: string }> {
-    const { roomId } = await pinnedInfo(relay, code);
-    const r = await call<{ kind: string; pk: string; status: string; sponsored: boolean }>(relay, roomId, `/requests/${requestId}/public`);
-    return { kind: r.kind, status: r.status, sponsored: r.sponsored, verify: await verificationCode(roomId, r.pk) };
-  }
-
-  /** A signed-in person vouches for their agent's request, optionally with their own request to supervise it. */
-  static async sponsor(relay: string, code: string, requestId: string, human: string, humanRequest?: string): Promise<{ by: string }> {
-    const { roomId } = await pinnedInfo(relay, code);
-    return call<{ by: string }>(relay, roomId, `/requests/${requestId}/sponsor`, { method: "POST", human, body: JSON.stringify(humanRequest ? { humanRequest } : {}) });
-  }
-
   /** Fetch this member's wrapped keys (after a rotation) and unwrap them. */
   refreshKeys(): Promise<void> {
     this.refreshing ??= (async () => {
@@ -359,7 +346,6 @@ export class Channel {
         sponsorUser?: string | null;
         sponsorName?: string | null;
         sponsorEmail?: string | null;
-        sponsorReq?: string | null;
       }[];
     }>("/requests");
     const out: JoinRequest[] = [];
@@ -383,17 +369,11 @@ export class Channel {
         ts: r.ts,
         code: await verificationCode(this.roomId, r.pk),
         sponsoredBy: r.sponsorUser ? { user: r.sponsorUser, name: inlineText(r.sponsorName, 80) || r.sponsorUser, email: r.sponsorEmail ?? null } : null,
-        sponsorRequest: r.sponsorReq ?? null,
       });
     }
     return out;
   }
 
-  /**
-   * Admit an agent together with its sponsor: the person it acts for, who
-   * also joins to supervise it (unless they're already a member). Returns
-   * every member admitted.
-   */
   /**
    * Refuse names that can't be admitted: invalid ones (every client would drop the record and the
    * member would read invisibly), reserved ones, and any that matches a current member's, even
@@ -418,31 +398,13 @@ export class Channel {
     return name;
   }
 
-  async approveWithSponsor(req: JoinRequest, as?: MemberInfo): Promise<Member[]> {
-    this.ownerOnly();
-    const admitted: Member[] = [];
-    let handle: string | undefined;
-    if (req.sponsoredBy) {
-      const roster = await this.members();
-      handle = roster.find((m) => m.active && m.kind === "human" && m.sponsor?.user === req.sponsoredBy!.user)?.name;
-      if (!handle && req.sponsorRequest) {
-        const human = (await this.requests()).find((r) => r.id === req.sponsorRequest);
-        if (human) {
-          await this.assertNamesFree([as?.name ?? req.name]);
-          const person = await this.approve(human);
-          admitted.push(person);
-          handle = person.name;
-        }
-      }
-    }
-    admitted.push(await this.approve(req, as, handle));
-    return admitted;
-  }
-
   /** Admit a requester: sign its record, and wrap every epoch key to it. */
-  async approve(req: JoinRequest, as?: MemberInfo, sponsorHandle?: string): Promise<Member> {
+  async approve(req: JoinRequest, as?: MemberInfo): Promise<Member> {
     this.ownerOnly();
     const kind = req.kind ?? "agent";
+    // An agent's person, by the handle they have here if they're in this channel.
+    const sponsorHandle =
+      kind === "agent" && req.sponsoredBy ? (await this.members()).find((m) => m.active && m.kind === "human" && m.sponsor?.user === req.sponsoredBy!.user)?.name : undefined;
     // A person is admitted under a handle made from their signed-in account, not one they typed, so
     // nobody can ask to join as "bob-smith". (Their browser adopts it when it learns it's in.)
     if (kind === "human" && req.sponsoredBy && !as?.name) as = { ...as, name: await this.freeHandle(handleFor(req.sponsoredBy.name, req.sponsoredBy.email ?? undefined)) };

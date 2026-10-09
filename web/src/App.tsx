@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react"
 
 import { Boundary, Toaster } from "@/components/kit"
-import { ChannelGate, JoinWithCode, NewChannel, SponsorPage, Welcome } from "@/components/onboarding"
+import { ComputersModal, LinkComputerPage } from "@/components/computers"
+import { ChannelGate, JoinWithCode, NewChannel, Welcome } from "@/components/onboarding"
 import { Sidebar } from "@/components/sidebar"
 import { useAuth } from "@/lib/auth"
-import { parseHash, parseSponsorHash, useChannelList } from "@/lib/channel"
+import { parseHash, useChannelList } from "@/lib/channel"
+import { parseLinkHash } from "@/lib/computers"
 import { cx } from "@/lib/utils"
 
 // The join code (and optionally a signing identity) live in the URL
@@ -20,14 +22,14 @@ const open = (code: string) => (location.hash = encodeURIComponent(code))
 
 export default function App() {
   const auth = useAuth()
-  const [sponsor, setSponsor] = useState(() => parseSponsorHash(location.hash))
+  const [link, setLink] = useState(() => parseLinkHash(location.hash))
   const [{ code, identity }, setHash] = useState(readHash)
-  const [sheet, setSheet] = useState<"new" | "join" | null>(null)
+  const [sheet, setSheet] = useState<"new" | "join" | "computers" | null>(null)
   const rows = useChannelList(auth.status === "signed-in", auth.token)
 
   useEffect(() => {
     const onHash = () => {
-      setSponsor(parseSponsorHash(location.hash))
+      setLink(parseLinkHash(location.hash))
       setHash(readHash())
     }
     window.addEventListener("hashchange", onHash)
@@ -41,11 +43,17 @@ export default function App() {
 
   return (
     <>
-      {sponsor ? (
-        <SponsorPage {...sponsor} onOpen={open} />
+      {link ? (
+        <LinkComputerPage
+          pk={link}
+          onDone={() => {
+            history.replaceState(null, "", location.pathname)
+            setLink(null)
+          }}
+        />
       ) : (
         <div className="flex h-svh overflow-hidden">
-          <Sidebar rows={rows} active={code} onSelect={open} onNew={() => setSheet("new")} onJoin={() => setSheet("join")} className={code ? "hidden md:flex" : "flex"} />
+          <Sidebar rows={rows} active={code} onSelect={open} onNew={() => setSheet("new")} onJoin={() => setSheet("join")} onComputers={() => setSheet("computers")} className={code ? "hidden md:flex" : "flex"} />
           <main className={cx("min-w-0 flex-1", code ? "flex" : "hidden md:flex")}>
             {code ? (
               <Boundary resetKey={code}>
@@ -73,6 +81,7 @@ export default function App() {
           open(c)
         }}
       />
+      <ComputersModal open={sheet === "computers"} onClose={() => setSheet(null)} />
       <Toaster />
     </>
   )

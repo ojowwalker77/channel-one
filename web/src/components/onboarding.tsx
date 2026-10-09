@@ -1,10 +1,9 @@
 import { CheckListIcon, LockIcon } from "@hugeicons/core-free-icons"
 import { useEffect, useState, type ReactNode } from "react"
 
-import { Channel } from "@mc/client.ts"
 import type { Identity } from "@mc/identity.ts"
 import { handleFor, NAME_RE } from "@mc/membership.ts"
-import { displayName, useAuth } from "@/lib/auth"
+import { useAuth } from "@/lib/auth"
 import {
   askToJoin,
   checkJoin,
@@ -402,142 +401,5 @@ function AskToJoin({ code, listed, onAsked, onCancel }: { code: string; listed?:
       </div>
       <p className="mt-6 text-[12px] leading-normal text-ink-3">Your key is made in this browser. Once you’re in, messages are decrypted here and nowhere else.</p>
     </form>
-  )
-}
-
-// ---------- an agent's person vouches for it ----------
-
-type SponsorStep =
-  | { kind: "loading" }
-  | { kind: "review"; verify: string; sponsored: boolean }
-  | { kind: "working" }
-  | { kind: "waiting"; pending: PendingJoin | null }
-  | { kind: "done" }
-  | { kind: "error"; message: string }
-
-/**
- * An agent asked to join a channel and printed this page's link for its person.
- * They sign in and vouch for it ("this agent acts for me"), and are enrolled
- * alongside it so they can watch it. The agent gets nothing until the channel
- * owner approves too.
- */
-export function SponsorPage({ requestId, code, agent, onOpen }: { requestId: string; code: string; agent: string; onOpen: (code: string) => void }) {
-  const auth = useAuth()
-  const [step, setStep] = useState<SponsorStep>({ kind: "loading" })
-
-  useEffect(() => {
-    if (auth.status !== "signed-in") return
-    void Channel.publicRequest(location.origin, code, requestId)
-      .then((r) => {
-        if (r.kind !== "agent") return setStep({ kind: "error", message: "This link is for a person’s request, not an agent’s." })
-        if (r.status === "approved") return setStep({ kind: "done" })
-        if (r.status === "denied") return setStep({ kind: "error", message: "The channel owner declined this agent." })
-        setStep({ kind: "review", verify: r.verify, sponsored: r.sponsored })
-      })
-      .catch((err: unknown) => setStep({ kind: "error", message: errorText(err) }))
-  }, [auth.status, code, requestId])
-
-  // While waiting for the owner, poll this person's own request (if they asked to join to supervise).
-  useEffect(() => {
-    if (step.kind !== "waiting" || !step.pending) return
-    const pending = step.pending
-    let stop = false
-    const tick = async () => {
-      if (stop) return
-      const r = await checkJoin(pending).catch(() => "pending" as const)
-      if (stop) return
-      if (r === "denied") return setStep({ kind: "error", message: "The channel owner didn’t let you and your agent in." })
-      if (r !== "pending") return setStep({ kind: "done" })
-      setTimeout(tick, 2000)
-    }
-    void tick()
-    return () => {
-      stop = true
-    }
-  }, [step])
-
-  const vouch = async () => {
-    setStep({ kind: "working" })
-    try {
-      const token = await auth.token()
-      if (!token || !auth.user) throw new Error("Sign in first.")
-      const mine = loadMember(code)
-      if (mine) {
-        // Already in the channel (maybe its owner): just vouch for the agent.
-        await Channel.sponsor(location.origin, code, requestId, token)
-        if (mine.identity.pk === mine.access.ownerPk) {
-          // The owner vouching for their own agent approves it in the same step.
-          const ch = new Channel(mine.access, location.origin, mine.identity, undefined, () => auth.token())
-          const req = (await ch.requests()).find((r) => r.id === requestId)
-          if (req) await ch.approveWithSponsor(req)
-          return setStep({ kind: "done" })
-        }
-        return setStep({ kind: "waiting", pending: null })
-      }
-      // Not a member yet: ask to join as yourself (to watch), and link that to the agent.
-      const handle = handleFor(personName(auth.user), auth.user.email)
-      const pending = loadPending(code) ?? (await askToJoin(code, handle, `supervises ${agent}`, token))
-      await Channel.sponsor(location.origin, code, requestId, token, pending.requestId)
-      setStep({ kind: "waiting", pending })
-    } catch (err) {
-      setStep({ kind: "error", message: errorText(err) })
-    }
-  }
-
-  return (
-    <div className="flex h-svh flex-col">
-      <header className="flex h-[56px] shrink-0 items-center px-5">
-        <Wordmark className="text-[15px]" />
-      </header>
-      <Stage>
-        <Heading title={`Is ${agent} your agent?`}>
-          It asked to join a channel and needs you to vouch for it. Say yes only if it’s really yours: it will act there on your behalf, and you’ll join too so you
-          can watch.
-        </Heading>
-
-        {auth.status === "loading" && <Spinner className="mt-6" />}
-        {auth.status === "off" && <p className="mt-6 text-[13px] text-ink-2">This relay doesn’t use sign-in, so there’s nothing to vouch for.</p>}
-        {auth.status === "signed-out" && (
-          <Button size="lg" className="mt-6" onClick={auth.signIn}>
-            Sign in to continue
-          </Button>
-        )}
-        {auth.status === "signed-in" && (
-          <>
-            {(step.kind === "loading" || step.kind === "working") && <Spinner className="mt-6" />}
-            {step.kind === "review" && (
-              <>
-                <p className="mt-6 text-[13px] text-ink-2">Check that your agent’s terminal shows this number:</p>
-                <VerifyCode code={step.verify} />
-                {step.sponsored && <p className="-mt-3 mb-4 text-[12.5px] text-ink-2">Someone has already vouched for this agent.</p>}
-                <div className="flex gap-2">
-                  <Button size="lg" onClick={() => void vouch()}>
-                    Yes, it’s my agent
-                  </Button>
-                </div>
-              </>
-            )}
-            {step.kind === "waiting" && (
-              <div className="mt-6 flex items-center gap-3">
-                <Spinner />
-                <span className="text-[13px] text-ink-2">You vouched for {agent}. Waiting for the channel owner to let you both in.</span>
-              </div>
-            )}
-            {step.kind === "done" && (
-              <>
-                <p className="mt-6 text-[14px]">{agent} is in, acting for you.</p>
-                {loadMember(code) && (
-                  <Button size="lg" className="mt-4" onClick={() => onOpen(code)}>
-                    Open the channel
-                  </Button>
-                )}
-              </>
-            )}
-            {step.kind === "error" && <p className="mt-6 text-[13px] text-alert">{step.message}</p>}
-            <p className="mt-8 text-[12px] text-ink-3">Signed in as {displayName(auth.user)}</p>
-          </>
-        )}
-      </Stage>
-    </div>
   )
 }

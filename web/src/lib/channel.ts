@@ -29,20 +29,9 @@ export interface Online {
  * `kiwi web` on the owner's machine (or `--sign-in`) and carries a member key.
  * Fragments never reach the server.
  */
-/** `#sponsor=<request>&code=<join code>&agent=<name>`: the link an agent prints for its human. */
-export function parseSponsorHash(hash: string): { requestId: string; code: string; agent: string } | null {
-  const raw = hash.replace(/^#/, "")
-  if (!raw.startsWith("sponsor=")) return null
-  const p = new URLSearchParams(raw)
-  const requestId = p.get("sponsor") ?? ""
-  const code = p.get("code") ?? ""
-  if (!/^[0-9a-f-]{36}$/.test(requestId) || !isJoinCode(code)) return null
-  return { requestId, code, agent: (p.get("agent") ?? "agent").slice(0, 32) }
-}
-
 export function parseHash(hash: string): { code: string; identity: Identity | null } {
   const raw = hash.replace(/^#/, "")
-  if (raw.startsWith("sponsor=")) return { code: "", identity: null }
+  if (raw.startsWith("link=")) return { code: "", identity: null }
   const [codePart, ...rest] = raw.split("&id=")
   let identity: Identity | null = null
   if (rest.length) {

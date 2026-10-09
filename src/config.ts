@@ -40,6 +40,8 @@ export interface Config {
   pending?: Record<string, PendingJoin>;
   /** Working directory → the agent working there (read by the Claude Code hooks). */
   bindings?: Record<string, { alias: string; as: string }>;
+  /** What this computer's person chose in `kiwi setup` about Claude Code hooks. */
+  claudeHooks?: "on" | "off";
 }
 
 export function home(): string {

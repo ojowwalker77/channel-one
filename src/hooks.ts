@@ -178,7 +178,8 @@ export function hooksInstalled(): boolean {
 
 /** Install automatically when an agent joins from inside Claude Code (opt out with KIWI_NO_HOOKS=1). */
 export function autoInstallHooks(): string | null {
-  if (process.env.KIWI_NO_HOOKS || !process.env.CLAUDECODE) return null;
+  // Never against the choice this computer's person made in `kiwi setup`.
+  if (process.env.KIWI_NO_HOOKS || !process.env.CLAUDECODE || loadConfig().claudeHooks === "off") return null;
   try {
     // Installed, but by an older version (different path or marker)? Refresh them.
     return hooksInstalled() && !OLD_MARKS.some((m) => JSON.stringify(readSettings()).includes(m)) ? null : installHooks();

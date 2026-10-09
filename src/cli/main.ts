@@ -3,11 +3,13 @@
 
 import { parseArgs } from "node:util";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join as joinPath } from "node:path";
+import { join as joinPath, join } from "node:path";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { AgentSession, Rejected } from "../agent.ts";
 import { loadImages } from "../attach.ts";
 import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
-import { DEFAULT_RELAY, forgetIdentity, forgetMember, identitiesIn, loadConfig, loadIdentity, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
+import { DEFAULT_RELAY, forgetIdentity, home, forgetMember, identitiesIn, loadConfig, loadIdentity, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
 import { describeMember, type JoinRequest } from "../membership.ts";
 import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "../format.ts";
@@ -21,6 +23,7 @@ import { autoInstallHooks, bindDirectory, bindingFor, hooksInstalled, installHoo
 const HELP = `kiwi ${VERSION} — Channels by Kiwi Init: real-time coordination for AI agents
 
 Start
+  kiwi setup                                     set up this computer, once (link it to your account; Claude Code)
   kiwi create [alias] --as NAME [--role R]       create a channel you own; prints the join code and your dashboard
   kiwi join <code> [alias] --as NAME [--role R]  ask to join; waits until the owner approves, then prints instructions
   kiwi prompt                                    print instructions to paste into an agent
@@ -244,6 +247,14 @@ function settleIn(alias: string, name: string): void {
   if (installed) process.stderr.write(`kiwi: installed Claude Code hooks (${installed}) so this agent keeps listening; \`kiwi hooks uninstall\` removes them\n`);
 }
 
+/** Open a page in this computer's browser; if that fails, the printed link is still there. */
+function openBrowser(url: string): void {
+  const cmd = process.platform === "darwin" ? ["open", url] : process.platform === "win32" ? ["cmd", "/c", "start", "", url] : ["xdg-open", url];
+  try {
+    Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore" });
+  } catch {}
+}
+
 async function confirm(question: string): Promise<boolean> {
   if (opt.yes) return true;
   if (!process.stdin.isTTY) return false;
@@ -307,9 +318,17 @@ const commands: Record<string, () => Promise<void>> = {
     const roomId = decodeJoinCode(code).roomId;
     let id = await loadIdentity(name, roomId);
     const info = { name, ...(opt.role ? { role: opt.role } : {}), ...(opt.about ? { about: opt.about } : {}) };
-    // On a computer its person linked with `kiwi setup`, the computer vouches for this agent.
+    // Agents join from a computer its person linked with `kiwi setup`; the computer vouches for them.
+    const signIn = !!(await relayConfig(relay).catch(() => ({ workosClientId: null }))).workosClientId;
     const machine = loadMachine();
     const linked = machine?.linked && machine.relay === relay ? machine : null;
+    if (signIn && !linked) {
+      die(
+        "this computer isn't set up for Kiwi yet. Its person runs this once, in a terminal:\n" +
+          "  kiwi setup\n" +
+          "Then run this join again.",
+      );
+    }
     const vouch = async () => (linked ? vouchFor(linked, roomId, id.pk) : null);
     // Asking again with the same key resumes the same request, so re-running this is always safe.
     // A key that was removed or declined can never come back; ask again with a fresh one.
@@ -319,30 +338,12 @@ const commands: Record<string, () => Promise<void>> = {
       id = await loadIdentity(name, roomId);
       return Channel.requestJoin(relay, code, id, info, null, await vouch());
     });
-    const signIn = !!(await relayConfig(relay).catch(() => ({ workosClientId: null }))).workosClientId;
-    out(`asked to join as ${name} — verification code ${req.verify}`);
-    const vouched = linked ? (await Channel.joinStatus(relay, code, id, req.requestId).catch(() => null))?.sponsored : false;
-    if (vouched) {
-      out(`Vouched for by this computer${linked?.linked?.name ? ` (linked to ${linked.linked.name})` : ""}. The channel owner checks the code and approves.`);
-    } else if (signIn) {
-      // The link names the request and the channel; it carries no keys and grants nothing by itself.
-      const link = `${relay}/#sponsor=${req.requestId}&code=${encodeURIComponent(code)}&agent=${encodeURIComponent(name)}`;
-      out("");
-      out("TELL YOUR HUMAN: before anything else, they must approve you as their agent. Show them this link and code:");
-      out(`  ${link}`);
-      out(`  verification code ${req.verify}`);
-      out("They sign in there and approve; the channel owner then approves too. Nothing is shared with you until both do.");
-      out("");
-    }
+    out(`asked to join as ${name}, verification code ${req.verify}`);
+    if (linked) out(`Vouched for by this computer${linked.linked?.name ? `, linked to ${linked.linked.name}` : ""}. The channel owner checks the code and approves.`);
     out(`waiting for approval…`);
     const deadline = Date.now() + parseDuration(opt.timeout ?? "30m") * 1000;
-    let toldSponsored = false;
     for (;;) {
       const st = await Channel.joinStatus(relay, code, id, req.requestId);
-      if (signIn && st.sponsored && !toldSponsored && st.status === "pending") {
-        toldSponsored = true;
-        out("your human approved you; waiting for the channel owner…");
-      }
       if (st.status === "denied") {
         forgetIdentity(name, decodeJoinCode(code).roomId);
         die("the owner denied this request");
@@ -373,10 +374,92 @@ const commands: Record<string, () => Promise<void>> = {
     await runHook(args[1] ?? "");
   },
 
+  /**
+   * Set up this computer, once, by its person: what Kiwi keeps and where, linking the computer to
+   * their account (so agents started here join already vouched for as theirs), and whether Kiwi
+   * may keep Claude Code agents reachable.
+   */
+  async setup() {
+    const relay = relayUrl();
+    const sub = args[1];
+    if (sub === "unlink") {
+      const m = loadMachine() ?? die("this computer isn't linked");
+      await unlinkMachine(m).catch(() => {});
+      forgetMachine();
+      return out("This computer is unlinked. Agents started here now need their person to vouch for them from a link.");
+    }
+    if (sub === "status") {
+      const m = loadMachine();
+      if (!m?.linked) return out("This computer isn't linked to an account. Run kiwi setup.");
+      const st = await machineStatus(m).catch(() => null);
+      return out(st?.status === "linked" ? `Linked to ${st.name ?? m.linked.name ?? "your account"} (${m.label}).` : "This computer's link was removed. Run kiwi setup again.");
+    }
+
+    out("Setting up Kiwi on this computer.\n");
+    out(`1. What Kiwi keeps: everything lives in ${home()}, readable only by you. That's your agents' keys and the`);
+    out("   channels they're in. Nothing else on this computer is touched.\n");
+
+    let m = loadMachine();
+    const current = m?.linked && m.relay === relay ? await machineStatus(m).catch(() => null) : null;
+    if (m && current?.status === "linked") {
+      out(`2. This computer is already linked to ${current.name ?? m.linked?.name ?? "your account"}.\n`);
+    } else {
+      if (!m || m.relay !== relay || m.linked) m = await newMachine(relay);
+      saveMachine(m);
+      await registerMachine(m);
+      const url = linkUrl(m);
+      out("2. Link this computer to your account, so agents you start here join as yours.");
+      out(`   Open this page, sign in, and check it shows ${await machineCode(m.identity.pk)}:`);
+      out(`   ${url}`);
+      openBrowser(url);
+      out("   Waiting for you to confirm in the browser…");
+      const deadline = Date.now() + 15 * 60_000;
+      for (;;) {
+        const st = await machineStatus(m).catch(() => null);
+        if (st?.status === "linked") {
+          m.linked = { name: st.name, at: Date.now() };
+          saveMachine(m);
+          out(`   Linked to ${st.name ?? "your account"}. Channel owners still approve each agent you bring.\n`);
+          break;
+        }
+        if (st?.status === "expired" || Date.now() > deadline) die("the link expired before it was confirmed; run kiwi setup again");
+        await Bun.sleep(2000);
+      }
+    }
+
+    if (existsSync(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")))) {
+      if (hooksInstalled()) {
+        out("3. Claude Code: Kiwi keeps your agents reachable there (3 hooks). kiwi hooks uninstall removes them.\n");
+      } else {
+        out("3. Claude Code: Kiwi can keep agents reachable by adding 3 hooks to its settings. They only act in folders");
+        out("   where an agent joined a channel: they remind it to listen and hand it messages it missed.");
+        const yes = await confirm("   Add them?");
+        updateConfig((c) => {
+          c.claudeHooks = yes ? "on" : "off";
+        });
+        if (yes) installHooks();
+        out(yes ? "   Added.\n" : "   Skipped. kiwi hooks install adds them any time.\n");
+      }
+    }
+
+    if (!Bun.which("kiwi")) out(`To type plain kiwi, add this line to your shell profile:\n  export PATH="${join(homedir(), ".kiwi", "bin")}:$PATH"\n`);
+    out("Done. To bring an agent into a channel, give it the channel's join command (in Details, on the web).");
+  },
+
   async hooks() {
     const sub = args[1] ?? "status";
-    if (sub === "install") return out(`installed hooks in ${installHooks()}`);
-    if (sub === "uninstall") return out(`removed hooks from ${uninstallHooks()}`);
+    if (sub === "install") {
+      updateConfig((c) => {
+        c.claudeHooks = "on";
+      });
+      return out(`installed hooks in ${installHooks()}`);
+    }
+    if (sub === "uninstall") {
+      updateConfig((c) => {
+        c.claudeHooks = "off";
+      });
+      return out(`removed hooks from ${uninstallHooks()}`);
+    }
     if (sub === "status") return out(hooksInstalled() ? "installed" : "not installed (kiwi hooks install)");
     die("usage: kiwi hooks install|uninstall|status");
   },
@@ -386,7 +469,7 @@ const commands: Record<string, () => Promise<void>> = {
     const reqs = await s.requests();
     if (!reqs.length) return out("no pending join requests");
     for (const r of reqs) {
-      const who = r.kind === "human" ? `person, signed in as ${r.sponsoredBy?.name ?? "?"}` : r.sponsoredBy ? `agent of ${r.sponsoredBy.name}` : "agent, not yet approved by its own human";
+      const who = r.kind === "human" ? `person, signed in as ${r.sponsoredBy?.name ?? "?"}` : r.sponsoredBy ? `agent of ${r.sponsoredBy.name}` : "agent";
       out(`${r.code}  ${r.name}${r.role ? ` (${r.role})` : ""} · ${who} · key ${fingerprint(r.pk)} · ${ago(r.ts)}`);
     }
   },
@@ -401,8 +484,8 @@ const commands: Record<string, () => Promise<void>> = {
     if (!(await confirm(`Let "${name}"${r.role ? ` (${r.role})` : ""} in? Verification code ${r.code}`))) {
       die(`approving needs your human's go-ahead: once they confirm the joining agent shows ${r.code}, re-run with --yes`);
     }
-    const admitted = await s.ownerCh!.approveWithSponsor(r, { name, role: r.role, about: r.about });
-    out(`approved ${admitted.map((m) => m.name).join(" and ")} (${r.code})`);
+    const admitted = await s.ownerCh!.approve(r, { name, role: r.role, about: r.about });
+    out(`approved ${admitted.name} (${r.code})`);
   },
 
   async deny() {

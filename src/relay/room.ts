@@ -145,7 +145,7 @@ export class RoomStore {
   /**
    * Columns added after rooms already existed. Requests know whether they come
    * from an agent or a human, and which signed-in human vouches for an agent
-   * (its sponsor) — plus the request that enrolls that human to supervise it.
+   * (its sponsor: the person whose linked computer it joined from).
    */
   private migrate(): void {
     const cols = new Set(this.sql.all<{ name: string }>("PRAGMA table_info(requests)").map((c) => c.name));
@@ -315,7 +315,7 @@ export class RoomStore {
   /**
    * File a join request. With `human` set, it's a signed-in person joining for
    * themself (they are their own sponsor); otherwise it's an agent, which on a
-   * sign-in relay must later be vouched for by its own human.
+   * sign-in relay arrives vouched for by the person whose computer it joined from.
    */
   async request(body: RequestBody, human: { user: string; name: string } | null = null, vouchUser: string | null = null): Promise<{ id: string; fresh: boolean }> {
     this.meta();
@@ -356,35 +356,6 @@ export class RoomStore {
     return { id, fresh: true };
   }
 
-  /** What the sponsor page shows about an agent's request: enough to check it's theirs, nothing secret. */
-  publicRequest(id: string): { kind: string; pk: string; status: string; sponsored: boolean } {
-    this.meta();
-    this.migrate();
-    const r = this.sql.all<{ kind: string; pk: string; status: string; sponsor_user: string | null }>("SELECT kind, pk, status, sponsor_user FROM requests WHERE id = ?", id)[0];
-    if (!r) throw new HttpError(404, "no such request");
-    return { kind: r.kind, pk: r.pk, status: r.status, sponsored: !!r.sponsor_user };
-  }
-
-  /**
-   * A signed-in human vouches for an agent's request ("this agent acts for me"),
-   * optionally linking their own pending human request so they're admitted
-   * alongside it to supervise.
-   */
-  sponsor(id: string, user: { user: string; name: string }, humanRequest?: string): void {
-    this.meta();
-    this.migrate();
-    const r = this.sql.all<{ kind: string; status: string; sponsor_user: string | null }>("SELECT kind, status, sponsor_user FROM requests WHERE id = ?", id)[0];
-    if (!r) throw new HttpError(404, "no such request");
-    if (r.kind !== "agent") throw new HttpError(400, "only agents are sponsored; people join as themselves");
-    if (r.status !== "pending") throw new HttpError(409, `request is ${r.status}`);
-    if (r.sponsor_user && r.sponsor_user !== user.user) throw new HttpError(409, "another person already vouched for this agent");
-    if (humanRequest) {
-      const h = this.sql.all<{ kind: string; sponsor_user: string | null }>("SELECT kind, sponsor_user FROM requests WHERE id = ?", humanRequest)[0];
-      if (!h || h.kind !== "human" || h.sponsor_user !== user.user) throw new HttpError(400, "the linked request isn't yours");
-    }
-    this.sql.run("UPDATE requests SET sponsor_user = ?, sponsor_name = NULL, sponsor_req = ? WHERE id = ?", user.user, humanRequest ?? null, id);
-  }
-
   requestStatus(id: string, pk: string): { status: string; sponsored: boolean; epoch?: number; keys?: Record<string, string> } {
     this.meta();
     this.migrate();
@@ -394,10 +365,10 @@ export class RoomStore {
     return { status: "approved", sponsored: !!r.sponsor_user, ...this.keysFor(pk) };
   }
 
-  pendingRequests(): (RequestBody & { kind: string; sponsorUser: string | null; sponsorName: string | null; sponsorReq: string | null })[] {
+  pendingRequests(): (RequestBody & { kind: string; sponsorUser: string | null; sponsorName: string | null })[] {
     this.migrate();
     return this.sql.all(
-      "SELECT id, pk, xpk, box, sig, ts, kind, sponsor_user AS sponsorUser, sponsor_name AS sponsorName, sponsor_req AS sponsorReq FROM requests WHERE status = 'pending' ORDER BY COALESCE(received, ts)",
+      "SELECT id, pk, xpk, box, sig, ts, kind, sponsor_user AS sponsorUser, sponsor_name AS sponsorName FROM requests WHERE status = 'pending' ORDER BY COALESCE(received, ts)",
     );
   }
 
@@ -406,7 +377,7 @@ export class RoomStore {
     this.migrate();
     const r = request ? this.sql.all<{ pk: string; sponsor_user: string | null }>("SELECT pk, sponsor_user FROM requests WHERE id = ?", request)[0] : undefined;
     if (!r || r.pk !== pk) throw new HttpError(400, "approve a pending request");
-    if (!r.sponsor_user) throw new HttpError(409, "this agent's own human hasn't approved it yet (they open the link the agent printed)");
+    if (!r.sponsor_user) throw new HttpError(409, "this agent wasn't vouched for by a person's linked computer");
   }
 
   deny(id: string): void {
@@ -592,17 +563,10 @@ export async function onHttp(
     const b = json<RequestBody & { machine?: unknown }>();
     const who = await person();
     const vouchUser = !who && vouch && typeof b?.pk === "string" ? await vouch(b.pk, b.machine) : null;
+    // On a relay with sign-in, every agent arrives vouched for by its person's linked computer.
+    if (human && !who && !vouchUser) throw new HttpError(403, "this computer isn't set up: its person runs `kiwi setup` once, then agents can join from it");
     const { id, fresh } = await store.request(b, who, vouchUser);
     return ok({ id }, fresh ? { broadcast: [frame({ t: "request" })] } : undefined);
-  }
-  const publicMatch = /^\/requests\/([0-9a-f-]{36})\/public$/.exec(path);
-  if (publicMatch && method === "GET") return ok(store.publicRequest(publicMatch[1]!));
-  const sponsorMatch = /^\/requests\/([0-9a-f-]{36})\/sponsor$/.exec(path);
-  if (sponsorMatch && method === "POST") {
-    const who = await person();
-    if (!who) throw new HttpError(401, "sign in to vouch for your agent");
-    store.sponsor(sponsorMatch[1]!, who, json<{ humanRequest?: string }>().humanRequest);
-    return ok({ sponsored: true, by: who.name }, { broadcast: [frame({ t: "request" })] });
   }
   const reqMatch = /^\/requests\/([0-9a-f-]{36})$/.exec(path);
   if (reqMatch && method === "GET") {

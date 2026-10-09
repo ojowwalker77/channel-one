@@ -144,10 +144,8 @@ export interface JoinRequest extends MemberInfo {
   /** The 6-digit code the requester sees too. */
   code: string;
   ts: number;
-  /** Who vouched for it (the relay verified them with WorkOS); null until its human approves. */
+  /** The signed-in person it acts for: themself for a person, or whose linked computer an agent joined from. */
   sponsoredBy: { user: string; name: string; email?: string | null } | null;
-  /** The request that admits the sponsor alongside the agent, to supervise it. */
-  sponsorRequest: string | null;
 }
 
 /** How a member reads in lists: "win · key QRskRn4Z · agent of @jonatas" / "Jonatas Walker (@jonatas)". */

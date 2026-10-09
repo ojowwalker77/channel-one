@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, myChannels, relayConfig } from "../src/client.ts";
+import { decodeJoinCode } from "../src/crypto.ts";
+import { machineStatus, newMachine, registerMachine, unlinkMachine, vouchFor, type MachineFile } from "../src/machine.ts";
 import { b64url } from "../src/crypto.ts";
 import { generateIdentity } from "../src/identity.ts";
 import { startRelay } from "../src/relay/bun.ts";
@@ -43,6 +45,20 @@ afterAll(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
+/** A computer its person linked with `kiwi setup`: registered by the computer, confirmed by the person signed in. */
+async function linkedComputer(user: string): Promise<MachineFile> {
+  const m = await newMachine(relay);
+  await registerMachine(m);
+  const res = await fetch(`${relay}/v1/machines/${m.identity.pk}/confirm`, { method: "POST", headers: { "x-human-token": await token(user) }, body: "{}" });
+  if (!res.ok) throw new Error(`confirm failed: ${res.status}`);
+  return { ...m, linked: { name: null, at: Date.now() } };
+}
+
+/** An agent asking to join from a linked computer. */
+async function agentAsks(code: string, agent: Awaited<ReturnType<typeof generateIdentity>>, name: string, computer: MachineFile) {
+  return Channel.requestJoin(relay, code, agent, { name }, null, await vouchFor(computer, decodeJoinCode(code).roomId, agent.pk));
+}
+
 describe("WorkOS token verification", () => {
   test("accepts a valid token, rejects expired, forged and tampered ones", async () => {
     expect(await human.verify(await token("user_a"))).toBe("user_a");
@@ -73,8 +89,8 @@ describe("a relay that requires sign-in", () => {
     const alice = await token("user_alice");
     const { code, access } = await Channel.create(relay, owner, { name: "human" }, [], undefined, alice);
 
-    // Someone asks to join.
-    const req = await Channel.requestJoin(relay, code, agent, { name: "mac" });
+    // An agent asks to join from Alice's linked computer.
+    const req = await agentAsks(code, agent, "mac", await linkedComputer("user_alice"));
 
     // The owner key alone (e.g. an agent that copied it) can't see or approve requests.
     const keyOnly = new Channel(access, relay, owner);
@@ -86,11 +102,9 @@ describe("a relay that requires sign-in", () => {
 
     // The owning human can.
     const asAlice = new Channel(access, relay, owner, undefined, () => token("user_alice"));
-    // Alice vouches for this agent as hers, then approves it.
-    await Channel.sponsor(relay, code, req.requestId, await token("user_alice"));
     const pending = await asAlice.requests();
     expect(pending.map((r) => r.code)).toEqual([req.verify]);
-    await asAlice.approveWithSponsor(pending[0]!);
+    await asAlice.approve(pending[0]!);
     expect((await Channel.joinStatus(relay, code, agent, req.requestId)).status).toBe("approved");
 
     // Members still talk with their keys alone; sign-in is only for owning.
@@ -105,56 +119,39 @@ describe("a relay that requires sign-in", () => {
   });
 });
 
-describe("an agent needs its own human's approval too", () => {
-  test("no keys until its human vouches and the owner approves; names come from sign-in", async () => {
-    const [owner, agent, bobKey] = await Promise.all([generateIdentity("alice"), generateIdentity("helper"), generateIdentity("bob")]);
+describe("agents join only from a computer their person linked", () => {
+  test("no request without a linked computer; the owner sees whose agent it is; unlinking stops it", async () => {
+    const [owner, agent, stray, late] = await Promise.all([generateIdentity("alice"), generateIdentity("helper"), generateIdentity("stray"), generateIdentity("late")]);
     const alice = () => token("user_alice");
-    const { code, access } = await Channel.create(
-      relay,
-      owner,
-      { name: "alice", kind: "human", display: "Alice Owner", sponsor: { user: "user_alice", name: "Alice Owner", handle: "alice" } },
-      [],
-      undefined,
-      await alice(),
-    );
+    const { code, access } = await Channel.create(relay, owner, { name: "alice-owner", kind: "human" }, [], undefined, await alice());
     const ownerCh = new Channel(access, relay, owner, undefined, alice);
 
-    // The agent asks; the owner can't let it in before its human vouches.
-    const req = await Channel.requestJoin(relay, code, agent, { name: "helper" });
-    let [r] = await ownerCh.requests();
-    expect(r!.kind).toBe("agent");
-    expect(r!.sponsoredBy).toBeNull();
-    await expect(ownerCh.approve(r!)).rejects.toMatchObject({ status: 409 });
+    // A bare agent, or one from a computer nobody confirmed, can't even ask.
+    await expect(Channel.requestJoin(relay, code, stray, { name: "stray" })).rejects.toMatchObject({ status: 403 });
+    const unconfirmed = await newMachine(relay);
+    await registerMachine(unconfirmed);
+    expect((await machineStatus(unconfirmed)).status).toBe("pending");
+    await expect(agentAsks(code, stray, "stray", unconfirmed)).rejects.toMatchObject({ status: 403 });
 
-    // The sponsor page shows the same verification code the agent printed.
-    expect((await Channel.publicRequest(relay, code, req.requestId)).verify).toBe(req.verify);
-    // Vouching needs a sign-in.
-    await expect(Channel.sponsor(relay, code, req.requestId, "nope")).rejects.toMatchObject({ status: 401 });
+    // Bob links his computer; someone else can't take it over.
+    const bobs = await linkedComputer("user_bob");
+    expect(await machineStatus(bobs)).toMatchObject({ status: "linked", name: "Bob Builder" });
+    const steal = await fetch(`${relay}/v1/machines/${bobs.identity.pk}/confirm`, { method: "POST", headers: { "x-human-token": await alice() }, body: "{}" });
+    expect(steal.status).toBe(409);
 
-    // Bob (the agent's human) asks to join as himself, and vouches for his agent.
-    const bobReq = await Channel.requestJoin(relay, code, bobKey, { name: "bob" }, await token("user_bob"));
-    expect((await Channel.sponsor(relay, code, req.requestId, await token("user_bob"), bobReq.requestId)).by).toBe("Bob Builder");
-    // Nobody else can take over the vouch.
-    await expect(Channel.sponsor(relay, code, req.requestId, await alice())).rejects.toMatchObject({ status: 409 });
-    expect((await Channel.joinStatus(relay, code, agent, req.requestId)).status).toBe("pending");
+    // His agent's request arrives as his; the owner approves it.
+    await agentAsks(code, agent, "helper", bobs);
+    const [r] = await ownerCh.requests();
+    expect(r).toMatchObject({ kind: "agent", sponsoredBy: { user: "user_bob", name: "Bob Builder" } });
+    await ownerCh.approve(r!);
+    const roster = await ownerCh.members();
+    expect(roster.find((m) => m.name === "helper")).toMatchObject({ kind: "agent", sponsor: { user: "user_bob", name: "Bob Builder" } });
 
-    // The owner sees whose agent it is, and admits both in one go.
-    const reqs = await ownerCh.requests();
-    r = reqs.find((x) => x.id === req.requestId);
-    expect(r!.sponsoredBy).toMatchObject({ user: "user_bob", name: "Bob Builder" });
-    expect(reqs.find((x) => x.id === bobReq.requestId)).toMatchObject({ kind: "human", sponsoredBy: { name: "Bob Builder" } });
-    const admitted = await ownerCh.approveWithSponsor(r!);
-    // People are admitted under a handle from their verified account, whatever they typed.
-    expect(admitted.map((m) => m.name)).toEqual(["bob-builder", "helper"]);
-
-    // Everyone sees verified real names and who acts for whom.
-    const st = await Channel.joinStatus(relay, code, agent, req.requestId);
-    if (st.status !== "approved") throw new Error("not approved");
-    const roster = await new Channel(st.access, relay, agent).members();
-    const by = Object.fromEntries(roster.map((m) => [m.name, m]));
-    expect(by.alice).toMatchObject({ kind: "human", display: "Alice Owner", owner: true });
-    expect(by["bob-builder"]).toMatchObject({ kind: "human", display: "Bob Builder" });
-    expect(by.helper).toMatchObject({ kind: "agent", sponsor: { user: "user_bob", name: "Bob Builder", handle: "bob-builder" } });
+    // Bob sees and removes his computer; agents from it can't ask anymore.
+    const mine = (await (await fetch(`${relay}/v1/me/machines`, { headers: { "x-human-token": await token("user_bob") } })).json()) as { machines: { pk: string }[] };
+    expect(mine.machines.map((m) => m.pk)).toContain(bobs.identity.pk);
+    await unlinkMachine(bobs);
+    await expect(agentAsks(code, late, "late", bobs)).rejects.toMatchObject({ status: 403 });
     await ownerCh.close();
   });
 });
@@ -171,12 +168,11 @@ describe("each person's channel list", () => {
     expect((await myChannels(relay, await alice())).find((c) => c.room === room)).toMatchObject({ code, owner: true, member: true, agents: 0 });
     expect((await myChannels(relay, await bob())).some((c) => c.room === room)).toBe(false);
 
-    // Bob's agent asks, Bob vouches and asks to join himself; the owner admits both.
-    const req = await Channel.requestJoin(relay, code, agent, { name: "scout" });
+    // Bob joins himself, and his agent joins from his linked computer; the owner admits both.
     const bobReq = await Channel.requestJoin(relay, code, bobKey, { name: "bob" }, await bob());
-    await Channel.sponsor(relay, code, req.requestId, await bob(), bobReq.requestId);
-    const r = (await ownerCh.requests()).find((x) => x.id === req.requestId)!;
-    await ownerCh.approveWithSponsor(r);
+    const req = await agentAsks(code, agent, "scout", await linkedComputer("user_bob"));
+    for (const r of await ownerCh.requests()) await ownerCh.approve(r);
+    expect(bobReq.requestId).toBeTruthy();
     expect((await myChannels(relay, await bob())).find((c) => c.room === room)).toMatchObject({ owner: false, member: true, agents: 1 });
 
     // Members (not the relay) can read the channel's name.
@@ -212,7 +208,7 @@ describe("names", () => {
     await Channel.requestJoin(relay, code, bob2, { name: "whatever" }, await token("user_bob"));
     await ownerCh.approve((await ownerCh.requests())[0]!);
     // An agent can't take a name someone has.
-    await Channel.requestJoin(relay, code, agent, { name: "alice" });
+    await agentAsks(code, agent, "alice", await linkedComputer("user_bob"));
     await expect(ownerCh.approve((await ownerCh.requests())[0]!)).rejects.toThrow(/already someone's name/);
     expect((await ownerCh.members()).filter((m) => m.active).map((m) => m.name).sort()).toEqual(["alice", "bob-builder", "bob-builder-2"]);
     await ownerCh.close();

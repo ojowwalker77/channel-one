@@ -24,6 +24,7 @@ export function Sidebar({
   onSelect,
   onNew,
   onJoin,
+  onComputers,
   className,
 }: {
   rows: ChannelRow[]
@@ -31,6 +32,7 @@ export function Sidebar({
   onSelect: (code: string) => void
   onNew: () => void
   onJoin: () => void
+  onComputers: () => void
   className?: string
 }) {
   const auth = useAuth()
@@ -61,6 +63,9 @@ export function Sidebar({
             <div className="fixed inset-0 z-10" onMouseDown={() => setMenu(null)} />
             <div role="menu" className="animate-rise absolute top-[48px] left-3 z-20 w-60 rounded-[10px] bg-raised p-1 shadow-pop">
               <p className="truncate px-2 pt-1.5 pb-2 text-[12px] text-ink-2">{auth.user?.email}</p>
+              <button type="button" role="menuitem" onClick={() => (setMenu(null), onComputers())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
+                Your computers
+              </button>
               <button type="button" role="menuitem" onClick={auth.signOut} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
                 Sign out
               </button>

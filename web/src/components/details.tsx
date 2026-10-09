@@ -10,7 +10,7 @@ import { Alert, Button, IconButton, Monogram, errorText, toast } from "./kit"
 
 export type Filter = { kind: "from"; name: string } | { kind: "open" } | { kind: "mine" }
 
-type Confirm = { kind: "approve"; req: JoinRequest; mine?: boolean } | { kind: "remove"; member: RosterMember } | { kind: "close" } | { kind: "leave" } | null
+type Confirm = { kind: "approve"; req: JoinRequest } | { kind: "remove"; member: RosterMember } | { kind: "close" } | { kind: "leave" } | null
 
 interface Props {
   code: string
@@ -26,8 +26,6 @@ interface Props {
   now: number
   onFilter: (f: Filter) => void
   onApprove: (r: JoinRequest) => Promise<void>
-  /** Vouch for an agent as your own, then let it in: both approvals in one step. */
-  onApproveOwn: (r: JoinRequest) => Promise<void>
   onDeny: (r: JoinRequest) => Promise<void>
   onRemove: (m: RosterMember) => Promise<void>
   onCloseChannel: () => Promise<void>
@@ -47,6 +45,17 @@ function Part({ title, aside, children }: { title: string; aside?: ReactNode; ch
   )
 }
 
+function CopyBox({ text, label, done }: { text: string; label: string; done: string }) {
+  return (
+    <div className="mt-2 flex items-start gap-1 rounded-[8px] bg-wash p-2.5">
+      <code className="min-w-0 flex-1 font-mono text-[11.5px] leading-relaxed break-all text-ink-2">{text}</code>
+      <IconButton label={label} className="size-7" onClick={() => navigator.clipboard.writeText(text).then(() => toast(done))}>
+        <Icon icon={Copy01Icon} size={15} />
+      </IconButton>
+    </div>
+  )
+}
+
 function minutesLeft(expires: number, now: number) {
   const m = Math.max(0, Math.round((expires - now) / 60_000))
   return m < 60 ? `${m} min left` : `${Math.floor(m / 60)} h ${m % 60} min left`
@@ -57,15 +66,13 @@ export function Details(p: Props) {
   const auth = useAuth()
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [busy, setBusy] = useState(false)
-  const signInRelay = auth.status !== "off"
   const needsSignIn = p.isOwner && auth.status === "signed-out"
-  // A person who asked to join to supervise their agent is shown inside the agent's request.
-  const linked = new Set(p.requests.map((r) => r.sponsorRequest).filter(Boolean))
-  const requests = p.requests.filter((r) => !linked.has(r.id))
+  const requests = p.requests
   const active = p.roster.filter((m) => m.active).sort((a, b) => Number(b.owner) - Number(a.owner) || Number(p.online.has(b.name)) - Number(p.online.has(a.name)))
   const former = p.roster.filter((m) => !m.active)
   const facts = [...p.state.facts.values()].sort((a, b) => a.key.localeCompare(b.key))
-  const joinCommand = `curl -fsSL ${location.origin}/install | sh && ~/.kiwi/bin/kiwi join ${p.code} --as <name>`
+  const inviteLink = `${location.origin}/#${p.code}`
+  const joinCommand = `kiwi join ${p.code} --as <name>`
   const taken = confirm?.kind === "approve" && active.some((m) => m.name === confirm.req.name)
 
   const run = async (fn: () => Promise<void>, done: string) => {
@@ -104,54 +111,32 @@ export function Details(p: Props) {
         {p.isOwner && requests.length > 0 && (
           <Part title={requests.length === 1 ? "Wants to join" : `${requests.length} want to join`}>
             <div className="grid gap-4">
-              {requests.map((r) => {
-                // On a sign-in relay, an agent needs its own person's vouch before you can let it in.
-                const awaitingSponsor = signInRelay && r.kind !== "human" && !r.sponsoredBy
-                const supervisor = r.sponsorRequest ? p.requests.find((x) => x.id === r.sponsorRequest) : undefined
-                return (
-                  <div key={r.id}>
-                    <div className="flex items-start gap-3">
-                      <Monogram name={r.name} agent={r.kind !== "human"} size={28} />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[13.5px] font-medium">
-                          {r.name}
-                          {r.role && <span className="font-normal text-ink-2">, {r.role}</span>}
-                        </p>
-                        <p className="text-[12px] leading-snug text-ink-2">
-                          {r.kind === "human"
-                            ? `Signed in as ${r.sponsoredBy?.name ?? "someone"}`
-                            : r.sponsoredBy
-                              ? `Agent for ${r.sponsoredBy.name}${supervisor ? `, who joins with it` : ""}`
-                              : signInRelay
-                                ? "Agent, waiting for the person who runs it to vouch for it"
-                                : "Agent"}
-                        </p>
-                        {r.sponsoredBy?.email && <p className="truncate text-[12px] text-ink-2">{r.sponsoredBy.email}</p>}
-                        <p className="text-[12px] text-ink-3">Asked {formatAgo(r.ts, p.now)}</p>
-                      </div>
-                    </div>
-                    <div className="mt-2.5 flex gap-2 pl-10">
-                      <Button size="sm" variant="secondary" onClick={() => run(() => p.onDeny(r), `Declined ${r.name}`)}>
-                        Decline
-                      </Button>
-                      {awaitingSponsor ? (
-                        <Button size="sm" variant="ghost" onClick={() => setConfirm({ kind: "approve", req: r, mine: true })}>
-                          I run this agent
-                        </Button>
-                      ) : (
-                        <Button size="sm" onClick={() => setConfirm({ kind: "approve", req: r })}>
-                          Review and approve
-                        </Button>
-                      )}
-                    </div>
-                    {awaitingSponsor && (
-                      <p className="mt-2 pl-10 text-[12px] leading-snug text-ink-3">
-                        The person who runs it opens the link it printed and confirms it’s theirs. Then you can approve it here.
+              {requests.map((r) => (
+                <div key={r.id}>
+                  <div className="flex items-start gap-3">
+                    <Monogram name={r.name} agent={r.kind !== "human"} size={28} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13.5px] font-medium">
+                        {r.name}
+                        {r.role && <span className="font-normal text-ink-2">, {r.role}</span>}
                       </p>
-                    )}
+                      <p className="text-[12px] leading-snug text-ink-2">
+                        {r.kind === "human" ? `Signed in as ${r.sponsoredBy?.name ?? "someone"}` : r.sponsoredBy ? `Agent for ${r.sponsoredBy.name}, from their computer` : "Agent"}
+                      </p>
+                      {r.sponsoredBy?.email && <p className="truncate text-[12px] text-ink-2">{r.sponsoredBy.email}</p>}
+                      <p className="text-[12px] text-ink-3">Asked {formatAgo(r.ts, p.now)}</p>
+                    </div>
                   </div>
-                )
-              })}
+                  <div className="mt-2.5 flex gap-2 pl-10">
+                    <Button size="sm" variant="secondary" onClick={() => run(() => p.onDeny(r), `Declined ${r.name}`)}>
+                      Decline
+                    </Button>
+                    <Button size="sm" onClick={() => setConfirm({ kind: "approve", req: r })}>
+                      Review and approve
+                    </Button>
+                  </div>
+                </div>
+              ))}
             </div>
           </Part>
         )}
@@ -193,14 +178,13 @@ export function Details(p: Props) {
         </Part>
 
         {p.isOwner && (
-          <Part title="Invite an agent">
-            <p className="mb-2 text-[12px] leading-snug text-ink-2">Paste this into the agent’s terminal. Its request shows up here with a code to check.</p>
-            <div className="flex items-start gap-1 rounded-[8px] bg-wash p-2.5">
-              <code className="min-w-0 flex-1 font-mono text-[11.5px] leading-relaxed break-all text-ink-2">{joinCommand}</code>
-              <IconButton label="Copy command" className="size-7" onClick={() => navigator.clipboard.writeText(joinCommand).then(() => toast("Copied. Replace <name> with the agent’s name."))}>
-                <Icon icon={Copy01Icon} size={15} />
-              </IconButton>
-            </div>
+          <Part title="Invite">
+            <p className="text-[12px] leading-snug text-ink-2">People open this link and ask to join with their account.</p>
+            <CopyBox text={inviteLink} label="Copy link" done="Invite link copied" />
+            <p className="mt-4 text-[12px] leading-snug text-ink-2">
+              Agents join from a computer their person set up with <span className="font-mono text-[11.5px]">kiwi setup</span>. Tell the agent to run:
+            </p>
+            <CopyBox text={joinCommand} label="Copy command" done="Copied. Replace <name> with the agent’s name." />
           </Part>
         )}
 
@@ -254,13 +238,11 @@ export function Details(p: Props) {
       <Alert
         open={confirm?.kind === "approve"}
         onClose={() => setConfirm(null)}
-        title={confirm?.kind === "approve" ? (confirm.mine ? `Do you run ${confirm.req.name} yourself?` : `Let ${confirm.req.name} in?`) : ""}
+        title={confirm?.kind === "approve" ? `Let ${confirm.req.name} in?` : ""}
         message={
           confirm?.kind === "approve" && (
             <>
-              {confirm.mine ? (
-                "It will be listed as your agent and act for you. If someone else runs it, cancel: they vouch for it from its link. Say yes only if you started it and its terminal shows this code."
-              ) : <>Approve only if {confirm.req.kind === "human" ? "they show" : "its terminal shows"} this exact code.</>}
+              Approve only if {confirm.req.kind === "human" ? "they show" : "its terminal shows"} this exact code.
               <span className="mt-4 mb-1 block text-[34px] leading-none font-semibold tracking-[0.04em] text-ink tabular-nums">{confirm.req.code}</span>
             </>
           )
@@ -270,8 +252,8 @@ export function Details(p: Props) {
           Cancel
         </Button>
         {confirm?.kind === "approve" && (
-          <Button disabled={busy || taken} onClick={() => run(() => (confirm.mine ? p.onApproveOwn : p.onApprove)(confirm.req), `${confirm.req.name} joined`)}>
-            {taken ? "That name is taken" : confirm.mine ? "Yes, I run it" : "Approve"}
+          <Button disabled={busy || taken} onClick={() => run(() => p.onApprove(confirm.req), `${confirm.req.name} joined`)}>
+            {taken ? "That name is taken" : "Approve"}
           </Button>
         )}
       </Alert>
