@@ -104,7 +104,16 @@ export function saveConfig(cfg: Config): void {
  */
 export function updateConfig(change: (cfg: Config) => void): Config {
   mkdirSync(home(), { recursive: true, mode: 0o700 });
-  const lock = join(home(), "config.lock");
+  return withLock(join(home(), "config.lock"), () => {
+    const cfg = loadConfig();
+    change(cfg);
+    saveConfig(cfg);
+    return cfg;
+  });
+}
+
+/** Run `fn` while holding a lock directory, so concurrent kiwi processes take turns. */
+function withLock<T>(lock: string, fn: () => T): T {
   const deadline = Date.now() + 5_000;
   for (;;) {
     try {
@@ -116,15 +125,12 @@ export function updateConfig(change: (cfg: Config) => void): Config {
         const age = Date.now() - statSync(lock).mtimeMs;
         if (age > 5_000) rmSync(lock, { recursive: true, force: true });
       } catch {}
-      if (Date.now() > deadline) throw new Error(`couldn't lock ${lock}; if no mc is running, delete it`);
+      if (Date.now() > deadline) throw new Error(`couldn't lock ${lock}; if no kiwi is running, delete it`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
     }
   }
   try {
-    const cfg = loadConfig();
-    change(cfg);
-    saveConfig(cfg);
-    return cfg;
+    return fn();
   } finally {
     rmSync(lock, { recursive: true, force: true });
   }
@@ -253,7 +259,7 @@ export function wipeChannel(alias: string): void {
   });
   if (c) {
     rmSync(identityDir(c.roomId), { recursive: true, force: true });
-    rmSync(cachePath(c.roomId), { force: true });
+    for (const suffix of ["", ".seq"]) rmSync(cachePath(c.roomId) + suffix, { force: true });
     rmSync(join(home(), "downloads", c.roomId), { recursive: true, force: true });
   }
   rmSync(cursorDir(alias), { recursive: true, force: true });
@@ -285,26 +291,47 @@ function cachePath(roomId: string): string {
   return join(home(), "cache", `${roomId}.jsonl`);
 }
 
-/** Cached messages for a room, oldest first, deduplicated by seq. */
+/**
+ * Cached messages for a room, oldest first. Every listener on this machine shares the file, so
+ * older versions could write a message more than once: if that happened, the file is rewritten
+ * once without the copies.
+ */
 export function readCache(roomId: string): Message[] {
   const path = cachePath(roomId);
   if (!existsSync(path)) return [];
   const bySeq = new Map<number, Message>();
+  let lines = 0;
   for (const line of readFileSync(path, "utf8").split("\n")) {
     if (!line) continue;
+    lines++;
     try {
       const m = JSON.parse(line) as Message;
       bySeq.set(m.seq, m);
     } catch {
-      // A torn final line from a concurrent append; the next sync refetches it.
+      // A torn final line from a crash mid-write; the next sync refetches it.
     }
   }
-  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+  const messages = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+  if (lines > messages.length) {
+    withLock(`${path}.lock`, () => {
+      writePrivate(path, messages.map((m) => JSON.stringify(m)).join("\n") + (messages.length ? "\n" : ""));
+      writePrivate(`${path}.seq`, String(messages.at(-1)?.seq ?? 0));
+    });
+  }
+  return messages;
 }
 
+/** Add messages to a room's cache, skipping any another listener on this machine already wrote. */
 export function appendCache(roomId: string, messages: Message[]): void {
   if (!messages.length) return;
   const path = cachePath(roomId);
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
-  appendFileSync(path, messages.map((m) => JSON.stringify(m)).join("\n") + "\n", { mode: 0o600 });
+  withLock(`${path}.lock`, () => {
+    // The highest seq written so far; messages arrive in order, so anything at or below it is a copy.
+    const last = existsSync(`${path}.seq`) ? Number(readFileSync(`${path}.seq`, "utf8")) || 0 : 0;
+    const fresh = messages.filter((m) => m.seq > last);
+    if (!fresh.length) return;
+    appendFileSync(path, fresh.map((m) => JSON.stringify(m)).join("\n") + "\n", { mode: 0o600 });
+    writePrivate(`${path}.seq`, String(fresh.at(-1)!.seq));
+  });
 }
