@@ -252,3 +252,29 @@ describe("private beta", () => {
     await new Channel(access, relay, owner, undefined, () => token("user_bob")).close();
   });
 });
+
+describe("channels per person", () => {
+  test("at the limit a person can't create another; closing one frees the slot", async () => {
+    const { OPEN_POLICY } = await import("../src/relay/policy.ts");
+    const dir = mkdtempSync(join(tmpdir(), "mc-owned-"));
+    const r = startRelay({ port: 0, hostname: "127.0.0.1", dataDir: dir, human, policy: { ...OPEN_POLICY, channelsPerOwner: 1 } });
+    const at = r.url.origin;
+    try {
+      const [first, second] = await Promise.all([generateIdentity("a"), generateIdentity("b")]);
+      const alice = () => token("user_alice");
+      const { access } = await Channel.create(at, first, { name: "alice-owner", kind: "human" }, [], undefined, await alice());
+      await expect(Channel.create(at, second, { name: "alice-owner", kind: "human" }, [], undefined, await alice())).rejects.toMatchObject({
+        status: 429,
+        message: expect.stringContaining("close one to create another"),
+      });
+      // Others aren't affected.
+      const bobs = await Channel.create(at, await generateIdentity("c"), { name: "bob", kind: "human" }, [], undefined, await token("user_bob"));
+      expect(bobs.code).toBeTruthy();
+      await new Channel(access, at, first, undefined, alice).close();
+      expect((await Channel.create(at, second, { name: "alice-owner", kind: "human" }, [], undefined, await alice())).code).toBeTruthy();
+    } finally {
+      r.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

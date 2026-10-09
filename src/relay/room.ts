@@ -84,6 +84,21 @@ export interface DirectoryUpdate {
   entry: DirectoryEntry | null;
 }
 
+const utcDay = (ts: number) => new Date(ts).toISOString().slice(0, 10);
+
+/** "3h 12m": how long until the UTC date changes. */
+function untilUtcMidnight(ts: number): string {
+  const d = new Date(ts);
+  const left = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) - ts;
+  const h = Math.floor(left / 3_600_000);
+  const m = Math.ceil((left % 3_600_000) / 60_000);
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
+
+function formatBytes(n: number): string {
+  return n >= 1024 ** 3 ? `${+(n / 1024 ** 3).toFixed(1)} GB` : `${+(n / 1024 ** 2).toFixed(1)} MB`;
+}
+
 /** Messages one member may post per minute: plenty for real work, too few to flush a channel's history. */
 const MESSAGES_PER_MINUTE = 120;
 /** Presence and other ephemeral frames one member may send per minute. */
@@ -135,6 +150,10 @@ export class RoomStore {
   constructor(
     private readonly sql: Sql,
     readonly roomId: string,
+    /** What this relay allows (quotas, caps). */
+    readonly policy: RelayPolicy = OPEN_POLICY,
+    /** The clock, injectable so tests can cross midnight without waiting for it. */
+    private readonly now: () => number = Date.now,
   ) {}
 
   /** Tables exist only once a room is created, so a closed room leaves nothing behind. */
@@ -227,12 +246,72 @@ export class RoomStore {
     const epoch = this.meta().epoch;
     // Sealed with a retired key: the sender must fetch the new one and resend.
     if (e !== epoch) throw new HttpError(409, `stale key epoch ${e}; current is ${epoch}`);
-    const ts = Date.now();
+    const ts = this.now();
+
+    // Messages per channel per UTC day.
+    const day = utcDay(ts);
+    const today = this.messagesToday(ts);
+    const perDay = this.policy.messagesPerDay;
+    if (perDay && today >= perDay) {
+      throw new HttpError(429, `this channel has stored ${perDay} messages today, its daily limit; more can be sent after 00:00 UTC (in ${untilUtcMidnight(ts)})`);
+    }
+
+    // Stored bytes per channel: the oldest messages make room, the way the 10,000-message
+    // retention already works, so a busy channel never freezes. Only a message bigger than
+    // the whole allowance is refused.
+    const cap = this.policy.bytesPerChannel;
+    if (ct.length > cap) throw new HttpError(413, `that message is bigger than this channel may hold (${formatBytes(cap)})`);
+    let bytes = this.storedBytes();
+    if (bytes + ct.length > cap) bytes -= this.dropOldest(bytes + ct.length - cap);
+
     this.sql.run("INSERT INTO msgs (ts, iv, ct, e) VALUES (?, ?, ?, ?)", ts, iv, ct, e);
     const seq = this.head();
+    bytes += ct.length;
     // Prune in batches so retention costs one extra write pass per 100 messages.
-    if (seq % 100 === 0) this.sql.run("DELETE FROM msgs WHERE seq <= ?", seq - ROOM_RETENTION);
+    if (seq % 100 === 0) bytes -= this.dropThrough(seq - ROOM_RETENTION);
+    this.set("bytes", bytes);
+    this.set("day", day);
+    this.set("day_count", today + 1);
     return { seq, ts, iv, ct, e };
+  }
+
+  /** Messages stored today (UTC), by the counter in meta: it starts over when the date changes. */
+  messagesToday(now = this.now()): number {
+    return this.get("day") === utcDay(now) ? Number(this.get("day_count") ?? 0) : 0;
+  }
+
+  /** Total ciphertext the channel holds, kept in meta (counted once for rooms from before it was). */
+  storedBytes(): number {
+    const known = this.get("bytes");
+    if (known !== undefined) return Number(known);
+    const total = this.sql.all<{ n: number }>("SELECT COALESCE(SUM(LENGTH(ct)), 0) AS n FROM msgs")[0]?.n ?? 0;
+    this.set("bytes", total);
+    return total;
+  }
+
+  /** Delete messages through `seq`; returns the ciphertext bytes freed. */
+  private dropThrough(seq: number): number {
+    if (seq <= 0) return 0;
+    const freed = this.sql.all<{ n: number }>("SELECT COALESCE(SUM(LENGTH(ct)), 0) AS n FROM msgs WHERE seq <= ?", seq)[0]?.n ?? 0;
+    if (freed) this.sql.run("DELETE FROM msgs WHERE seq <= ?", seq);
+    return freed;
+  }
+
+  /** Delete the oldest messages until at least `need` bytes are free; returns the bytes freed. */
+  private dropOldest(need: number): number {
+    let freed = 0;
+    let through = 0;
+    for (const r of this.sql.all<{ seq: number; n: number }>("SELECT seq, LENGTH(ct) AS n FROM msgs ORDER BY seq")) {
+      freed += r.n;
+      through = r.seq;
+      if (freed >= need) break;
+    }
+    return this.dropThrough(through);
+  }
+
+  /** How many members (people and agents) are in the channel now. */
+  activeMembers(): number {
+    return this.sql.all<{ n: number }>("SELECT COUNT(*) AS n FROM members WHERE active = 1")[0]?.n ?? 0;
   }
 
   since(seq: number, limit = PAGE_LIMIT): Envelope[] {
@@ -407,6 +486,10 @@ export class RoomStore {
 
   approve(body: MemberBody & { request?: string }): void {
     const { epoch } = this.meta();
+    const most = this.policy.membersPerChannel;
+    if (most && !this.isMember(body.pk) && this.activeMembers() >= most) {
+      throw new HttpError(429, `this channel has ${most} members, the most this relay allows; remove someone to let another in`);
+    }
     for (let e = 0; e <= epoch; e++) {
       if (!body.keys?.[String(e)]) throw new HttpError(400, `missing wrapped key for epoch ${e}`);
     }
@@ -534,6 +617,8 @@ export interface RelayContext {
   /** Who vouches for an agent key, from its computer's signature (see machines.ts). */
   vouch?: ((agentPk: string, machine: unknown) => Promise<string | null>) | null;
   policy?: RelayPolicy;
+  /** How many channels a signed-in person owns now (from the adapter's per-person lists). */
+  ownedChannels?: (user: string) => Promise<number>;
 }
 
 export async function onHttp(store: RoomStore, req: Request, path: string, ctx: RelayContext = {}): Promise<{ res: Response; fx?: Effects }> {
@@ -572,6 +657,10 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     const user = await signedIn();
     // During a private beta only listed people create channels; anyone may still join one.
     if (user && !(await inBeta(policy, user, human))) throw new HttpError(403, betaMessage(policy));
+    const most = policy.channelsPerOwner;
+    if (user && most && ctx.ownedChannels && (await ctx.ownedChannels(user)) >= most) {
+      throw new HttpError(429, `you own ${most} channels, the most this relay allows per person; close one to create another`);
+    }
     await store.create(signer, json<CreateBody>(), user);
     return ok({ head: 0 }, user ? { directory: await store.directory() } : undefined);
   }

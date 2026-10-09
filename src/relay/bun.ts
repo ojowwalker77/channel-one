@@ -39,7 +39,9 @@ export interface WebApp {
   connect?: string[];
 }
 
-export function startRelay(opts: { port?: number; hostname?: string; dataDir?: string; human?: HumanAuth | null; policy?: RelayPolicy; web?: WebApp | null } = {}) {
+export function startRelay(
+  opts: { port?: number; hostname?: string; dataDir?: string; human?: HumanAuth | null; policy?: RelayPolicy; web?: WebApp | null; now?: () => number } = {},
+) {
   const human = opts.human ?? null;
   // Settings come from the caller, or else from the environment, the same keys the Worker reads.
   const policy = opts.policy ?? policyFrom(process.env);
@@ -84,6 +86,8 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
         all: <T>(q: string, ...p: (string | number | null)[]) => d.query(q).all(...p) as T[],
       },
       roomId,
+      policy,
+      opts.now,
     );
   };
 
@@ -137,7 +141,13 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
         }
         let result: Awaited<ReturnType<typeof onHttp>>;
         try {
-          result = await onHttp(store, req, route.rest, { human, vouch: (pk, m) => vouchedBy(machines, route.roomId, pk, m), policy });
+          result = await onHttp(store, req, route.rest, {
+            human,
+            vouch: (pk, m) => vouchedBy(machines, route.roomId, pk, m),
+            policy,
+            ownedChannels: async (user) =>
+              (people.query("SELECT entry FROM entries WHERE user = ?").all(user) as { entry: string }[]).filter((r) => (JSON.parse(r.entry) as DirectoryEntry).owner).length,
+          });
         } catch (err) {
           // A create that failed leaves no file behind.
           if (route.rest === "/create" && !store.exists()) {

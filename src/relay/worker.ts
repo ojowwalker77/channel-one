@@ -64,7 +64,7 @@ export class Channel extends DurableObject<Env> {
   }
 
   private store(roomId: string): RoomStore {
-    return new RoomStore(this.sql, roomId);
+    return new RoomStore(this.sql, roomId, policyFrom(this.env as unknown as Record<string, string | undefined>));
   }
 
   override async fetch(req: Request): Promise<Response> {
@@ -89,6 +89,8 @@ export class Channel extends DurableObject<Env> {
         human: human(this.env),
         vouch: (pk, machine) => vouchedBy(machineStore(this.env), route.roomId, pk, machine),
         policy: policyFrom(this.env as unknown as Record<string, string | undefined>),
+        ownedChannels: async (user) =>
+          ((await (await this.env.PEOPLE.get(this.env.PEOPLE.idFromName(user)).fetch("https://directory/list")).json()) as DirectoryEntry[]).filter((c) => c.owner).length,
       });
       if (fx) await this.apply(fx);
       return res;
