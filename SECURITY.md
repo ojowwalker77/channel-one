@@ -87,6 +87,36 @@ the channels you own, and leave the ones you don't. A transfer is one-off:
 channels joined later on either device stay there until you add the device
 again, which adds what's new and never replaces a key a device already holds.
 
+### The vault: every channel, on any device you sign in to
+
+A person can also keep their channels in a **vault** at the relay, so a new
+browser or phone opens all of them after sign-in and a passkey touch, with no
+QR code, and channels joined later reach their other devices on their own.
+
+- The vault is encrypted on the person's devices (`src/vault.ts`) under a
+  random 256-bit vault key. The relay stores one opaque blob per signed-in
+  person and never parses it (`src/relay/vault.ts`): it only orders saves by
+  version, refusing a stale one (409) so two devices merge instead of
+  overwriting each other.
+- The vault key is sealed once per passkey, under a key derived from that
+  passkey's WebAuthn PRF output, and once under a 160-bit recovery code. The
+  PRF output and the code never leave the person's device. **A stolen sign-in
+  alone yields ciphertext.**
+- Each sealed box is bound to the person, and the body to its version and to
+  the list of passkeys that may open it. So a relay can't move a box between
+  people or versions, add a passkey of its own, or strip one unnoticed.
+- A relay *can* withhold the vault, refuse saves, or serve an old copy. Each
+  device remembers the highest version it has opened and refuses anything
+  older, loudly. Channels already on a device keep working either way.
+- Removing a passkey **rotates the vault key**: a device that held the old key
+  can't open anything saved after that. This device's passkey and a new
+  recovery code open the new vault; other passkeys are added again. Lost a
+  device? Rotate the vault, then close or leave its channels as below. The
+  vault doesn't change what a lost device already had.
+- A seat taken over under a new key (a rejoin, a reclaim) leaves a tombstone
+  for the old key, so no device brings it back. One join code never holds two
+  live keys.
+
 ## No impersonation
 
 Names are bound to keys by the **owner's signature**, not by whoever speaks

@@ -10,6 +10,7 @@ import type { ServerWebSocket } from "bun";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import { workosFromSettings, type HumanAuth } from "./human.ts";
 import { onDeviceHttp, type DeviceStore, type DeviceTransfer } from "./devices.ts";
+import { onVaultHttp, vaultSwap, type VaultRecord, type VaultStore } from "./vault.ts";
 import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
 import { policyFrom, type RelayPolicy } from "./policy.ts";
 import {
@@ -63,6 +64,28 @@ export function startRelay(
     list: async (user) => (people.query("SELECT rec FROM devices WHERE user = ?").all(user) as { rec: string }[]).map((r) => JSON.parse(r.rec) as DeviceTransfer),
     put: async (user, r) => void people.query("INSERT OR REPLACE INTO devices (user, id, rec) VALUES (?, ?, ?)").run(user, r.id, JSON.stringify(r)),
     remove: async (user, id) => void people.query("DELETE FROM devices WHERE user = ? AND id = ?").run(user, id),
+  };
+  // Each person's vault: ciphertext only (src/relay/vault.ts).
+  people.run("CREATE TABLE IF NOT EXISTS vaults (user TEXT PRIMARY KEY, rec TEXT NOT NULL)");
+  const vaultOf = (user: string) => {
+    const row = people.query("SELECT rec FROM vaults WHERE user = ?").get(user) as { rec: string } | null;
+    return row ? (JSON.parse(row.rec) as VaultRecord) : null;
+  };
+  // bun:sqlite is synchronous and this process is the only writer, so read-check-write can't interleave.
+  const vaults: VaultStore = {
+    get: async (user) => vaultOf(user),
+    put: async (user, expected, rec) => {
+      const current = vaultOf(user);
+      if (!vaultSwap(current, expected)) return { ok: false, current };
+      people.query("INSERT OR REPLACE INTO vaults (user, rec) VALUES (?, ?)").run(user, JSON.stringify(rec));
+      return { ok: true };
+    },
+    remove: async (user, expected) => {
+      const current = vaultOf(user);
+      if (!current || !vaultSwap(current, expected)) return false;
+      people.query("DELETE FROM vaults WHERE user = ?").run(user);
+      return true;
+    },
   };
   const machines: MachineStore = {
     get: async (pk) => {
@@ -150,6 +173,8 @@ export function startRelay(
         if (url.pathname === "/v1/config") return relayConfig(human);
         const device = await onDeviceHttp(req, devices, human);
         if (device) return device;
+        const vault = await onVaultHttp(req, vaults, human);
+        if (vault) return vault;
         const machine = await onMachineHttp(req, machines, human);
         if (machine) return machine;
         if (url.pathname === "/v1/me/usage" && req.method === "GET") {

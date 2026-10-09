@@ -9,6 +9,7 @@ import { DurableObject } from "cloudflare:workers";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import { workosHumanAuth, workosProfiles, type HumanAuth } from "./human.ts";
 import { onDeviceHttp, type DeviceStore, type DeviceTransfer } from "./devices.ts";
+import { onVaultHttp, vaultSwap, type VaultRecord, type VaultStore } from "./vault.ts";
 import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
 import { policyFrom } from "./policy.ts";
 import {
@@ -164,6 +165,8 @@ export class Directory extends DurableObject<Env> {
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS machine (k INTEGER PRIMARY KEY CHECK (k = 1), rec TEXT NOT NULL)");
     // Boxes handing a person's channels to another of their devices (ciphertext only).
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, rec TEXT NOT NULL)");
+    // The person's vault (ciphertext only): one row, swapped by version.
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS vault (k INTEGER PRIMARY KEY CHECK (k = 1), rec TEXT NOT NULL)");
   }
 
   override async fetch(req: Request): Promise<Response> {
@@ -175,6 +178,21 @@ export class Directory extends DurableObject<Env> {
         sql.exec("INSERT OR REPLACE INTO devices (id, rec) VALUES (?, ?)", r.id, JSON.stringify(r));
       } else if (req.method === "DELETE") sql.exec("DELETE FROM devices WHERE id = ?", searchParams.get("id") ?? "");
       return Response.json((sql.exec("SELECT rec FROM devices").toArray() as { rec: string }[]).map((r) => JSON.parse(r.rec) as DeviceTransfer));
+    }
+    if (pathname === "/vault") {
+      const read = () => {
+        const row = sql.exec("SELECT rec FROM vault").toArray()[0] as { rec: string } | undefined;
+        return row ? (JSON.parse(row.rec) as VaultRecord) : null;
+      };
+      if (req.method === "GET") return Response.json(read());
+      const { expected, rec } = (await req.json()) as { expected: number; rec?: VaultRecord };
+      // One object per person, and no await between this read and the write: the swap is atomic.
+      const current = read();
+      if (!vaultSwap(current, expected)) return Response.json({ ok: false, current });
+      if (req.method === "PUT" && rec) sql.exec("INSERT OR REPLACE INTO vault (k, rec) VALUES (1, ?)", JSON.stringify(rec));
+      else if (req.method === "DELETE" && current) sql.exec("DELETE FROM vault");
+      else return Response.json({ ok: false, current });
+      return Response.json({ ok: true });
     }
     if (pathname === "/machine") {
       if (req.method === "PUT") sql.exec("INSERT OR REPLACE INTO machine (k, rec) VALUES (1, ?)", await req.text());
@@ -207,6 +225,21 @@ function deviceStore(env: Env): DeviceStore {
     list: async (user) => (await at(user).fetch("https://directory/devices")).json(),
     put: async (user, r) => void (await at(user).fetch("https://directory/devices", { method: "PUT", body: JSON.stringify(r) })),
     remove: async (user, id) => void (await at(user).fetch(`https://directory/devices?id=${encodeURIComponent(id)}`, { method: "DELETE" })),
+  };
+}
+
+/** A person's vault lives in their own Directory object, which runs the compare-and-swap. */
+function vaultStore(env: Env): VaultStore {
+  const at = (user: string) => env.PEOPLE.get(env.PEOPLE.idFromName(user));
+  const swap = async (user: string, method: string, expected: number, rec?: VaultRecord) =>
+    (await (await at(user).fetch("https://directory/vault", { method, body: JSON.stringify({ expected, rec }) })).json()) as { ok: boolean; current?: VaultRecord | null };
+  return {
+    get: async (user) => (await at(user).fetch("https://directory/vault")).json(),
+    put: async (user, expected, rec) => {
+      const r = await swap(user, "PUT", expected, rec);
+      return r.ok ? { ok: true } : { ok: false, current: r.current ?? null };
+    },
+    remove: async (user, expected) => (await swap(user, "DELETE", expected)).ok,
   };
 }
 
@@ -246,6 +279,13 @@ export default {
     if (url.pathname.startsWith("/v1/me/devices")) {
       try {
         return (await onDeviceHttp(req, deviceStore(env), human(env))) ?? errorResponse(new HttpError(404, "not found"));
+      } catch (err) {
+        return errorResponse(err);
+      }
+    }
+    if (url.pathname === "/v1/me/vault") {
+      try {
+        return (await onVaultHttp(req, vaultStore(env), human(env))) ?? errorResponse(new HttpError(404, "not found"));
       } catch (err) {
         return errorResponse(err);
       }
