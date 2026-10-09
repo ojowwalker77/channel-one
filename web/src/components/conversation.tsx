@@ -4,8 +4,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import type { Message } from "@mc/protocol.ts"
 import { useAuth } from "@/lib/auth"
 import { channelTitle, forgetChannel, loadRecent, saveRecent, useChannel, useClock, useKnownChannels, type StoredMember } from "@/lib/channel"
+import { refreshIcon, useIcons, useLiveIcon } from "@/lib/icons"
 import { excerpt, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
+import { ChannelIconTile } from "./channel-icon"
 import { Composer } from "./composer"
 import { ChannelControls, ChannelMenu, InviteButton, People, RequestsBanner, type Filter } from "./controls"
 import { Icon } from "./icon"
@@ -48,6 +50,8 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const me = member.identity.name
   const auth = useAuth()
   const { ch, connection, gone, messages, roster, state, online, isOwner, requests, send, refreshRequests, refreshRoster } = useChannel(member, auth.token)
+  useLiveIcon(member)
+  const icon = useIcons().get(member.access.roomId) ?? null
   const now = useNow()
   const [tab, setTab] = useState<"chat" | "tasks">("chat")
   const [filter, setFilter] = useState<Filter | null>(null)
@@ -264,6 +268,15 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         await ch.remove(m.pk)
         await refreshRoster()
       }}
+      roomId={member.access.roomId}
+      onSetIcon={
+        isOwner
+          ? async (next) => {
+              await ch.setIcon(next)
+              await refreshIcon(member)
+            }
+          : undefined
+      }
       onCloseChannel={async () => {
         await ch.close()
         forgetChannel(member.code)
@@ -281,6 +294,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
             <IconButton label="Channels" className="md:hidden" onClick={onBack}>
               <Icon icon={ArrowLeft01Icon} size={20} />
             </IconButton>
+            <ChannelIconTile icon={icon} title={title} size={20} />
             <div className="min-w-0 flex-1">
               <h1 className="truncate text-[15px] leading-tight font-semibold tracking-[-0.015em]">{title}</h1>
               <People here={here} subtitle={subtitle} live={connection === "live"} />

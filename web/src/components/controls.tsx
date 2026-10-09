@@ -3,12 +3,14 @@ import { createContext, useContext, useState, type ReactNode } from "react"
 
 import { loadLine, memberLoad, showsLoad, type Load } from "@mc/load.ts"
 import { NAME_RE, type JoinRequest, type Member as RosterMember } from "@mc/membership.ts"
-import type { Event } from "@mc/protocol.ts"
+import type { ChannelIcon, Event } from "@mc/protocol.ts"
 import { TOO_MANY_REQUESTS } from "@mc/sas.ts"
 import { taskId, type ChannelState, type Member } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
 import { formatAgo, memberLine, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
+import { IconDialog } from "./channel-icon"
+import { cachedIcon } from "@/lib/icons"
 import { Icon } from "./icon"
 import { Alert, Button, IconButton, Modal, Monogram, Tabs, TextField, errorText, toast } from "./kit"
 import { Menu, MenuItem, MenuSeparator } from "./ui/menu"
@@ -53,6 +55,10 @@ export interface ControlsProps {
   onRole: (ev: Extract<Event, { op: "role.set" | "role.refuse" }>) => Promise<void>
   onCloseChannel: () => Promise<void>
   onLeaveChannel: () => Promise<void>
+  /** Owner: set or clear the channel icon. Absent for a visitor who can't. */
+  onSetIcon?: (icon: ChannelIcon | null) => Promise<void>
+  /** This channel's room, so the icon dialog can show what's there now. */
+  roomId?: string
 }
 
 interface Api {
@@ -598,34 +604,39 @@ function Requests({ onDone }: { onDone: () => void }) {
 export function ChannelMenu() {
   const { p, ask, openInvite, openRequests } = useControls()
   const auth = useAuth()
+  const [iconOpen, setIconOpen] = useState(false)
   return (
-    <Menu
-      align="end"
-      className="w-56"
-      trigger={
-        <IconButton label="Channel menu">
-          <Icon icon={MoreHorizontalIcon} size={18} />
-        </IconButton>
-      }
-    >
-      {/* Inviting is the owner's, as it was in the old panel: they approve everyone who asks. */}
-      {p.isOwner && <MenuItem onClick={() => navigator.clipboard.writeText(inviteLink(p.code)).then(() => toast("Invite link copied"))}>Copy invite link</MenuItem>}
-      {p.isOwner && <MenuItem onClick={openInvite}>Invite…</MenuItem>}
-      {p.isOwner && p.requests.length > 0 && (
-        <MenuItem onClick={auth.status === "signed-out" ? auth.signIn : openRequests}>
-          {auth.status === "signed-out" ? "Sign in to review join requests" : `Join requests (${p.requests.length})`}
-        </MenuItem>
-      )}
-      {p.isOwner && <MenuSeparator />}
-      {p.isOwner ? (
-        <MenuItem tone="danger" onClick={() => ask({ kind: "close" })}>
-          Close channel…
-        </MenuItem>
-      ) : (
-        <MenuItem tone="danger" onClick={() => ask({ kind: "leave" })}>
-          Leave channel…
-        </MenuItem>
-      )}
-    </Menu>
+    <>
+      <Menu
+        align="end"
+        className="w-56"
+        trigger={
+          <IconButton label="Channel menu">
+            <Icon icon={MoreHorizontalIcon} size={18} />
+          </IconButton>
+        }
+      >
+        {/* Inviting is the owner's, as it was in the old panel: they approve everyone who asks. */}
+        {p.isOwner && <MenuItem onClick={() => navigator.clipboard.writeText(inviteLink(p.code)).then(() => toast("Invite link copied"))}>Copy invite link</MenuItem>}
+        {p.isOwner && <MenuItem onClick={openInvite}>Invite…</MenuItem>}
+        {p.isOwner && p.requests.length > 0 && (
+          <MenuItem onClick={auth.status === "signed-out" ? auth.signIn : openRequests}>
+            {auth.status === "signed-out" ? "Sign in to review join requests" : `Join requests (${p.requests.length})`}
+          </MenuItem>
+        )}
+        {p.isOwner && p.onSetIcon && <MenuItem onClick={() => setIconOpen(true)}>Channel icon…</MenuItem>}
+        {p.isOwner && <MenuSeparator />}
+        {p.isOwner ? (
+          <MenuItem tone="danger" onClick={() => ask({ kind: "close" })}>
+            Close channel…
+          </MenuItem>
+        ) : (
+          <MenuItem tone="danger" onClick={() => ask({ kind: "leave" })}>
+            Leave channel…
+          </MenuItem>
+        )}
+      </Menu>
+      {p.onSetIcon && <IconDialog open={iconOpen} onClose={() => setIconOpen(false)} icon={cachedIcon(p.roomId ?? "")} onSave={p.onSetIcon} />}
+    </>
   )
 }

@@ -7,6 +7,7 @@ import { handleFor, type JoinRequest, type Member } from "@mc/membership.ts"
 import type { Message, Presence } from "@mc/protocol.ts"
 import type { Signed, SigningBudget } from "@mc/sas.ts"
 import { fold, type ChannelState, type Roster } from "@mc/state.ts"
+import { ICON_LIVE } from "./icon-event"
 
 /** How much history to load when the page opens. */
 const HISTORY = 2_000
@@ -612,6 +613,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
         onPresence,
         onRoster: () => void refreshRoster(),
         onRequest: () => void refreshRequests(),
+        onInfo: () => window.dispatchEvent(new CustomEvent(ICON_LIVE, { detail: member.code })),
       })
     })().catch((err: unknown) => {
       if (!cancelled) onGone(err)

@@ -3,11 +3,13 @@ import { useState } from "react"
 
 import { displayName, useAuth } from "@/lib/auth"
 import type { ChannelRow } from "@/lib/channel"
+import { useIcons, useMemberIcons } from "@/lib/icons"
 import { atChannelLimit, type MyUsage } from "@/lib/usage"
 import { formatShort } from "@/lib/format"
 import { setAppearance, useAppearance, type Appearance } from "@/lib/theme"
 import { lockVault, useVault } from "@/lib/vault"
 import { cx } from "@/lib/utils"
+import { ChannelIconTile } from "./channel-icon"
 import { Icon } from "./icon"
 import { Button, IconButton, Monogram, Wordmark } from "./kit"
 import { Menu, MenuItem, MenuLabel, MenuNote, MenuRadioGroup, MenuRadioItem, MenuSeparator } from "./ui/menu"
@@ -57,6 +59,8 @@ export function Sidebar({
   const vault = useVault()
   const q = query.trim().toLowerCase()
   const shown = q ? rows.filter((c) => c.title.toLowerCase().includes(q) || c.recent?.text.toLowerCase().includes(q)) : rows
+  const icons = useIcons()
+  useMemberIcons(rows.filter((c) => c.state === "member").map((c) => c.code))
 
   return (
     <aside className={cx("h-full w-full shrink-0 flex-col bg-rail shadow-[inset_-0.5px_0_0_var(--line)] md:w-[280px]", className)}>
@@ -136,17 +140,23 @@ export function Sidebar({
               type="button"
               onClick={() => onSelect(c.code)}
               aria-current={selected ? "page" : undefined}
-              className={cx("mb-0.5 block w-full rounded-[10px] px-3 py-2.5 text-left transition-colors", selected ? "bg-pick shadow-[0_0_0_1px_var(--pick-edge)]" : "hover:bg-wash")}
+              className={cx(
+                "mb-0.5 flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left transition-colors",
+                selected ? "bg-pick shadow-[0_0_0_1px_var(--pick-edge)]" : "hover:bg-wash"
+              )}
             >
-              <span className="flex items-baseline gap-2">
-                <span className={cx("min-w-0 flex-1 truncate text-[14px] font-medium tracking-[-0.01em]", !reachable && "text-ink-2")}>{c.title}</span>
-                {reachable ? (
-                  <span className="shrink-0 text-[11.5px] text-ink-3 tabular-nums">{formatShort(c.ts)}</span>
-                ) : c.state !== "pending" ? (
-                  <Icon icon={LockIcon} size={12} className="shrink-0 self-center text-ink-3" />
-                ) : null}
+              <ChannelIconTile icon={icons.get(c.room) ?? null} title={c.title} size={28} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-baseline gap-2">
+                  <span className={cx("min-w-0 flex-1 truncate text-[14px] font-medium tracking-[-0.01em]", !reachable && "text-ink-2")}>{c.title}</span>
+                  {reachable ? (
+                    <span className="shrink-0 text-[11.5px] text-ink-3 tabular-nums">{formatShort(c.ts)}</span>
+                  ) : c.state !== "pending" ? (
+                    <Icon icon={LockIcon} size={12} className="shrink-0 self-center text-ink-3" />
+                  ) : null}
+                </span>
+                <span className={cx("mt-0.5 block truncate text-[12.5px]", selected ? "text-ink-2" : "text-ink-3")}>{rowNote(c)}</span>
               </span>
-              <span className={cx("mt-0.5 block truncate text-[12.5px]", selected ? "text-ink-2" : "text-ink-3")}>{rowNote(c)}</span>
             </button>
           )
         })}

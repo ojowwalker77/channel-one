@@ -4,7 +4,9 @@ import { Boundary, Toaster } from "@/components/kit"
 import { ComputersModal, LinkComputerPage } from "@/components/computers"
 import { AddDeviceModal, TakeChannelsPage } from "@/components/devices"
 import { ChannelGate, JoinWithCode, NewChannel, Welcome } from "@/components/onboarding"
+import { ChannelIconTile } from "@/components/channel-icon"
 import { Sidebar } from "@/components/sidebar"
+import { useIcons } from "@/lib/icons"
 import { Palette, usePaletteShortcut, type Command } from "@/components/ui/palette"
 import { UsageModal } from "@/components/usage"
 import { PasskeysSheet } from "@/components/vault"
@@ -36,12 +38,21 @@ export default function App() {
   const [{ code, identity }, setHash] = useState(readHash)
   const [sheet, setSheet] = useState<"new" | "join" | "computers" | "usage" | "device" | "passkeys" | null>(null)
   const rows = useChannelList(auth.status === "signed-in", auth.token)
+  const icons = useIcons()
   const usage = useUsage(auth.status === "signed-in", auth.token)
   const [palette, setPalette] = useState(false)
   usePaletteShortcut(useCallback(() => setPalette(true), []))
   const signedIn = auth.status === "signed-in"
   const commands = useMemo(() => {
-    const list: Command[] = rows.map((r) => ({ id: `c-${r.room}`, group: "Channels", label: r.title, hint: r.state === "member" ? formatShort(r.ts) : undefined, keywords: r.recent?.text, run: () => open(r.code) }))
+    const list: Command[] = rows.map((r) => ({
+      id: `c-${r.room}`,
+      group: "Channels",
+      label: r.title,
+      hint: r.state === "member" ? formatShort(r.ts) : undefined,
+      keywords: r.recent?.text,
+      leading: <ChannelIconTile icon={icons.get(r.room) ?? null} title={r.title} size={20} />,
+      run: () => open(r.code),
+    }))
     const act = (id: string, label: string, run: () => void) => list.push({ id, group: "Actions", label, run })
     act("new", "New channel", () => setSheet("new"))
     act("join", "Join with a code", () => setSheet("join"))
@@ -57,7 +68,7 @@ export default function App() {
       { id: "system", group: "Appearance", label: "Match system", run: () => setAppearance("system") }
     )
     return list
-  }, [rows, signedIn, usage, auth.status, auth.signIn])
+  }, [rows, icons, signedIn, usage, auth.status, auth.signIn])
 
   // Signed in, the vault brings this person's channels to this browser.
   const user = auth.status === "signed-in" ? auth.user : null

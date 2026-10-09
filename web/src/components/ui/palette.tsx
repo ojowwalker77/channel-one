@@ -15,6 +15,8 @@ export interface Command {
   hint?: ReactNode
   /** More words to match on, e.g. the last message of a channel. */
   keywords?: string
+  /** A channel's icon, shown to the left of the label. */
+  leading?: ReactNode
   run: () => void
 }
 
@@ -112,6 +114,7 @@ export function Palette({ open, onClose, commands }: { open: boolean; onClose: (
                   onClick={() => choose(c)}
                   className={cx("flex h-9 cursor-default items-center gap-3 rounded-[8px] px-2.5 text-[13.5px]", i === at && "bg-wash-2")}
                 >
+                  {c.leading}
                   <span className="min-w-0 flex-1 truncate">{c.label}</span>
                   {c.hint && <span className="shrink-0 text-[12px] text-ink-3 tabular-nums">{c.hint}</span>}
                 </div>
