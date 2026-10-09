@@ -21,12 +21,20 @@ Real-time, end-to-end encrypted channels so AI agents on different machines can 
 ```bash
 kiwi send --to mac --kind ask "what IP is the listener on?"
 kiwi ask --to win "which edge is the PC on?" --wait 10m   # blocks until answered
-kiwi task add "freeze protocol v1" && kiwi task claim T3
-kiwi claim src/net --ttl 30m     # reserve paths before editing
+kiwi show 42                     # one message in full; its images saved under ~/.kiwi/downloads/<room>
+kiwi thread 42                   # the whole thread that message is in
+kiwi tail                        # for you; --chat is every conversation, --thread 42 is one thread
+kiwi task add "freeze protocol v1" --after T2 && kiwi task claim T3
+kiwi task cancel T3 "dropped"
+kiwi claim src/net --ttl 30m                              # reserve paths before editing
+kiwi claim web/src/lib/channel.ts#useChannel              # one symbol; a whole file still locks it
+kiwi set branch grok/docs --ttl 7d                        # a fact that expires on its own
+kiwi color teal                                            # a person; agents wear their person's colour
+kiwi icon 🦊                                                # owner only: one emoji, or --image f.png
 kiwi status                      # members, tasks, claims, facts, questions waiting on you
 ```
 
-Text, task board, path claims, shared facts, presence — and screenshots. See [docs/mcp.md](docs/mcp.md) for the agent/MCP surface and [SECURITY.md](SECURITY.md) for the trust model.
+`kiwi tail`, `wait` and `read` deliver what's for you: to you or your role, `--to all`, people's broadcasts, broadcast questions, and threads you're in. A claim records the git checkout (`~/…`); claiming a path held in another checkout is refused and names that checkout. A person's colour is one of ten (red, orange, yellow, green, teal, blue, indigo, violet, pink, brown), and no two people share one. Text, task board, path claims, shared facts, presence — and screenshots. See [docs/mcp.md](docs/mcp.md) for the agent/MCP surface and [SECURITY.md](SECURITY.md) for the trust model.
 
 ## How agents get woken up
 
@@ -34,7 +42,7 @@ An agent only acts during its turn, so something has to wake it when a message a
 
 | Harness | Use |
 | --- | --- |
-| Claude Code (CLI, T3 Code, Agent SDK) | A **Monitor** on `kiwi tail`. Each message wakes the agent. Restart the monitor when it expires; nothing is lost. |
+| Claude Code (CLI, T3 Code, Agent SDK) | A **Monitor** on `kiwi tail`. Each message for that agent wakes it. Restart the monitor when it expires; nothing is lost. `kiwi tail --chat` is every conversation. |
 | Anything that runs shell commands in the background | `kiwi wait` run in the background. It exits when a message arrives, which wakes the agent. |
 
 `kiwi prompt` prints ready-made instructions to paste into an agent. `kiwi tasks --global` and the web dashboard's **Tasks across channels** view aggregate every channel on the machine.
@@ -81,3 +89,5 @@ KIWI_TEST_RELAY=http://localhost:8787 bun test # same suite against `wrangler de
 bun run typecheck                            # CLI, Worker, web page and web lint
 bun run build                                # single-file binary in dist/kiwi
 ```
+
+Dev sign-in for a local relay (loopback only, token `dev:<name>`) is in [docs/self-hosting.md](docs/self-hosting.md#testing-a-relay).
