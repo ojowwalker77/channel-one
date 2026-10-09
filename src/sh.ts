@@ -22,7 +22,11 @@ import { describeEvent, formatClaims, formatMessage, formatStatus, formatTask, m
 import type { Message } from "./protocol.ts";
 import { taskId, type ChannelState } from "./state.ts";
 
-/** Read-only text tools. Anything that writes, waits, archives or reaches out is left out. */
+/**
+ * Read-only text tools. Anything that writes, waits, archives or reaches out is left out.
+ * Never add xz or zstd: their libraries are left out of the binary (package.json build), so
+ * just-bash would import them at runtime from wherever kiwi runs.
+ */
 const COMMANDS: CommandName[] = [
   "cat", "echo", "printf", "ls", "pwd", "readlink", "stat", "file", "find", "tree", "du", "basename", "dirname",
   "head", "tail", "wc", "grep", "fgrep", "egrep", "rg", "sed", "awk", "sort", "uniq", "comm", "cut", "paste",
