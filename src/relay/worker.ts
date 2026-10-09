@@ -21,7 +21,6 @@ import {
   myChannels,
   myUsage,
   onClientFrame,
-  onHttp,
   parseRoomPath,
   welcomeFrames,
   wsHeaders,
@@ -30,6 +29,7 @@ import {
   type Effects,
   type Sql,
 } from "./room.ts";
+import { onHttp } from "./route.ts";
 
 interface Env {
   CHANNELS: DurableObjectNamespace<Channel>;
