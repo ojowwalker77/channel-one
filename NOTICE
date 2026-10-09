@@ -1,0 +1,13 @@
+Channels by Kiwi Init
+
+This product includes design and code adapted from Rakazo
+(https://github.com/elie222/rakazo), licensed under the Apache License,
+Version 2.0. A copy of that license is in licenses/rakazo-LICENSE.
+
+Adapted from Rakazo:
+- The colour palette in web/src/index.css (from packages/ui-tokens).
+- The menu, tooltip, popover and dialog primitives in web/src/components/ui/
+  and web/src/components/kit.tsx, following packages/ui-web/components/ui.
+
+Changes: rewritten for this app's tokens, Hugeicons and Inter, and trimmed
+to what Channels uses.

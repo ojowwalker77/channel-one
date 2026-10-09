@@ -3,46 +3,46 @@
 
 /*
  * Channels is a room you watch more than you talk in. So the page is
- * paper and ink: one neutral family, one blue for the few things you act on,
- * red and green only when they mean something. Agents and people are told
- * apart by shape (agents are squares, people are circles), never by colour.
+ * monochrome: warm paper by day, near-black by night, solid ink for the one
+ * thing you're most likely to do next, blue only for links, red and green only
+ * when they mean something. Agents and people are told apart by shape (agents
+ * are squares, people are circles), never by colour.
+ *
+ * The palette follows rakazo (github.com/elie222/rakazo, Apache-2.0); see NOTICE.
+ * Each token is written once as light-dark(day, night). The system picks the
+ * side, unless lib/theme.ts has set data-theme because the person chose one.
  */
 :root {
-  --canvas: #ffffff;
-  --rail: #f7f7f8;
-  --raised: #ffffff;
-  --ink: #1d1d1f;
-  --ink-2: #6e6e73;
-  --ink-3: #a1a1a6;
-  --line: rgba(0, 0, 0, 0.08);
-  --wash: rgba(0, 0, 0, 0.04);
-  --wash-2: rgba(0, 0, 0, 0.07);
-  --accent: #0071e3;
-  --accent-wash: rgba(0, 113, 227, 0.09);
-  --alert: #d70015;
-  --live: #28a745;
-  --shadow-pop: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 12px 32px -8px rgba(0, 0, 0, 0.18);
+  color-scheme: light dark;
+  --canvas: light-dark(#fafaf8, #0b0c0e);
+  --rail: light-dark(#ecece9, #111215);
+  --raised: light-dark(#ffffff, #141518);
+  --ink: light-dark(#1a1a1a, #ececee);
+  --ink-2: light-dark(#6c6c70, #85858a);
+  --ink-3: light-dark(#a3a39e, #56565c);
+  --line: light-dark(#e8e8e4, #1e2026);
+  --wash: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.04));
+  --wash-2: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.075));
+  --accent: light-dark(#1a1a1a, #f1f1ef);
+  --accent-ink: light-dark(#f1f1ef, #0b0c0e);
+  --accent-wash: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.12));
+  --link: light-dark(#2563eb, #3b82f6);
+  --ring: light-dark(#6c6c70, #3b82f6);
+  --alert: light-dark(#dc2626, #ef4444);
+  --live: light-dark(#228b3b, #4ecb71);
+  --warn: light-dark(#b7791f, #e9c46a);
+  --overlay: light-dark(rgba(20, 20, 22, 0.45), rgba(4, 4, 5, 0.72));
+  --pop-edge: light-dark(rgba(0, 0, 0, 0.06), #1e2026);
+  --pop-shade: light-dark(rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.7));
+  --shadow-pop: 0 0 0 1px var(--pop-edge), 0 14px 36px -8px var(--pop-shade);
+}
+
+:root[data-theme="light"] {
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --canvas: #1c1c1e;
-    --rail: #232325;
-    --raised: #2c2c2e;
-    --ink: #f5f5f7;
-    --ink-2: #98989d;
-    --ink-3: #636366;
-    --line: rgba(255, 255, 255, 0.09);
-    --wash: rgba(255, 255, 255, 0.05);
-    --wash-2: rgba(255, 255, 255, 0.09);
-    --accent: #2997ff;
-    --accent-wash: rgba(41, 151, 255, 0.14);
-    --alert: #ff6961;
-    --live: #32d74b;
-    --shadow-pop: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 16px 40px -8px rgba(0, 0, 0, 0.6);
-    color-scheme: dark;
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -58,9 +58,14 @@
   --color-wash: var(--wash);
   --color-wash-2: var(--wash-2);
   --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
   --color-accent-wash: var(--accent-wash);
+  --color-link: var(--link);
+  --color-ring: var(--ring);
   --color-alert: var(--alert);
   --color-live: var(--live);
+  --color-warn: var(--warn);
+  --color-overlay: var(--overlay);
   --shadow-pop: var(--shadow-pop);
 }
 
@@ -92,7 +97,7 @@ button {
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--ring);
   outline-offset: 1px;
   border-radius: 6px;
 }

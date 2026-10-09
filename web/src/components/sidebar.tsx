@@ -5,9 +5,11 @@ import { displayName, useAuth } from "@/lib/auth"
 import type { ChannelRow } from "@/lib/channel"
 import { atChannelLimit, type MyUsage } from "@/lib/usage"
 import { formatShort } from "@/lib/format"
+import { setAppearance, useAppearance, type Appearance } from "@/lib/theme"
 import { cx } from "@/lib/utils"
 import { Icon } from "./icon"
 import { Button, IconButton, Monogram, Wordmark } from "./kit"
+import { Menu, MenuItem, MenuLabel, MenuNote, MenuRadioGroup, MenuRadioItem, MenuSeparator } from "./ui/menu"
 import { usageLine } from "./usage"
 
 /** The second line of a row: what was said last, or why this browser can't open it yet. */
@@ -45,75 +47,68 @@ export function Sidebar({
 }) {
   const auth = useAuth()
   const [query, setQuery] = useState("")
-  const [menu, setMenu] = useState<"account" | "add" | null>(null)
+  const appearance = useAppearance()
   const q = query.trim().toLowerCase()
   const shown = q ? rows.filter((c) => c.title.toLowerCase().includes(q) || c.recent?.text.toLowerCase().includes(q)) : rows
 
   return (
     <aside className={cx("h-full w-full shrink-0 flex-col bg-rail shadow-[inset_-0.5px_0_0_var(--line)] md:w-[272px]", className)}>
-      <header className="relative flex h-[56px] shrink-0 items-center px-3">
+      <header className="flex h-[56px] shrink-0 items-center px-3">
         {auth.status === "signed-in" ? (
-          <button
-            type="button"
-            onClick={() => setMenu(menu === "account" ? null : "account")}
-            className="flex min-w-0 items-center gap-2 rounded-[8px] py-1 pr-2 pl-1 transition-colors hover:bg-wash"
-            aria-haspopup="menu"
+          <Menu
+            className="w-60"
+            trigger={
+              <button type="button" className="flex min-w-0 items-center gap-2 rounded-[8px] py-1 pr-2 pl-1 transition-colors hover:bg-wash data-popup-open:bg-wash">
+                <Monogram name={displayName(auth.user)} size={24} />
+                <span className="truncate text-[13px] font-semibold">{displayName(auth.user)}</span>
+                <Icon icon={ArrowDown01Icon} size={14} className="shrink-0 text-ink-3" />
+              </button>
+            }
           >
-            <Monogram name={displayName(auth.user)} size={24} />
-            <span className="truncate text-[13px] font-semibold">{displayName(auth.user)}</span>
-            <Icon icon={ArrowDown01Icon} size={14} className="shrink-0 text-ink-3" />
-          </button>
+            <MenuNote>{auth.user?.email}</MenuNote>
+            <MenuItem onClick={onComputers}>Your computers</MenuItem>
+            <MenuItem onClick={onAddDevice}>Add a device</MenuItem>
+            {usage && <MenuItem onClick={onUsage}>Usage</MenuItem>}
+            <MenuSeparator />
+            <MenuLabel>Appearance</MenuLabel>
+            <MenuRadioGroup<Appearance> value={appearance} onChange={setAppearance}>
+              <MenuRadioItem value="system">Match system</MenuRadioItem>
+              <MenuRadioItem value="light">Light</MenuRadioItem>
+              <MenuRadioItem value="dark">Dark</MenuRadioItem>
+            </MenuRadioGroup>
+            <MenuSeparator />
+            <MenuItem onClick={auth.signOut}>Sign out</MenuItem>
+          </Menu>
         ) : (
           <Wordmark className="pl-1 text-[15px]" />
         )}
-        {menu === "account" && auth.status === "signed-in" && (
-          <>
-            <div className="fixed inset-0 z-10" onMouseDown={() => setMenu(null)} />
-            <div role="menu" className="animate-rise absolute top-[48px] left-3 z-20 w-60 rounded-[10px] bg-raised p-1 shadow-pop">
-              <p className="truncate px-2 pt-1.5 pb-2 text-[12px] text-ink-2">{auth.user?.email}</p>
-              <button type="button" role="menuitem" onClick={() => (setMenu(null), onComputers())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
-                Your computers
-              </button>
-              <button type="button" role="menuitem" onClick={() => (setMenu(null), onAddDevice())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
-                Add a device
-              </button>
-              {usage && (
-                <button type="button" role="menuitem" onClick={() => (setMenu(null), onUsage())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
-                  Usage
-                </button>
-              )}
-              <button type="button" role="menuitem" onClick={auth.signOut} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
-                Sign out
-              </button>
-            </div>
-          </>
-        )}
       </header>
 
-      <div className="relative flex items-center justify-between pr-2 pl-4">
+      <div className="flex items-center justify-between pr-2 pl-4">
         <h2 className="text-[12px] font-semibold text-ink-2">Channels</h2>
-        <IconButton label="New channel or join" className="size-7" onClick={() => setMenu(menu === "add" ? null : "add")}>
-          <Icon icon={Add01Icon} size={16} />
-        </IconButton>
-        {menu === "add" && (
-          <>
-            <div className="fixed inset-0 z-10" onMouseDown={() => setMenu(null)} />
-            <div role="menu" className="animate-rise absolute top-8 right-2 z-20 w-52 rounded-[10px] bg-raised p-1 shadow-pop">
-              <button type="button" role="menuitem" onClick={() => (setMenu(null), onNew())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
-                New channel
-              </button>
-              <button type="button" role="menuitem" onClick={() => (setMenu(null), onJoin())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
-                Join with a code
-              </button>
-            </div>
-          </>
-        )}
+        <Menu
+          align="end"
+          className="w-52"
+          trigger={
+            <IconButton label="New channel or join" className="size-7">
+              <Icon icon={Add01Icon} size={16} />
+            </IconButton>
+          }
+        >
+          <MenuItem onClick={onNew}>New channel</MenuItem>
+          <MenuItem onClick={onJoin}>Join with a code</MenuItem>
+        </Menu>
       </div>
 
       {rows.length > 6 && (
         <label className="mx-3 mt-1 mb-1 flex h-8 items-center gap-2 rounded-[8px] bg-wash px-2.5 text-ink-3">
           <Icon icon={Search01Icon} size={14} className="shrink-0" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Find a channel" className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3 focus-visible:outline-none" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Find a channel"
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3 focus-visible:outline-none"
+          />
         </label>
       )}
 
@@ -143,7 +138,9 @@ export function Sidebar({
         })}
         {rows.length > 0 && shown.length === 0 && <p className="px-3 py-6 text-[12.5px] text-ink-3">No channel matches “{query}”.</p>}
         {rows.length === 0 && (
-          <p className="px-3 py-4 text-[12.5px] leading-normal text-ink-3">{auth.status === "signed-out" ? "Sign in to see your channels from any device." : "Channels you create or join show up here."}</p>
+          <p className="px-3 py-4 text-[12.5px] leading-normal text-ink-3">
+            {auth.status === "signed-out" ? "Sign in to see your channels from any device." : "Channels you create or join show up here."}
+          </p>
         )}
       </nav>
 

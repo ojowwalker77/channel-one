@@ -1,15 +1,18 @@
-import { Component, useEffect, useSyncExternalStore, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react"
+import { Dialog } from "@base-ui/react/dialog"
+import { Component, useSyncExternalStore, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type Ref } from "react"
 
 import { initials } from "@/lib/format"
 import { cx } from "@/lib/utils"
+import { Tooltip } from "./ui/tooltip"
 
 // The few pieces everything is built from. Neutral by default; the accent
-// is reserved for the one thing on screen you're most likely to do next.
+// (solid ink) is reserved for the one thing on screen you're most likely to do
+// next. Menus, tooltips and popovers live in ./ui, on Base UI.
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger"
 
 const BUTTON: Record<ButtonVariant, string> = {
-  primary: "bg-accent text-white hover:brightness-110 active:brightness-95",
+  primary: "bg-accent text-accent-ink hover:opacity-90 active:opacity-80",
   secondary: "bg-wash-2 text-ink hover:bg-[color-mix(in_srgb,var(--ink)_11%,transparent)]",
   ghost: "text-ink-2 hover:bg-wash hover:text-ink",
   danger: "text-alert hover:bg-[color-mix(in_srgb,var(--alert)_9%,transparent)]",
@@ -21,12 +24,15 @@ export function Button({
   className,
   type = "button",
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant; size?: "sm" | "md" | "lg" }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: ButtonVariant
+  size?: "sm" | "md" | "lg"
+}) {
   return (
     <button
       type={type}
       className={cx(
-        "inline-flex shrink-0 items-center justify-center gap-1.5 font-medium whitespace-nowrap transition-[filter,background-color,color] duration-150 select-none disabled:pointer-events-none disabled:opacity-40",
+        "inline-flex shrink-0 items-center justify-center gap-1.5 font-medium whitespace-nowrap transition-[opacity,background-color,color] duration-150 select-none disabled:pointer-events-none disabled:opacity-40",
         size === "sm" && "h-7 rounded-[7px] px-2.5 text-[13px]",
         size === "md" && "h-8 rounded-[8px] px-3.5 text-[13px]",
         size === "lg" && "h-10 rounded-[10px] px-5 text-[14px]",
@@ -38,19 +44,31 @@ export function Button({
   )
 }
 
-export function IconButton({ className, label, active, type = "button", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; active?: boolean }) {
+/** A control that's only an icon. Its label shows as a tooltip and is what screen readers say. */
+export function IconButton({
+  className,
+  label,
+  active,
+  type = "button",
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  label: string
+  active?: boolean
+  ref?: Ref<HTMLButtonElement>
+}) {
   return (
-    <button
-      type={type}
-      aria-label={label}
-      title={label}
-      className={cx(
-        "relative inline-flex size-8 shrink-0 items-center justify-center rounded-[8px] transition-colors duration-150 disabled:opacity-40",
-        active ? "bg-wash-2 text-ink" : "text-ink-2 hover:bg-wash hover:text-ink",
-        className
-      )}
-      {...props}
-    />
+    <Tooltip label={label}>
+      <button
+        type={type}
+        aria-label={label}
+        className={cx(
+          "relative inline-flex size-8 shrink-0 items-center justify-center rounded-[8px] transition-colors duration-150 disabled:opacity-40",
+          active ? "bg-wash-2 text-ink" : "text-ink-2 hover:bg-wash hover:text-ink data-popup-open:bg-wash-2 data-popup-open:text-ink",
+          className
+        )}
+        {...props}
+      />
+    </Tooltip>
   )
 }
 
@@ -58,7 +76,7 @@ export function TextField({ className, ...props }: InputHTMLAttributes<HTMLInput
   return (
     <input
       className={cx(
-        "h-9 w-full rounded-[8px] bg-canvas px-3 text-[14px] text-ink shadow-[inset_0_0_0_1px_var(--line)] outline-none transition-shadow placeholder:text-ink-3 focus:shadow-[inset_0_0_0_1px_var(--accent),0_0_0_3px_var(--accent-wash)] focus-visible:outline-none",
+        "h-9 w-full rounded-[8px] bg-canvas px-3 text-[14px] text-ink shadow-[inset_0_0_0_1px_var(--line)] transition-shadow outline-none placeholder:text-ink-3 focus:shadow-[inset_0_0_0_1px_var(--ring),0_0_0_3px_var(--wash-2)] focus-visible:outline-none",
         className
       )}
       {...props}
@@ -121,21 +139,23 @@ export function Tabs<T extends string>({ value, options, onChange }: { value: T;
   )
 }
 
-/** A centered modal: alerts, small forms. Escape or a click outside closes it. */
+/** A centered modal: alerts, small forms. Escape or a click outside closes it; focus stays inside while open. */
 export function Modal({ open, onClose, children, wide }: { open: boolean; onClose: () => void; children: ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose()
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [open, onClose])
-  if (!open) return null
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/15 p-4 dark:bg-black/45" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal="true" className={cx("animate-rise max-h-[88svh] w-full overflow-y-auto rounded-[14px] bg-raised shadow-pop", wide ? "max-w-[520px]" : "max-w-[340px]")}>
-        {children}
-      </div>
-    </div>
+    <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-overlay transition-opacity duration-150 data-starting-style:opacity-0" />
+        <Dialog.Popup
+          className={cx(
+            "fixed top-1/2 left-1/2 z-50 max-h-[88svh] w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-[14px] bg-raised shadow-pop outline-none",
+            "transition-[opacity,scale] duration-150 ease-out data-starting-style:scale-[0.98] data-starting-style:opacity-0",
+            wide ? "max-w-[520px]" : "max-w-[340px]"
+          )}
+        >
+          {children}
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }
 
@@ -144,8 +164,12 @@ export function Alert({ open, onClose, title, message, children }: { open: boole
   return (
     <Modal open={open} onClose={onClose}>
       <div className="px-5 pt-5 pb-4">
-        <h2 className="text-[15px] font-semibold tracking-[-0.01em]">{title}</h2>
-        {message && <div className="mt-1 text-[13px] leading-normal text-ink-2">{message}</div>}
+        <Dialog.Title className="text-[15px] font-semibold tracking-[-0.01em]">{title}</Dialog.Title>
+        {message && (
+          <Dialog.Description render={<div />} className="mt-1 text-[13px] leading-normal text-ink-2">
+            {message}
+          </Dialog.Description>
+        )}
       </div>
       <div className="flex justify-end gap-2 px-5 pb-5">{children}</div>
     </Modal>

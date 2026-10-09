@@ -1,4 +1,4 @@
-import { ArrowDown01Icon, ArrowUp02Icon, Attachment01Icon, Cancel01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
+import { ArrowDown01Icon, ArrowUp02Icon, Attachment01Icon, Cancel01Icon } from "@hugeicons/core-free-icons"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import type { SendOptions } from "@mc/client.ts"
@@ -7,6 +7,7 @@ import { excerpt } from "@/lib/format"
 import { cx } from "@/lib/utils"
 import { Icon } from "./icon"
 import { IconButton, Monogram, errorText, toast } from "./kit"
+import { Menu, MenuRadioGroup, MenuRadioItem } from "./ui/menu"
 
 /** What a message is, in the words the menu uses. */
 const KINDS: { kind: Kind; label: string; hint: string }[] = [
@@ -46,8 +47,10 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
   const [kind, setKind] = useState<Kind>("msg")
   const [files, setFiles] = useState<{ name: string; mime: string; data: string }[]>([])
   const [sending, setSending] = useState(false)
-  const [menu, setMenu] = useState(false)
-  const [mention, setMention] = useState<{ query: string; index: number } | null>(null)
+  const [mention, setMention] = useState<{
+    query: string
+    index: number
+  } | null>(null)
   const area = useRef<HTMLTextAreaElement>(null)
   const picker = useRef<HTMLInputElement>(null)
 
@@ -88,7 +91,18 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
       const reader = new FileReader()
       reader.onload = () => {
         const url = String(reader.result)
-        setFiles((prev) => (prev.length < 8 ? [...prev, { name: f.name, mime: f.type, data: url.slice(url.indexOf(",") + 1) }] : prev))
+        setFiles((prev) =>
+          prev.length < 8
+            ? [
+                ...prev,
+                {
+                  name: f.name,
+                  mime: f.type,
+                  data: url.slice(url.indexOf(",") + 1),
+                },
+              ]
+            : prev
+        )
       }
       reader.readAsDataURL(f)
     }
@@ -201,7 +215,10 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault()
                 const d = e.key === "ArrowDown" ? 1 : -1
-                setMention({ ...mention, index: (mention.index + d + matches.length) % matches.length })
+                setMention({
+                  ...mention,
+                  index: (mention.index + d + matches.length) % matches.length,
+                })
                 return
               }
               if (e.key === "Enter" || e.key === "Tab") {
@@ -224,49 +241,41 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
           <IconButton label="Attach images" className="size-7" onClick={() => picker.current?.click()} disabled={disabled || files.length >= 8}>
             <Icon icon={Attachment01Icon} size={16} />
           </IconButton>
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setMenu((v) => !v)}
-              disabled={disabled}
-              aria-haspopup="menu"
-              aria-expanded={menu}
-              className={cx("flex h-7 items-center gap-1 rounded-[7px] px-2 text-[12.5px] font-medium transition-colors", kind === "msg" ? "text-ink-2 hover:bg-wash hover:text-ink" : "bg-wash-2 text-ink")}
-            >
-              {current.label}
-              <Icon icon={ArrowDown01Icon} size={13} />
-            </button>
-            {menu && (
-              <>
-                <div className="fixed inset-0 z-10" onMouseDown={() => setMenu(false)} />
-                <div role="menu" className="animate-rise absolute bottom-full left-0 z-20 mb-1.5 w-60 rounded-[10px] bg-raised p-1 shadow-pop">
-                  {KINDS.map((k) => (
-                    <button
-                      key={k.kind}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={kind === k.kind}
-                      onClick={() => (setKind(k.kind), setMenu(false), area.current?.focus())}
-                      className="flex w-full items-start gap-2 rounded-[7px] px-2 py-1.5 text-left hover:bg-wash"
-                    >
-                      <span className="w-4 pt-0.5 text-accent">{kind === k.kind && <Icon icon={Tick02Icon} size={14} strokeWidth={2} />}</span>
-                      <span>
-                        <span className="block text-[13px] font-medium">{k.label}</span>
-                        <span className="block text-[12px] text-ink-3">{k.hint}</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
+          <Menu
+            side="top"
+            className="w-60"
+            trigger={
+              <button
+                type="button"
+                disabled={disabled}
+                className={cx(
+                  "flex h-7 items-center gap-1 rounded-[7px] px-2 text-[12.5px] font-medium transition-colors",
+                  kind === "msg" ? "text-ink-2 hover:bg-wash hover:text-ink data-popup-open:bg-wash" : "bg-wash-2 text-ink"
+                )}
+              >
+                {current.label}
+                <Icon icon={ArrowDown01Icon} size={13} />
+              </button>
+            }
+          >
+            <MenuRadioGroup<Kind> value={kind} onChange={(k) => (setKind(k), requestAnimationFrame(() => area.current?.focus()))}>
+              {KINDS.map((k) => (
+                <MenuRadioItem key={k.kind} value={k.kind} hint={k.hint}>
+                  {k.label}
+                </MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+          </Menu>
           <span className="ml-auto hidden pr-1 text-[11.5px] text-ink-3 sm:block">Return to send</span>
           <button
             type="button"
             aria-label="Send"
             disabled={!canSend}
             onClick={() => void submit()}
-            className={cx("ml-auto flex size-7 shrink-0 items-center justify-center rounded-[7px] transition-colors sm:ml-1", canSend ? "bg-accent text-white hover:brightness-110" : "bg-wash-2 text-ink-3")}
+            className={cx(
+              "ml-auto flex size-7 shrink-0 items-center justify-center rounded-[7px] transition-colors sm:ml-1",
+              canSend ? "bg-accent text-accent-ink hover:opacity-90" : "bg-wash-2 text-ink-3"
+            )}
           >
             <Icon icon={ArrowUp02Icon} size={15} strokeWidth={2.2} />
           </button>
