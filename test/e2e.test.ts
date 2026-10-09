@@ -448,6 +448,19 @@ describe("several agents on one machine", () => {
     expect(await ok(ownerA, "log")).toMatch(/alpha → all: a is fine/);
   });
 
+  test("a channel is called by its name on every machine that joins it", async () => {
+    const owner = home("nm-owner");
+    const joiner = home("nm-joiner");
+    const code = /join code: (\S+)/.exec(await ok(owner, "create", "launch-plan", "--as", "boss"))![1]!;
+    const p = mc(joiner, "join", code, "--as", "w");
+    const l = lines(p);
+    await l.until((x) => x.some((y) => /verification code/.test(y)));
+    await ok(owner, "approve", /verification code (\d{3}-\d{3})/.exec(l.got.join("\n"))![1]!, "--yes");
+    expect(await p.exited).toBe(0);
+    expect(await new Response(p.stderr).text()).toContain('joined "launch-plan" as w');
+    expect(await ok(joiner, "channels")).toContain("launch-plan");
+  });
+
   test("a home folder is never bound", async () => {
     const owner = home("hb-owner");
     const h = home("hb-home");

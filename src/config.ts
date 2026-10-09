@@ -22,6 +22,8 @@ export interface ChannelConfig extends ChannelAccess {
   as?: string;
   /** This machine holds the owner key (the human who approves joins). */
   owner?: string;
+  /** The channel's name, as its owner set it (sealed: only members can read it). */
+  title?: string;
 }
 
 /** A join request this machine is waiting on. */

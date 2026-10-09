@@ -11,7 +11,7 @@ import { loadImages } from "../attach.ts";
 import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
 import { DEFAULT_RELAY, forgetIdentity, home, forgetMember, identitiesIn, loadConfig, loadIdentity, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
-import { describeMember, type JoinRequest } from "../membership.ts";
+import { describeMember, handleFor, type JoinRequest } from "../membership.ts";
 import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "../format.ts";
 import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
@@ -207,12 +207,18 @@ async function text(from: number): Promise<string> {
 /** The name the owner's human signs as. Agents can't use it. */
 const OWNER_NAME = "human";
 
-function joinedAlias(roomId: string, alias?: string): string {
-  const name = alias ?? `ch-${roomId.slice(0, 6)}`;
-  // An alias names one channel. Reusing it for another would strand that channel's keys.
-  const taken = loadConfig().channels[name];
-  if (taken && taken.roomId !== roomId) die(`the alias "${name}" is already another channel on this machine; pick a different one`);
-  return name;
+function joinedAlias(roomId: string, alias?: string, title?: string | null): string {
+  const channels = loadConfig().channels;
+  const free = (n: string) => !channels[n] || channels[n]!.roomId === roomId;
+  if (alias) {
+    // An alias names one channel. Reusing it for another would strand that channel's keys.
+    if (!free(alias)) die(`the alias "${alias}" is already another channel on this machine; pick a different one`);
+    return alias;
+  }
+  // Called by its name when it has one ("payments-refactor"), else by its id ("ch-77f5b1").
+  const named = title ? handleFor(title).slice(0, 24) : "";
+  const candidates = [named, named && `${named}-${roomId.slice(0, 4)}`, `ch-${roomId.slice(0, 6)}`].filter((n) => n && NAME_RE.test(n));
+  return candidates.find(free) ?? `ch-${roomId.slice(0, 8)}`;
 }
 
 /** Owner dashboard link: the code plus the owner key, so the page can approve and post as the human. */
@@ -286,6 +292,9 @@ const commands: Record<string, () => Promise<void>> = {
       { name: OWNER_NAME, role: "owner" },
       [{ ...agent, info: { name, ...(opt.role ? { role: opt.role } : {}), ...(opt.about ? { about: opt.about } : {}) } }],
       roomId,
+      null,
+      // The alias you gave becomes the channel's (sealed) name, so everyone who joins sees it.
+      args[1],
     );
     const alias = joinedAlias(access.roomId, args[1]);
     const cfg = updateConfig((c) => {
@@ -349,11 +358,17 @@ const commands: Record<string, () => Promise<void>> = {
         die("the owner denied this request");
       }
       if (st.status === "approved") {
-        const alias = joinedAlias(st.access.roomId, args[2]);
+        // Members can read the channel's sealed name: use it to name the channel here.
+        const title = await new Channel(st.access, relay, id).title().catch(() => null);
+        const existing = Object.entries(loadConfig().channels).find(([, c]) => c.roomId === st.access.roomId)?.[0];
+        const alias = existing && !args[2] ? existing : joinedAlias(st.access.roomId, args[2], title);
         // Another agent on this machine may already be in this channel: keep its entry, add ours.
         const cfg = updateConfig((c) => {
           const prior = c.channels[alias];
-          c.channels[alias] = prior?.roomId === st.access.roomId ? { ...prior, ...st.access, keys: { ...prior.keys, ...st.access.keys }, as: prior.as ?? name } : { ...st.access, relay, code, as: name };
+          c.channels[alias] =
+            prior?.roomId === st.access.roomId
+              ? { ...prior, ...st.access, keys: { ...prior.keys, ...st.access.keys }, as: prior.as ?? name, ...(title ? { title } : {}) }
+              : { ...st.access, relay, code, as: name, ...(title ? { title } : {}) };
         });
         const s = await AgentSession.open(alias, cfg.channels[alias]!, name);
         writeCursor(alias, name, await s.ch.head());
@@ -537,7 +552,7 @@ const commands: Record<string, () => Promise<void>> = {
     const here = bindingFor(process.cwd());
     for (const [alias, c] of Object.entries(cfg.channels)) {
       const agents = identitiesIn(c.roomId).filter((n) => n !== c.owner);
-      out(`${here?.alias === alias ? "*" : " "} ${alias}  ${agents.length ? `agents here: ${agents.join(", ")}` : "no agent keys"}  ${c.relay}`);
+      out(`${here?.alias === alias ? "*" : " "} ${alias}${c.title && c.title !== alias ? ` (${c.title})` : ""}  ${agents.length ? `agents here: ${agents.join(", ")}` : "no agent keys"}  ${c.relay}`);
     }
   },
 
