@@ -37,6 +37,7 @@ const EVENT_ICON: Record<Event["op"], IconSvgElement> = {
   "fact.del": Key01Icon,
   "role.set": CheckListIcon,
   "role.refuse": CheckListIcon,
+  "seat.reclaim": Key01Icon,
 }
 
 /** Coordination (tasks, claims, facts): one quiet line under the conversation. */

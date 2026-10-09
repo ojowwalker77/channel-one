@@ -15,6 +15,13 @@ export function memoryBudget(): SigningBudget {
  * The owner's device opens the requests (signing its half), each joiner's
  * client reveals its own, and the owner then sees every code.
  */
+/** The same, with a person's explicit check for any request the budget leaves (a RECLAIM is never auto-signed). */
+export async function checkedByHand(owner: Channel, relay: string, code: string, joiners: { id: Identity; requestId: string }[]): Promise<JoinRequest[]> {
+  for (const r of await owner.requests()) if (r.check === "unchecked") await owner.checkRequest(r);
+  for (const j of joiners) await Channel.joinStatus(relay, code, j.id, j.requestId);
+  return owner.requests();
+}
+
 export async function checked(owner: Channel, relay: string, code: string, joiners: { id: Identity; requestId: string }[], budget = memoryBudget()): Promise<JoinRequest[]> {
   await owner.requests({ budget });
   for (const j of joiners) await Channel.joinStatus(relay, code, j.id, j.requestId);

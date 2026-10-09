@@ -13,7 +13,7 @@ import { PROTOCOL_VERSION, wellFormed, type Message } from "../src/protocol.ts";
 import { startRelay } from "../src/relay/bun.ts";
 import { fold } from "../src/state.ts";
 import { AUTO_SIGN_PER_DAY, joinNonce } from "../src/sas.ts";
-import { checked, memoryBudget } from "./check.ts";
+import { checked, checkedByHand, memoryBudget } from "./check.ts";
 
 setDefaultTimeout(30_000);
 const dataDir = mkdtempSync(join(tmpdir(), "kiwi-hard-"));
@@ -77,7 +77,8 @@ describe("names", () => {
       const id = await generateIdentity("x");
       asks.push({ id, requestId: (await Channel.requestJoin(relay, code, id, { name })).requestId });
     }
-    for (const r of await checked(ownerCh, relay, code, asks)) await expect(ownerCh.approve(r)).rejects.toThrow(/valid name|reserved|already someone's name/);
+    // "human" and "HELPER" name current members, so they come as reclaims, checked only by hand.
+    for (const r of await checkedByHand(ownerCh, relay, code, asks)) await expect(ownerCh.approve(r)).rejects.toThrow(/valid name|reserved|already someone's name/);
   });
 
   test("request text is kept to one safe line", () => {

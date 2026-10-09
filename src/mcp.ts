@@ -108,7 +108,11 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
       guard(async () => {
         const reqs = await owner.requests({ budget: signingBudget });
         if (!reqs.length) return "no pending join requests";
-        const lines = reqs.map((r) => `${r.code ?? r.check}  ${r.name}${r.role ? ` (${r.role})` : ""}  key ${r.pk.slice(0, 8)}`);
+        const lines = reqs.map((r) =>
+          r.reclaims
+            ? `${r.code ?? r.check}  RECLAIMS ${r.reclaims.name}'s seat (old key ${r.reclaims.pk.slice(0, 8)}, new key ${r.pk.slice(0, 8)}): only your human decides, with kiwi approve or the dashboard`
+            : `${r.code ?? r.check}  ${r.name}${r.role ? ` (${r.role})` : ""}  key ${r.pk.slice(0, 8)}`,
+        );
         if (reqs.some((r) => r.check === "waiting")) lines.push("waiting: the requester shows its code in a moment; ask again");
         if (reqs.some((r) => r.check === "unchecked")) lines.push(`unchecked: ${TOO_MANY_REQUESTS}`);
         return lines.join("\n");
@@ -125,6 +129,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
         const digits = code.replace(/\D/g, "");
         const r = (await owner.requests({ budget: signingBudget })).find((x) => x.code?.replace("-", "") === digits);
         if (!r) throw new Rejected(`no pending request with code ${code}`);
+        if (r.reclaims && approve) throw new Rejected(`this request would move ${r.reclaims.name}'s seat to a new key: your human decides that with kiwi approve or the dashboard`);
         if (!approve) {
           await owner.deny(r.id);
           return `denied ${r.name} (${r.code})`;

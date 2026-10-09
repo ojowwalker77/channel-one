@@ -169,16 +169,16 @@ describe("agents coordinating through the CLI", () => {
     expect(joined).toContain("-c proj --as mac tail");
     await joinVia(lead, win, code, "proj", "win", "windows");
 
-    // Someone else with the leaked code asks to be "win": approval refuses the duplicate name; the owner denies.
+    // Someone else with the leaked code asks to be "win": it shows as a RECLAIM of win's seat, which is never
+    // checked on its own, so it has no code to approve; the owner denies it by key.
     const evil = mc(home("evil"), "join", code, "proj", "--as", "win", "--timeout", "20s");
-    const el = lines(evil);
-    const v = await codeShown(lead, el);
-    const dup = await run(lead, "approve", v, "--yes");
-    expect(dup.code).toBe(1);
-    expect(dup.err).toContain('"win" is already a member');
-    // Without --yes (and no terminal to ask on), approval refuses: an agent can't wave someone in by itself.
-    expect((await run(lead, "approve", v, "--name", "win2")).err).toContain("needs your human's go-ahead");
-    await ok(lead, "deny", v);
+    let listed = "";
+    for (let i = 0; i < 40 && !/RECLAIMS win's seat/.test(listed); i++) (await Bun.sleep(250), (listed = await ok(lead, "requests")));
+    expect(listed).toMatch(/unchecked RECLAIMS win's seat · old key \S+, last seen .* · new key (\S+)/);
+    const evilKey = /new key (\S+)/.exec(listed)![1]!;
+    // Under another name it would be a plain join, but without --yes (and no terminal), approval refuses.
+    expect((await run(lead, "check", evilKey)).err).toContain("needs your human's go-ahead");
+    await ok(lead, "deny", evilKey);
     expect(await evil.exited).toBe(1);
 
     // Agents can't approve: only the owner's machine sees requests.

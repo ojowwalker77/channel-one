@@ -212,6 +212,12 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
           break;
         }
 
+        case "seat.reclaim":
+          // The record: the seat itself moved when the owner signed the new key's member record.
+          if (!member.owner) reject("only the owner moves a seat to a new key");
+          else if (!members.has(ev.member)) reject(`no member named ${ev.member}`);
+          break;
+
         case "task.add":
           tasks.set(m.seq, {
             id: m.seq,

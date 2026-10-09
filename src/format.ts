@@ -58,6 +58,8 @@ export function describeEvent(m: Message, state?: ChannelState): string {
       return ev.role ? `made ${ev.member} ${ev.role}${ev.about ? ` (${ev.about})` : ""}` : `cleared ${ev.member}'s role`;
     case "role.refuse":
       return `kept ${ev.member}'s role as it was`;
+    case "seat.reclaim":
+      return `moved ${ev.member}'s seat to a new key (${ev.from} → ${ev.to}): the old key is out`;
     case "task.add":
       return `added task ${taskId(m.seq)} “${ev.title}”${ev.owner ? ` for ${ev.owner}` : ""}${ev.after?.length ? ` after ${ev.after.map(taskId).join(", ")}` : ""}`;
     case "task.claim":

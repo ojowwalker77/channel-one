@@ -30,6 +30,17 @@ export interface MemberInfo {
   display?: string;
   /** For an agent: the person it acts for. For a person: themself. */
   sponsor?: Sponsor;
+  /** In a join request only: the requester means to take over the seat under this name with a new key. */
+  reclaim?: boolean;
+}
+
+/** The member a request's name already belongs to: approving it would move their seat to the new key. */
+export interface ReclaimTarget {
+  name: string;
+  pk: string;
+  kind?: "human" | "agent";
+  owner: boolean;
+  sponsor?: Sponsor;
 }
 
 /** "jonatas" from "Jonatas Walker" or "jonatas@x.com": a channel handle for a signed-in person. */
@@ -153,6 +164,13 @@ export interface JoinRequest extends MemberInfo {
   ts: number;
   /** The signed-in person it acts for: themself for a person, or whose linked computer an agent joined from. */
   sponsoredBy: { user: string; name: string; email?: string | null } | null;
+  /**
+   * Set when the name already belongs to a current member: this is a RECLAIM of
+   * their seat, never a plain join. Its code check is never signed automatically.
+   */
+  reclaims?: ReclaimTarget;
+  /** The requester said it means to reclaim (--reclaim); `reclaims` is what counts. */
+  reclaim?: boolean;
 }
 
 /** How a member reads in lists: "win · key QRskRn4Z · agent of @jonatas" / "Jonatas Walker (@jonatas)". */

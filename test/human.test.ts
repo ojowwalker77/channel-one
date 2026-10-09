@@ -11,7 +11,7 @@ import { offerLink, offerToDevice, offerWaiting, parseOfferHash, takeOffer, with
 import { startRelay } from "../src/relay/bun.ts";
 import { onDeviceHttp, TRANSFER_TTL_MS, type DeviceStore, type DeviceTransfer } from "../src/relay/devices.ts";
 import { workosHumanAuth } from "../src/relay/human.ts";
-import { checked } from "./check.ts";
+import { checked, checkedByHand } from "./check.ts";
 
 setDefaultTimeout(30_000);
 
@@ -215,9 +215,12 @@ describe("names", () => {
     // The same account again (another browser) gets a distinct handle.
     const ask2 = await Channel.requestJoin(relay, code, bob2, { name: "whatever" }, await token("user_bob"));
     await ownerCh.approve((await checked(ownerCh, relay, code, [{ id: bob2, requestId: ask2.requestId }]))[0]!);
-    // An agent can't take a name someone has.
+    // An agent can't take a name someone has: it shows as a reclaim of the owner's seat, which nobody can approve.
     const ask3 = await agentAsks(code, agent, "alice", await linkedComputer("user_bob"));
-    await expect(ownerCh.approve((await checked(ownerCh, relay, code, [{ id: agent, requestId: ask3.requestId }]))[0]!)).rejects.toThrow(/already someone's name/);
+    const taken = (await checkedByHand(ownerCh, relay, code, [{ id: agent, requestId: ask3.requestId }]))[0]!;
+    expect(taken.reclaims?.name).toBe("alice");
+    await expect(ownerCh.approve(taken)).rejects.toThrow(/already someone's name/);
+    await expect(ownerCh.reclaim(taken, { online: false })).rejects.toThrow(/owner's seat/);
     expect((await ownerCh.members()).filter((m) => m.active).map((m) => m.name).sort()).toEqual(["alice", "bob-builder", "bob-builder-2"]);
     await ownerCh.close();
   });
