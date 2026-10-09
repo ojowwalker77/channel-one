@@ -9,6 +9,7 @@ import { basename, join, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import { workosFromSettings, type HumanAuth } from "./human.ts";
+import { onDeviceHttp, type DeviceStore, type DeviceTransfer } from "./devices.ts";
 import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
 import { policyFrom, type RelayPolicy } from "./policy.ts";
 import {
@@ -56,6 +57,12 @@ export function startRelay(
   const people = new Database(join(dataDir, "people.sqlite"), { create: true });
   people.run("CREATE TABLE IF NOT EXISTS entries (user TEXT NOT NULL, room TEXT NOT NULL, entry TEXT NOT NULL, PRIMARY KEY (user, room))");
   people.run("CREATE TABLE IF NOT EXISTS machines (pk TEXT PRIMARY KEY, rec TEXT NOT NULL, user TEXT)");
+  people.run("CREATE TABLE IF NOT EXISTS devices (user TEXT NOT NULL, id TEXT NOT NULL, rec TEXT NOT NULL, PRIMARY KEY (user, id))");
+  const devices: DeviceStore = {
+    list: async (user) => (people.query("SELECT rec FROM devices WHERE user = ?").all(user) as { rec: string }[]).map((r) => JSON.parse(r.rec) as DeviceTransfer),
+    put: async (user, r) => void people.query("INSERT OR REPLACE INTO devices (user, id, rec) VALUES (?, ?, ?)").run(user, r.id, JSON.stringify(r)),
+    remove: async (user, id) => void people.query("DELETE FROM devices WHERE user = ? AND id = ?").run(user, id),
+  };
   const machines: MachineStore = {
     get: async (pk) => {
       const row = people.query("SELECT rec FROM machines WHERE pk = ?").get(pk) as { rec: string } | null;
@@ -140,6 +147,8 @@ export function startRelay(
         if (web && !url.pathname.startsWith("/v1/") && (req.method === "GET" || req.method === "HEAD")) return web(url.pathname);
         if (url.pathname === "/") return new Response("Kiwi Channels relay (bun)\n");
         if (url.pathname === "/v1/config") return relayConfig(human);
+        const device = await onDeviceHttp(req, devices, human);
+        if (device) return device;
         const machine = await onMachineHttp(req, machines, human);
         if (machine) return machine;
         if (url.pathname === "/v1/me/usage" && req.method === "GET") {

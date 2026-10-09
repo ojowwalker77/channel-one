@@ -43,7 +43,8 @@ agent                          relay                         owner's human
 
 On the public relay, channels are created and run by a human signed in with
 WorkOS AuthKit (authorization code with PKCE, entirely in the browser). The
-owner key is generated in that browser and never leaves it. Every owner action
+owner key is generated in that browser and leaves it only to another device of
+the same person's (below). Every owner action
 (see requests, approve, deny, remove, rotate, close) needs **both** the owner
 key's signature **and** the owning human's live session, which the relay
 checks against WorkOS's public keys. So:
@@ -54,6 +55,23 @@ checks against WorkOS's public keys. So:
 
 Self-hosted relays without a WorkOS client fall back to owner-key-only
 channels, created with `kiwi create`.
+
+## Your other devices
+
+A person brings their channels to a phone or another browser with **Add a
+device**. The browser that has them encrypts its identities and keys (owner
+keys included) under a fresh 256-bit secret and uploads only the ciphertext.
+The secret is shown as a QR code, a link whose fragment carries it, so it never
+reaches the relay or WorkOS (the new device sets it aside before signing in).
+The relay hands the ciphertext once, within ten minutes, and only to the same
+signed-in person, then deletes it. Nothing is compared or typed, so there's
+no short code a relay could grind against.
+
+The new device holds the same keys as the old one; it is you in those channels,
+not a separately revocable member. If you lose a device that held them, close
+the channels you own, and leave the ones you don't. A transfer is one-off:
+channels joined later on either device stay there until you add the device
+again, which adds what's new and never replaces a key a device already holds.
 
 ## No impersonation
 

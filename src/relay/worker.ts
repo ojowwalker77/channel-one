@@ -8,6 +8,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import { workosHumanAuth, workosProfiles, type HumanAuth } from "./human.ts";
+import { onDeviceHttp, type DeviceStore, type DeviceTransfer } from "./devices.ts";
 import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
 import { policyFrom } from "./policy.ts";
 import {
@@ -161,11 +162,20 @@ export class Directory extends DurableObject<Env> {
     // A person's linked computers; and, in a computer's own object, its record.
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS machines (pk TEXT PRIMARY KEY, label TEXT NOT NULL, linked INTEGER NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS machine (k INTEGER PRIMARY KEY CHECK (k = 1), rec TEXT NOT NULL)");
+    // Boxes handing a person's channels to another of their devices (ciphertext only).
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, rec TEXT NOT NULL)");
   }
 
   override async fetch(req: Request): Promise<Response> {
     const { pathname, searchParams } = new URL(req.url);
     const sql = this.ctx.storage.sql;
+    if (pathname === "/devices") {
+      if (req.method === "PUT") {
+        const r = (await req.json()) as DeviceTransfer;
+        sql.exec("INSERT OR REPLACE INTO devices (id, rec) VALUES (?, ?)", r.id, JSON.stringify(r));
+      } else if (req.method === "DELETE") sql.exec("DELETE FROM devices WHERE id = ?", searchParams.get("id") ?? "");
+      return Response.json((sql.exec("SELECT rec FROM devices").toArray() as { rec: string }[]).map((r) => JSON.parse(r.rec) as DeviceTransfer));
+    }
     if (pathname === "/machine") {
       if (req.method === "PUT") sql.exec("INSERT OR REPLACE INTO machine (k, rec) VALUES (1, ?)", await req.text());
       else if (req.method === "DELETE") sql.exec("DELETE FROM machine");
@@ -188,6 +198,16 @@ export class Directory extends DurableObject<Env> {
     const rows = this.ctx.storage.sql.exec("SELECT entry FROM entries").toArray() as { entry: string }[];
     return Response.json(rows.map((r) => JSON.parse(r.entry) as DirectoryEntry));
   }
+}
+
+/** Device handoffs live in the person's own Directory object. */
+function deviceStore(env: Env): DeviceStore {
+  const at = (user: string) => env.PEOPLE.get(env.PEOPLE.idFromName(user));
+  return {
+    list: async (user) => (await at(user).fetch("https://directory/devices")).json(),
+    put: async (user, r) => void (await at(user).fetch("https://directory/devices", { method: "PUT", body: JSON.stringify(r) })),
+    remove: async (user, id) => void (await at(user).fetch(`https://directory/devices?id=${encodeURIComponent(id)}`, { method: "DELETE" })),
+  };
 }
 
 /** Computers live in their own Directory object ("machine:<pk>"); each person's object lists theirs. */
@@ -223,6 +243,13 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === "/v1/config") return relayConfig(human(env));
+    if (url.pathname.startsWith("/v1/me/devices")) {
+      try {
+        return (await onDeviceHttp(req, deviceStore(env), human(env))) ?? errorResponse(new HttpError(404, "not found"));
+      } catch (err) {
+        return errorResponse(err);
+      }
+    }
     if (url.pathname.startsWith("/v1/machines") || url.pathname.startsWith("/v1/me/machines")) {
       try {
         return (await onMachineHttp(req, machineStore(env), human(env))) ?? errorResponse(new HttpError(404, "not found"));

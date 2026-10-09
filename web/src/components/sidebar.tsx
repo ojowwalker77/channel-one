@@ -13,7 +13,7 @@ import { usageLine } from "./usage"
 /** The second line of a row: what was said last, or why this browser can't open it yet. */
 function rowNote(c: ChannelRow): string {
   if (c.state === "pending") return "Waiting for the owner to let you in"
-  if (c.state === "elsewhere") return c.owner ? "You own it. Its key is on another device." : "You joined on another device"
+  if (c.state === "elsewhere") return "On another device of yours"
   if (c.state === "agents") return c.agents === 1 ? "One of your agents is here" : `${c.agents} of your agents are here`
   if (c.recent?.text) return c.recent.from ? `${c.recent.from}: ${c.recent.text}` : c.recent.text
   return "No messages yet"
@@ -27,6 +27,7 @@ export function Sidebar({
   onNew,
   onJoin,
   onComputers,
+  onAddDevice,
   usage,
   onUsage,
   className,
@@ -37,6 +38,7 @@ export function Sidebar({
   onNew: () => void
   onJoin: () => void
   onComputers: () => void
+  onAddDevice: () => void
   usage: MyUsage | null
   onUsage: () => void
   className?: string
@@ -71,6 +73,9 @@ export function Sidebar({
               <p className="truncate px-2 pt-1.5 pb-2 text-[12px] text-ink-2">{auth.user?.email}</p>
               <button type="button" role="menuitem" onClick={() => (setMenu(null), onComputers())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
                 Your computers
+              </button>
+              <button type="button" role="menuitem" onClick={() => (setMenu(null), onAddDevice())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">
+                Add a device
               </button>
               {usage && (
                 <button type="button" role="menuitem" onClick={() => (setMenu(null), onUsage())} className="w-full rounded-[7px] px-2 py-1.5 text-left text-[13px] hover:bg-wash">

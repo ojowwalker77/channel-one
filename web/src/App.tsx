@@ -2,12 +2,14 @@ import { useEffect, useState } from "react"
 
 import { Boundary, Toaster } from "@/components/kit"
 import { ComputersModal, LinkComputerPage } from "@/components/computers"
+import { AddDeviceModal, TakeChannelsPage } from "@/components/devices"
 import { ChannelGate, JoinWithCode, NewChannel, Welcome } from "@/components/onboarding"
 import { Sidebar } from "@/components/sidebar"
 import { UsageModal } from "@/components/usage"
 import { useAuth } from "@/lib/auth"
 import { parseHash, useChannelList } from "@/lib/channel"
 import { parseLinkHash } from "@/lib/computers"
+import { readOfferHash } from "@/lib/devices"
 import { useUsage } from "@/lib/usage"
 import { cx } from "@/lib/utils"
 
@@ -25,14 +27,16 @@ const open = (code: string) => (location.hash = encodeURIComponent(code))
 export default function App() {
   const auth = useAuth()
   const [link, setLink] = useState(() => parseLinkHash(location.hash))
+  const [offer, setOffer] = useState(readOfferHash)
   const [{ code, identity }, setHash] = useState(readHash)
-  const [sheet, setSheet] = useState<"new" | "join" | "computers" | "usage" | null>(null)
+  const [sheet, setSheet] = useState<"new" | "join" | "computers" | "usage" | "device" | null>(null)
   const rows = useChannelList(auth.status === "signed-in", auth.token)
   const usage = useUsage(auth.status === "signed-in", auth.token)
 
   useEffect(() => {
     const onHash = () => {
       setLink(parseLinkHash(location.hash))
+      setOffer(readOfferHash())
       setHash(readHash())
     }
     window.addEventListener("hashchange", onHash)
@@ -46,7 +50,15 @@ export default function App() {
 
   return (
     <>
-      {link ? (
+      {offer ? (
+        <TakeChannelsPage
+          offer={offer}
+          onDone={() => {
+            history.replaceState(null, "", location.pathname)
+            setOffer(null)
+          }}
+        />
+      ) : link ? (
         <LinkComputerPage
           pk={link}
           onDone={() => {
@@ -56,7 +68,7 @@ export default function App() {
         />
       ) : (
         <div className="flex h-svh overflow-hidden">
-          <Sidebar rows={rows} active={code} onSelect={open} onNew={() => setSheet("new")} onJoin={() => setSheet("join")} onComputers={() => setSheet("computers")} usage={usage} onUsage={() => setSheet("usage")} className={code ? "hidden md:flex" : "flex"} />
+          <Sidebar rows={rows} active={code} onSelect={open} onNew={() => setSheet("new")} onJoin={() => setSheet("join")} onComputers={() => setSheet("computers")} onAddDevice={() => setSheet("device")} usage={usage} onUsage={() => setSheet("usage")} className={code ? "hidden md:flex" : "flex"} />
           <main className={cx("min-w-0 flex-1", code ? "flex" : "hidden md:flex")}>
             {code ? (
               <Boundary resetKey={code}>
@@ -86,6 +98,7 @@ export default function App() {
         }}
       />
       <ComputersModal open={sheet === "computers"} onClose={() => setSheet(null)} />
+      {sheet === "device" && <AddDeviceModal onClose={() => setSheet(null)} />}
       <UsageModal open={sheet === "usage"} onClose={() => setSheet(null)} usage={usage} rows={rows} />
       <Toaster />
     </>

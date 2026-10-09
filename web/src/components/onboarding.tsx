@@ -223,6 +223,7 @@ type Phase =
 /** Decide what this browser is in a channel: a member, waiting for approval, or a visitor who may ask. */
 export function ChannelGate({ code, identity, listed, onBack, onGone }: { code: string; identity: Identity | null; listed?: ChannelRow; onBack: () => void; onGone: () => void }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" })
+  const [askHere, setAskHere] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -302,17 +303,25 @@ export function ChannelGate({ code, identity, listed, onBack, onGone }: { code: 
     )
   }
 
-  // The owner's key never leaves the browser that made it, so another device can only point back there.
-  if (phase.kind === "ask" && listed?.state === "elsewhere" && listed.owner) {
+  // This person holds the channel's keys on another device: bring them here from there.
+  if (phase.kind === "ask" && listed?.state === "elsewhere" && !askHere) {
     return (
       <Stage>
-        <Heading title="Open this on the device you created it on">
-          You own this channel, and its owner key lives only in the browser that created it. That key is what lets you approve people and close the channel, so it
-          never leaves that device.
+        <Heading title="This channel is on another device of yours">
+          Its keys are on the device you {listed.owner ? "created it on" : "joined from"}. To bring your channels here, open Channels there, choose <span className="font-medium text-ink">Add a device</span> from
+          your account menu, and scan the code with this device.
         </Heading>
-        <Button variant="secondary" className="mt-6" onClick={onBack}>
-          Back to channels
-        </Button>
+        <div className="mt-6 flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={onBack}>
+            Back to channels
+          </Button>
+          {/* Without that device (lost, or wiped), a member can still ask the owner again; an owner can't replace their own key. */}
+          {!listed.owner && (
+            <Button variant="ghost" onClick={() => setAskHere(true)}>
+              I don’t have that device
+            </Button>
+          )}
+        </div>
       </Stage>
     )
   }
@@ -388,7 +397,7 @@ function AskToJoin({ code, listed, onAsked, onCancel }: { code: string; listed?:
   const owner = invite.ownerName
   const intro =
     listed?.state === "elsewhere"
-      ? { title: "You’re in this channel on another device", text: "Keys never leave the browser that holds them. Ask the owner to let this browser in too." }
+      ? { title: "Ask to join from this browser", text: "The owner lets this browser in as you, like any new member." }
       : listed?.state === "agents"
         ? { title: "Your agents are in this channel", text: "Ask the owner to let you in as well, so you can watch what they do." }
         : { title: owner ? `${owner} invited you to a channel` : "You’re invited to a channel", text: null }

@@ -31,7 +31,7 @@ export interface Online {
  */
 export function parseHash(hash: string): { code: string; identity: Identity | null } {
   const raw = hash.replace(/^#/, "")
-  if (raw.startsWith("link=")) return { code: "", identity: null }
+  if (raw.startsWith("link=") || raw.startsWith("device")) return { code: "", identity: null }
   const [codePart, ...rest] = raw.split("&id=")
   let identity: Identity | null = null
   if (rest.length) {
@@ -123,6 +123,18 @@ export function pendingChannels(): PendingJoin[] {
     if (!k?.startsWith("mc.pending.")) continue
     const p = read<PendingJoin>(k)
     if (p?.code && p.identity) out.push(p)
+  }
+  return out
+}
+
+/** Every channel this browser holds keys for. */
+export function allMembers(): StoredMember[] {
+  const out: StoredMember[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)
+    if (!k?.startsWith("mc.member.")) continue
+    const m = read<StoredMember>(k)
+    if (m?.code && m.identity && m.access) out.push(m)
   }
   return out
 }
@@ -318,7 +330,7 @@ export function knownChannels(): KnownChannel[] {
 
 function rememberChannel(code: string): void {
   const name = loadMember(code)?.name
-  const next = [{ code, at: Date.now(), ...(name ? { name } : {}) }, ...knownChannels().filter((c) => c.code !== code)].slice(0, 20)
+  const next = [{ code, at: Date.now(), ...(name ? { name } : {}) }, ...knownChannels().filter((c) => c.code !== code)].slice(0, 200)
   try {
     localStorage.setItem(REGISTRY_KEY, JSON.stringify(next))
   } catch {}
@@ -356,8 +368,8 @@ export async function memberFromLink(code: string, identity: Identity): Promise<
 
 /**
  * Create a channel owned by this browser's human. The owner key is generated
- * here and never leaves this browser; on relays that require sign-in, `token`
- * proves who the human is.
+ * here and leaves only for the same person's other devices (lib/devices.ts);
+ * on relays that require sign-in, `token` proves who the human is.
  */
 /** A signed-in person, as the browser knows them from AuthKit. */
 export interface Person {

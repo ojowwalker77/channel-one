@@ -7,7 +7,9 @@ import { decodeJoinCode } from "../src/crypto.ts";
 import { machineStatus, newMachine, registerMachine, unlinkMachine, vouchFor, type MachineFile } from "../src/machine.ts";
 import { b64url } from "../src/crypto.ts";
 import { generateIdentity } from "../src/identity.ts";
+import { offerLink, offerToDevice, offerWaiting, parseOfferHash, takeOffer, withdrawOffer } from "../src/devices.ts";
 import { startRelay } from "../src/relay/bun.ts";
+import { onDeviceHttp, TRANSFER_TTL_MS, type DeviceStore, type DeviceTransfer } from "../src/relay/devices.ts";
 import { workosHumanAuth } from "../src/relay/human.ts";
 
 setDefaultTimeout(30_000);
@@ -333,5 +335,68 @@ describe("usage", () => {
       r.stop(true);
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("bringing your channels to another device", () => {
+  const channels = JSON.stringify({ channels: [{ code: "mc2-example", identity: { sk: "secret-member-key" } }] });
+
+  test("your other device takes the box once, and the relay only ever holds ciphertext", async () => {
+    const alice = await token("user_alice");
+    const offer = await offerToDevice(relay, alice, channels);
+    expect(await offerWaiting(relay, alice, offer.id)).toBe(true);
+    // The secret travels in the link's fragment, which browsers never send.
+    const link = offerLink(relay, offer);
+    expect(new URL(link).hash).toBe(`#device=${offer.id}.${offer.secret}`);
+    expect(parseOfferHash(new URL(link).hash)).toEqual({ id: offer.id, secret: offer.secret });
+    // What the relay stored can't be read without that secret.
+    const { Database } = await import("bun:sqlite");
+    const stored = new Database(join(dataDir, "people.sqlite"), { readonly: true }).query("SELECT rec FROM devices").all() as { rec: string }[];
+    expect(stored.length).toBe(1);
+    expect(stored[0]!.rec).not.toContain("secret-member-key");
+    expect(stored[0]!.rec).not.toContain(offer.secret);
+
+    expect(await takeOffer(relay, await token("user_alice"), offer.id, offer.secret)).toBe(channels);
+    expect(await offerWaiting(relay, alice, offer.id)).toBe(false);
+    await expect(takeOffer(relay, alice, offer.id, offer.secret)).rejects.toThrow(/already used or has expired/);
+  });
+
+  test("someone else can't take it, even with the link", async () => {
+    const alice = await token("user_alice");
+    const offer = await offerToDevice(relay, alice, channels);
+    await expect(takeOffer(relay, await token("user_bob"), offer.id, offer.secret)).rejects.toThrow(/already used or has expired/);
+    expect(await offerWaiting(relay, alice, offer.id)).toBe(true);
+    await withdrawOffer(relay, alice, offer.id);
+  });
+
+  test("a box under a different secret doesn't open", async () => {
+    const alice = await token("user_alice");
+    const offer = await offerToDevice(relay, alice, channels);
+    const other = (await offerToDevice(relay, alice, channels)).secret;
+    // Showing a new code retires the last one.
+    expect(await offerWaiting(relay, alice, offer.id)).toBe(false);
+    const fresh = await offerToDevice(relay, alice, channels);
+    await expect(takeOffer(relay, alice, fresh.id, other)).rejects.toThrow(/didn’t open/);
+  });
+
+  test("signed-out requests and unknown routes are refused", async () => {
+    expect((await fetch(`${relay}/v1/me/devices/transfers`, { method: "POST", body: JSON.stringify({ box: "x" }) })).status).toBe(401);
+    expect((await fetch(`${relay}/v1/me/devices/elsewhere`, { headers: { "x-human-token": await token("user_alice") } })).status).toBe(404);
+  });
+
+  test("codes expire after ten minutes", async () => {
+    const rows = new Map<string, DeviceTransfer>();
+    const store: DeviceStore = {
+      list: async () => [...rows.values()],
+      put: async (_u, t) => void rows.set(t.id, t),
+      remove: async (_u, id) => void rows.delete(id),
+    };
+    const at = (path: string, method = "GET", body?: string) =>
+      token("user_alice").then((t) => new Request(`https://relay/v1/me/devices/transfers${path}`, { method, body, headers: { "x-human-token": t } }));
+    const t0 = 1_000_000;
+    const { id } = (await (await onDeviceHttp(await at("", "POST", JSON.stringify({ box: "ct" })), store, human, t0))!.json()) as { id: string };
+    expect((await onDeviceHttp(await at(`/${id}`, "HEAD"), store, human, t0 + TRANSFER_TTL_MS))!.status).toBe(200);
+    expect((await onDeviceHttp(await at(`/${id}`, "HEAD"), store, human, t0 + TRANSFER_TTL_MS + 1))!.status).toBe(404);
+    expect(rows.size).toBe(0);
   });
 });
