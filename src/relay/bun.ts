@@ -1,13 +1,14 @@
 // Self-hosted relay on Bun: same protocol as the Cloudflare relay, one SQLite
 // file per room, created only when the room is and deleted when it closes.
-// Usage: bun src/relay/bun.ts [--port 8787] [--data .relay-data]
+// It can also serve the web dashboard (web/dist), as the Worker does.
+// Usage: bun src/relay/bun.ts --help
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { basename, join, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
-import type { HumanAuth } from "./human.ts";
+import { workosFromSettings, type HumanAuth } from "./human.ts";
 import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
 import { policyFrom, type RelayPolicy } from "./policy.ts";
 import {
@@ -32,10 +33,17 @@ interface SocketData {
   since: number;
 }
 
-export function startRelay(opts: { port?: number; hostname?: string; dataDir?: string; human?: HumanAuth | null; policy?: RelayPolicy } = {}) {
+/** The dashboard's files, and the sign-in origins its page may call besides this relay. */
+export interface WebApp {
+  dir: string;
+  connect?: string[];
+}
+
+export function startRelay(opts: { port?: number; hostname?: string; dataDir?: string; human?: HumanAuth | null; policy?: RelayPolicy; web?: WebApp | null } = {}) {
   const human = opts.human ?? null;
   // Settings come from the caller, or else from the environment, the same keys the Worker reads.
   const policy = opts.policy ?? policyFrom(process.env);
+  const web = opts.web ? webApp(opts.web) : null;
   const dataDir = opts.dataDir ?? ".relay-data";
   mkdirSync(dataDir, { recursive: true });
   const dbs = new Map<string, Database>();
@@ -104,6 +112,7 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
     async fetch(req, server) {
       try {
         const url = new URL(req.url);
+        if (web && !url.pathname.startsWith("/v1/") && (req.method === "GET" || req.method === "HEAD")) return web(url.pathname);
         if (url.pathname === "/") return new Response("Kiwi Channels relay (bun)\n");
         if (url.pathname === "/v1/config") return relayConfig(human);
         const machine = await onMachineHttp(req, machines, human);
@@ -166,11 +175,88 @@ export function startRelay(opts: { port?: number; hostname?: string; dataDir?: s
   });
 }
 
-if (import.meta.main) {
-  const arg = (name: string) => {
-    const i = process.argv.indexOf(name);
-    return i > 0 ? process.argv[i + 1] : undefined;
+/**
+ * Serves the dashboard the way the Worker's static assets do: real files as
+ * they are, any other page address gets index.html (so /auth/callback loads
+ * the app), and the same security headers as web/public/_headers. The CSP is
+ * built here because its sign-in origins depend on this relay's settings.
+ */
+function webApp(app: WebApp): (pathname: string) => Response {
+  const root = resolve(app.dir);
+  if (!existsSync(join(root, "index.html"))) throw new Error(`no index.html in ${root} (build it with: bun run web:build)`);
+  const connect = ["'self'", ...(app.connect ?? [])].join(" ");
+  const security = {
+    "content-security-policy": `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ${connect}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
   };
-  const server = startRelay({ port: Number(arg("--port") ?? 8787), dataDir: arg("--data") });
+  const isFile = (p: string) => existsSync(p) && statSync(p).isFile();
+
+  return (pathname) => {
+    let rel: string;
+    try {
+      rel = decodeURIComponent(pathname);
+    } catch {
+      return new Response("bad path\n", { status: 400 });
+    }
+    const path = resolve(root, "." + rel);
+    // Never outside the dashboard folder, and never Cloudflare's own config files.
+    const inside = path.startsWith(root + sep) && !["_headers", "_redirects"].includes(basename(path));
+    if (inside && isFile(path)) {
+      const headers: Record<string, string> = { ...security };
+      // Vite fingerprints everything under /assets; the rest must be rechecked each time.
+      headers["cache-control"] = rel.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache";
+      // The installers are fetched with curl | sh and must read as text.
+      if (/^\/install(\.sh|\.ps1)?$/.test(rel)) headers["content-type"] = "text/plain; charset=utf-8";
+      return new Response(Bun.file(path), { headers });
+    }
+    // A missing file (it has an extension) is a 404, not the app: a stale script must fail loudly.
+    if (/\.[A-Za-z0-9]+$/.test(basename(rel))) return new Response("not found\n", { status: 404, headers: security });
+    return new Response(Bun.file(join(root, "index.html")), { headers: { ...security, "cache-control": "no-cache" } });
+  };
+}
+
+const USAGE = `Kiwi Channels relay (Bun)
+
+Usage: bun src/relay/bun.ts [options]
+
+  --port <n>                    port to listen on (default 8787; env PORT)
+  --hostname <addr>             address to bind (default 0.0.0.0; 127.0.0.1 behind a reverse proxy; env KIWI_HOSTNAME)
+  --data <dir>                  where rooms are stored (default .relay-data; env KIWI_DATA)
+  --web <dir>                   serve the dashboard from here (default web/dist when built; env KIWI_WEB)
+  --no-web                      don't serve the dashboard
+  --workos-client-id <id>       turn on sign-in with your WorkOS AuthKit app (env WORKOS_CLIENT_ID)
+  --workos-authkit-domain <url> your AuthKit domain, https://….authkit.app (env WORKOS_AUTHKIT_DOMAIN)
+
+  WORKOS_API_KEY (env only, it's a secret) lets the relay show people's real names.
+  Without a WorkOS client id the relay has no sign-in: anyone can create channels.
+  Beta and quota settings are read from the environment: the same KIWI_* keys the
+  Worker reads from wrangler.jsonc (see src/relay/policy.ts). Unset: no gate, no quotas.
+`;
+
+if (import.meta.main) {
+  const argv = process.argv.slice(2);
+  if (argv.includes("--help") || argv.includes("-h")) {
+    process.stdout.write(USAGE);
+    process.exit(0);
+  }
+  const arg = (name: string, env: string) => {
+    const i = argv.indexOf(name);
+    return (i >= 0 ? argv[i + 1] : undefined) ?? (process.env[env] || undefined);
+  };
+  const authkitDomain = arg("--workos-authkit-domain", "WORKOS_AUTHKIT_DOMAIN")?.replace(/\/$/, "");
+  const human = workosFromSettings({ clientId: arg("--workos-client-id", "WORKOS_CLIENT_ID"), authkitDomain, apiKey: process.env.WORKOS_API_KEY || undefined });
+  const builtWeb = resolve(import.meta.dir, "../../web/dist");
+  const webDir = argv.includes("--no-web") ? undefined : (arg("--web", "KIWI_WEB") ?? (existsSync(join(builtWeb, "index.html")) ? builtWeb : undefined));
+  const connect = human ? ["https://api.workos.com", ...(authkitDomain ? [authkitDomain] : [])] : [];
+  const server = startRelay({
+    port: Number(arg("--port", "PORT") ?? 8787),
+    hostname: arg("--hostname", "KIWI_HOSTNAME"),
+    dataDir: arg("--data", "KIWI_DATA"),
+    human,
+    web: webDir ? { dir: webDir, connect } : null,
+  });
   console.log(`Kiwi Channels relay listening on ${server.url}`);
+  console.log(`  sign-in: ${human ? `WorkOS ${human.clientId}${human.profile ? " (with names)" : ""}` : "off"}`);
+  console.log(`  dashboard: ${webDir ? resolve(webDir) : "not served"}`);
 }

@@ -38,6 +38,23 @@ export function workosProfiles(apiKey: string): (userId: string) => Promise<Huma
   };
 }
 
+export interface WorkosSettings {
+  /** No client id: the relay has no sign-in, exactly as before. */
+  clientId?: string;
+  /** The AuthKit domain (https://….authkit.app), whose keys may also sign tokens. */
+  authkitDomain?: string;
+  /** Secret: lets the relay vouch for people's real names ("agent of @…"). */
+  apiKey?: string;
+}
+
+/** Sign-in from the same three settings on either relay (Worker vars or Bun flags/env). */
+export function workosFromSettings(s: WorkosSettings): HumanAuth | null {
+  if (!s.clientId) return null;
+  const domain = s.authkitDomain?.replace(/\/$/, "");
+  const jwks = [`https://api.workos.com/sso/jwks/${s.clientId}`, ...(domain ? [`${domain}/oauth2/jwks`] : [])];
+  return { ...workosHumanAuth(s.clientId, jwks), ...(s.apiKey ? { profile: workosProfiles(s.apiKey) } : {}) };
+}
+
 interface Jwk {
   kty?: string;
   kid?: string;
