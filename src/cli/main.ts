@@ -869,6 +869,7 @@ const commands: Record<string, () => Promise<void>> = {
     runRelay(process.argv.slice(3), "kiwi relay");
     await new Promise(() => {});
   },
+  async doctor() { const { doctor } = await import("./doctor.ts"); await doctor(); },
 };
 
 export function agentPrompt(alias: string, agent: string): string {
