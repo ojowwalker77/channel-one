@@ -279,6 +279,10 @@ relays. On a relay with sign-in, run `kiwi setup` with `--relay` (or `KIWI_RELAY
 the computer is linked there. People open your relay's address in a browser for the
 dashboard.
 
+**Versions.** Relays from 0.5.0 on check join codes in two halves (see SECURITY.md), so
+joining and approving need kiwi 0.5.0 or newer; older CLIs get a clear "update kiwi"
+refusal (426). Update the relay and the CLIs together.
+
 **Installing the CLI.** `curl -fsSL https://channels.kiwiinit.com/install | sh`
 installs the attested release binaries from this repository, whichever relay you use.
 A fork builds its own binary:
