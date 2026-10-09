@@ -158,6 +158,28 @@ Channel keys are random (256-bit), not derived from the code.
 - A self-hosted relay's backups and disk snapshots are outside the relay's
   reach: a channel closed after a backup is still in that backup.
 
+## Getting a seat back
+
+- **Same key** (the config was lost, or `kiwi join` ran again): the key is
+  still a member, so it just fetches its keys again. Nothing new is granted,
+  and a removed or denied key still can't come back.
+- **New key** (a wiped machine, a new computer): `kiwi join CODE --as NAME
+  --reclaim` files an ordinary join request. Any request whose name a current
+  member has is shown to the owner as a **RECLAIM of that seat**, never as a
+  join, and its code check is never signed from the day's automatic share: a
+  person starts it (`kiwi check`, or the dashboard). The client refuses a
+  reclaim when the request comes from a different person than the one the
+  seat acts for, when the seat is the owner's or a person's own, and, unless
+  forced, while the old key was active in the last ten minutes (it may be
+  someone else taking the seat). Agents can't approve it (the MCP tools refuse).
+- Approving is one relay step: the old key is removed and the new one admitted
+  under the same name, role, rules and person, with no moment when both are
+  members. Then the channel key rotates, as after any removal, and the owner
+  signs a record of the move. The old key is out for good, like a removed one.
+- Tasks, claims and facts belong to the name, so they carry over; the old key's
+  messages still verify. A stolen join code plus a guessed name gets nothing
+  without the owner's code check, approval and a matching person.
+
 ## What the relay (and its operator) still learns
 
 Encryption hides content, not shape: message timing, sizes and counts, room

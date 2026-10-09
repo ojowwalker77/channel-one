@@ -10,8 +10,8 @@ import { AgentSession, Rejected } from "../agent.ts";
 import { loadImages } from "../attach.ts";
 import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
 import { TOO_MANY_REQUESTS } from "../sas.ts";
-import { DEFAULT_RELAY, forgetIdentity, home, forgetMember, identitiesIn, loadConfig, loadIdentity, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
-import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
+import { DEFAULT_RELAY, forgetIdentity, home, forgetMember, identitiesIn, loadConfig, loadIdentity, readCursor, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
+import { b64url, decodeJoinCode, newRoomId, type ChannelAccess } from "../crypto.ts";
 import { describeMember, handleFor, type JoinRequest } from "../membership.ts";
 import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration, statusJson } from "../format.ts";
 import { fingerprint } from "../identity.ts";
@@ -28,14 +28,18 @@ Start
   kiwi doctor                                    check the install, this computer's link, the relay, and hooks
   kiwi create [alias] --as NAME [--role R]       create a channel you own; prints the join code and your dashboard
   kiwi join <code> [alias] --as NAME [--role R]  ask to join; waits until the owner approves, then prints instructions
+                                               (again with the same key: resumes; --reclaim: take NAME's seat with a
+                                               new key after losing the old one, if the owner approves)
   kiwi prompt                                    print instructions to paste into an agent
   kiwi status [--json]                           members (role, load), tasks, claims, facts, questions waiting on you
 
 Membership (the owner's human decides who gets in)
   kiwi requests                                  pending join requests and their verification codes (owner)
-  kiwi approve CODE [--yes]                      let a requester in, after your human confirms the code (owner)
+  kiwi check KEY                                 start the code check for one request (a reclaim, or past the day's share)
+  kiwi approve CODE [--yes] [--force]            let a requester in, after your human confirms the code (owner);
+                                               a RECLAIM moves that member's seat to the new key (--force if it's online)
   kiwi role [allow|refuse NAME | NAME ROLE]      role requests; the owner sets, allows or refuses roles
-  kiwi deny CODE                                 refuse a request; that key can't ask again (owner)
+  kiwi deny CODE|KEY                             refuse a request; that key can't ask again (owner)
   kiwi members                                   who's in, their roles, and their key fingerprints
   kiwi kick NAME                                 remove a member and rotate the channel key (owner)
   kiwi leave                                     leave the channel and forget it on this machine
@@ -109,6 +113,8 @@ const { values: opt, positionals: args } = parseArgs({
     yes: { type: "boolean", short: "y" },
     name: { type: "string" },
     push: { type: "boolean" },
+    reclaim: { type: "boolean" },
+    force: { type: "boolean" },
     n: { type: "string", short: "n" },
     help: { type: "boolean", short: "h" },
     version: { type: "boolean", short: "v" },
@@ -231,8 +237,14 @@ async function ownerLink(c: ChannelConfig): Promise<string> {
   return `${c.relay}/#${encodeURIComponent(c.code)}&id=${b64url(new TextEncoder().encode(JSON.stringify(id)))}`;
 }
 
-async function findRequest(s: AgentSession, needle: string): Promise<JoinRequest> {
+async function findRequest(s: AgentSession, needle: string, opts: { byKey?: boolean } = {}): Promise<JoinRequest> {
   const reqs = await s.requests();
+  // Refusing is harmless, so `deny` also takes a request's key: one still unchecked has no code yet.
+  if (opts.byKey && needle.replace(/\D/g, "").length !== 6) {
+    const byKey = reqs.filter((x) => needle.length >= 6 && fingerprint(x.pk).startsWith(needle));
+    if (byKey.length === 1) return byKey[0]!;
+    die(byKey.length ? `several requests match key ${needle}` : `no pending request with key ${needle} (see: kiwi requests)`);
+  }
   // Only the 6-digit code identifies a request: a name is whatever the requester typed, and
   // anyone holding the join code can ask under the same one.
   const digits = needle.replace(/\D/g, "");
@@ -271,6 +283,21 @@ async function confirm(question: string): Promise<boolean> {
   process.stdout.write(`${question} [y/N] `);
   for await (const line of console) return /^y(es)?$/i.test(line.trim());
   return false;
+}
+
+/** `kiwi approve` for a RECLAIM: the seat moves to the new key, with every guard the client enforces. */
+async function reclaimSeat(s: AgentSession, r: JoinRequest): Promise<void> {
+  const target = r.reclaims!;
+  // Seen in the last ten minutes, or listening right now: the old key may still be in use.
+  const { state } = await s.state();
+  const seen = state.members.get(target.name)?.lastSeen ?? 0;
+  const online = Date.now() - seen < 10 * 60_000 || (await s.who()).has(target.name);
+  if (online) process.stderr.write(`kiwi: ${target.name} IS ONLINE NOW with its current key (${fingerprint(target.pk)}): this may be someone else taking its seat\n`);
+  const question = `Move ${target.name}'s seat from key ${fingerprint(target.pk)} to ${fingerprint(r.pk)}? Verification code ${r.code}. The old key is out for good.`;
+  if (!(await confirm(question))) die(`reclaiming needs your human's go-ahead: once they confirm the joining agent shows ${r.code}, re-run with --yes${online ? " --force" : ""}`);
+  if (online && !opt.force) die(`${target.name} is online: only if your human is sure the old key is lost, re-run with --force`);
+  await s.ownerCh!.reclaim(r, { online, force: opt.force });
+  out(`moved ${target.name}'s seat to key ${fingerprint(r.pk)} (${r.code}); the old key is out and the channel key rotated`);
 }
 
 const commands: Record<string, () => Promise<void>> = {
@@ -329,8 +356,45 @@ const commands: Record<string, () => Promise<void>> = {
     if (name === OWNER_NAME) die(`"${OWNER_NAME}" is reserved for the channel owner; pick an agent name with --as`);
     const relay = relayUrl();
     const roomId = decodeJoinCode(code).roomId;
+    const hadKey = identitiesIn(roomId).includes(name);
     let id = await loadIdentity(name, roomId);
-    const info = { name, ...(opt.role ? { role: opt.role } : {}), ...(opt.about ? { about: opt.about } : {}) };
+    const info = { name, ...(opt.role ? { role: opt.role } : {}), ...(opt.about ? { about: opt.about } : {}), ...(opt.reclaim ? { reclaim: true } : {}) };
+
+    /** In: write the config, bind this folder, and print the instructions. */
+    const settle = async (access: ChannelAccess, how: "approved" | "resumed") => {
+      // Members can read the channel's sealed name: use it to name the channel here.
+      const title = await new Channel(access, relay, id).title().catch(() => null);
+      const existing = Object.entries(loadConfig().channels).find(([, c]) => c.roomId === access.roomId)?.[0];
+      const alias = existing && !args[2] ? existing : joinedAlias(access.roomId, args[2], title);
+      // Another agent on this machine may already be in this channel: keep its entry, add ours.
+      const cfg = updateConfig((c) => {
+        const prior = c.channels[alias];
+        c.channels[alias] =
+          prior?.roomId === access.roomId
+            ? { ...prior, ...access, keys: { ...prior.keys, ...access.keys }, as: prior.as ?? name, ...(title ? { title } : {}) }
+            : { ...access, relay, code, as: name, ...(title ? { title } : {}) };
+      });
+      const s = await AgentSession.open(alias, cfg.channels[alias]!, name);
+      if (how === "resumed") {
+        // Nothing new was granted: pick up where this agent left off.
+        if (readCursor(alias, name) === null) writeCursor(alias, name, await s.ch.head());
+        if (opt.role || opt.about) await s.hello(opt.role, opt.about);
+      } else if (opt.reclaim) {
+        // A reclaimed seat: what reached this name after its old key last spoke is unread for the new one.
+        const { messages, state } = await s.state();
+        const last = messages.filter((m) => m.from === name && m.kind !== "event" && state.trust.get(m.seq) === "verified").at(-1)?.seq;
+        writeCursor(alias, name, last ?? state.head);
+      } else {
+        writeCursor(alias, name, await s.ch.head());
+        await s.hello(opt.role, opt.about);
+      }
+      settleIn(alias, name);
+      process.stderr.write(`${how === "resumed" ? "back in" : "joined"} "${alias}" as ${name} (key ${fingerprint(id.pk)})\n`);
+      out(how === "resumed" ? "this key is already a member: resumed, nothing new was granted.\n" : "approved.\n");
+      if (signIn) out(`Your human can watch everything you do in this channel at ${relay}/#${encodeURIComponent(code)}\n`);
+      out(agentPrompt(alias, name, { role: opt.role, about: opt.about }));
+    };
+
     // Agents join from a computer its person linked with `kiwi setup`; the computer vouches for them.
     const signIn = !!(await relayConfig(relay).catch(() => ({ workosClientId: null }))).workosClientId;
     const machine = loadMachine();
@@ -342,6 +406,14 @@ const commands: Record<string, () => Promise<void>> = {
           "Then run this join again.",
       );
     }
+    // The same key, already a member (the config was lost, or this is a re-run): resume.
+    if (hadKey) {
+      const access = await Channel.resume(relay, code, id).catch((err: unknown) => {
+        if (err instanceof RelayError && [401, 403, 404].includes(err.status)) return null;
+        throw err;
+      });
+      if (access) return settle(access, "resumed");
+    }
     const vouch = async () => (linked ? vouchFor(linked, roomId, id.pk) : null);
     // Asking again with the same key resumes the same request, so re-running this is always safe.
     // A key that was removed or declined can never come back; ask again with a fresh one.
@@ -351,7 +423,7 @@ const commands: Record<string, () => Promise<void>> = {
       id = await loadIdentity(name, roomId);
       return Channel.requestJoin(relay, code, id, info, null, await vouch());
     });
-    out(`asked to join as ${name}.`);
+    out(opt.reclaim ? `asked to take back ${name}'s seat with a new key (the owner sees it as a RECLAIM and decides).` : `asked to join as ${name}.`);
     if (linked) out(`Vouched for by this computer${linked.linked?.name ? `, linked to ${linked.linked.name}` : ""}.`);
     out(`waiting for the owner to open your request…`);
     const deadline = Date.now() + parseDuration(opt.timeout ?? "30m") * 1000;
@@ -366,29 +438,7 @@ const commands: Record<string, () => Promise<void>> = {
         forgetIdentity(name, decodeJoinCode(code).roomId);
         die("the owner denied this request");
       }
-      if (st.status === "approved") {
-        // Members can read the channel's sealed name: use it to name the channel here.
-        const title = await new Channel(st.access, relay, id).title().catch(() => null);
-        const existing = Object.entries(loadConfig().channels).find(([, c]) => c.roomId === st.access.roomId)?.[0];
-        const alias = existing && !args[2] ? existing : joinedAlias(st.access.roomId, args[2], title);
-        // Another agent on this machine may already be in this channel: keep its entry, add ours.
-        const cfg = updateConfig((c) => {
-          const prior = c.channels[alias];
-          c.channels[alias] =
-            prior?.roomId === st.access.roomId
-              ? { ...prior, ...st.access, keys: { ...prior.keys, ...st.access.keys }, as: prior.as ?? name, ...(title ? { title } : {}) }
-              : { ...st.access, relay, code, as: name, ...(title ? { title } : {}) };
-        });
-        const s = await AgentSession.open(alias, cfg.channels[alias]!, name);
-        writeCursor(alias, name, await s.ch.head());
-        await s.hello(opt.role, opt.about);
-        settleIn(alias, name);
-        process.stderr.write(`joined "${alias}" as ${name} (key ${fingerprint(id.pk)})\n`);
-        out("approved.\n");
-        if (signIn) out(`Your human can watch everything you do in this channel at ${relay}/#${encodeURIComponent(code)}\n`);
-        out(agentPrompt(alias, name, { role: opt.role, about: opt.about }));
-        return;
-      }
+      if (st.status === "approved") return settle(st.access, "approved");
       if (Date.now() > deadline) {
         die(
           shown
@@ -499,18 +549,36 @@ const commands: Record<string, () => Promise<void>> = {
     const s = await session();
     const reqs = await s.requests();
     if (!reqs.length) return out("no pending join requests");
+    const { state } = reqs.some((r) => r.reclaims) ? await s.state() : { state: null };
     for (const r of reqs) {
       const who = r.kind === "human" ? `person, signed in as ${r.sponsoredBy?.name ?? "?"}` : r.sponsoredBy ? `agent of ${r.sponsoredBy.name}` : "agent";
       const code = r.code ?? (r.check === "waiting" ? "waiting" : "unchecked");
-      out(`${code.padEnd(9)}${r.name}${r.role ? ` (${r.role})` : ""} · ${who} · key ${fingerprint(r.pk)} · ${ago(r.ts)}`);
+      if (r.reclaims) {
+        const seen = state?.members.get(r.reclaims.name)?.lastSeen;
+        out(`${code.padEnd(8)} RECLAIMS ${r.reclaims.name}'s seat · old key ${fingerprint(r.reclaims.pk)}${seen ? `, last seen ${ago(seen)}` : ""} · new key ${fingerprint(r.pk)} · ${who} · ${ago(r.ts)}`);
+      } else out(`${code.padEnd(8)} ${r.name}${r.role ? ` (${r.role})` : ""} · ${who} · key ${fingerprint(r.pk)} · ${ago(r.ts)}`);
     }
     if (reqs.some((r) => r.check === "waiting")) out("waiting: the requester shows its code in a moment; run kiwi requests again");
-    if (reqs.some((r) => r.check === "unchecked")) out(`unchecked: ${TOO_MANY_REQUESTS}`);
+    if (reqs.some((r) => r.reclaims && r.check === "unchecked")) out("unchecked RECLAIM: a seat moves only at your human's word; once they confirm, run kiwi check <new key>");
+    if (reqs.some((r) => !r.reclaims && r.check === "unchecked")) out(`unchecked: ${TOO_MANY_REQUESTS}`);
+  },
+
+  async check() {
+    const s = await session();
+    if (!s.ownerCh) die("only the channel owner's machine checks join requests");
+    const key = (args[1] ?? die("usage: kiwi check KEY (the request's key, from kiwi requests)")).trim();
+    const r = (await s.requests()).find((x) => x.check === "unchecked" && fingerprint(x.pk).startsWith(key));
+    if (!r) die(`no unchecked request with key ${key} (see: kiwi requests)`);
+    const what = r.reclaims ? `${r.reclaims.name}'s seat (RECLAIM, new key ${fingerprint(r.pk)})` : `${r.name} (key ${fingerprint(r.pk)})`;
+    if (!(await confirm(`Start the code check for ${what}?`))) die("checking needs your human's go-ahead; re-run with --yes once they confirm");
+    await s.ownerCh.checkRequest(r);
+    out(`checking ${what}: the requester shows its 6-digit code in a moment (kiwi requests)`);
   },
 
   async approve() {
     const s = await session();
-    const r = await findRequest(s, args[1] ?? die("usage: kiwi approve CODE [--name NEWNAME] [--yes]"));
+    const r = await findRequest(s, args[1] ?? die("usage: kiwi approve CODE [--name NEWNAME] [--yes] [--force]"));
+    if (r.reclaims && !opt.name) return reclaimSeat(s, r);
     const name = opt.name ?? r.name;
     if (!NAME_RE.test(name) || name === OWNER_NAME) die(`"${name}" isn't an allowed name; approve with --name NAME`);
     const taken = (await s.members(true)).find((m) => m.name === name && m.active);
@@ -524,9 +592,9 @@ const commands: Record<string, () => Promise<void>> = {
 
   async deny() {
     const s = await session();
-    const r = await findRequest(s, args[1] ?? die("usage: kiwi deny CODE"));
+    const r = await findRequest(s, args[1] ?? die("usage: kiwi deny CODE|KEY"), { byKey: true });
     await s.ownerCh!.deny(r.id);
-    out(`denied ${r.name} (${r.code})`);
+    out(`denied ${r.reclaims ? `the RECLAIM of ${r.reclaims.name}'s seat` : r.name} (${r.code ?? `key ${fingerprint(r.pk)}`})`);
   },
 
   async members() {

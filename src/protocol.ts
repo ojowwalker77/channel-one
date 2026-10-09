@@ -93,7 +93,9 @@ export type Event =
   /** Owner only: set a member's role (and rules), or allow the one they asked for. */
   | { op: "role.set"; member: string; role: string | null; about?: string | null }
   /** Owner only: turn down the role a member asked for. */
-  | { op: "role.refuse"; member: string };
+  | { op: "role.refuse"; member: string }
+  /** Owner only: a member's seat moved to a new key (fingerprints, for the record). */
+  | { op: "seat.reclaim"; member: string; from: string; to: string };
 
 /** One image attached to a message, encrypted with everything else. */
 export interface ImageAttachment {
@@ -199,6 +201,8 @@ export function wellFormedEvent(ev: unknown): ev is Event {
       return str(e.member, 64) && (e.role === null || str(e.role, 200)) && (e.about === undefined || e.about === null || str(e.about, 2000));
     case "role.refuse":
       return str(e.member, 64);
+    case "seat.reclaim":
+      return str(e.member, 64) && str(e.from, 64) && str(e.to, 64);
     default:
       return false;
   }

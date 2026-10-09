@@ -591,16 +591,28 @@ export class RoomStore {
 
   // ---------- members & keys ----------
 
-  approve(body: MemberBody & { request?: string }): void {
-    const { epoch } = this.meta();
+  /**
+   * Admit a member. With `replaces`, a new key takes over an existing member's
+   * seat (a reclaim): the old key is removed in the same step, so the two are
+   * never members at once, and the owner rotates next, as after any removal.
+   */
+  approve(body: MemberBody & { request?: string; replaces?: string }): void {
+    const { epoch, ownerPk } = this.meta();
+    if (body.replaces !== undefined) {
+      if (typeof body.replaces !== "string" || !this.isMember(body.replaces)) throw new HttpError(404, "the seat to reclaim isn't a member any more");
+      if (body.replaces === ownerPk) throw new HttpError(400, "the owner's seat can't be reclaimed");
+      if (body.replaces === body.pk) throw new HttpError(400, "a seat can't be reclaimed by its own key");
+    }
     const most = this.policy.membersPerChannel;
-    if (most && !this.isMember(body.pk) && this.activeMembers() >= most) {
+    if (most && !body.replaces && !this.isMember(body.pk) && this.activeMembers() >= most) {
       throw new HttpError(429, `this channel has ${most} members, the most this relay allows; remove someone to let another in`);
     }
     for (let e = 0; e <= epoch; e++) {
       if (!body.keys?.[String(e)]) throw new HttpError(400, `missing wrapped key for epoch ${e}`);
     }
+    // Both in one synchronous step (nothing else runs in between), new key first so a bad record changes nothing.
     this.putMember(body, epoch);
+    if (body.replaces) this.remove(body.replaces);
     if (body.request) this.sql.run("UPDATE requests SET status = 'approved' WHERE id = ? AND pk = ?", body.request, body.pk);
   }
 
@@ -877,11 +889,12 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
   }
   if (path === "/members" && method === "POST") {
     await owner();
-    const b = json<MemberBody & { request?: string }>();
+    const b = json<MemberBody & { request?: string; replaces?: string }>();
     store.requireChecked(b.request, b.pk);
     if (human && store.ownerUser()) store.requireSponsor(b.request, b.pk);
     store.approve(b);
-    return ok({ approved: true }, { broadcast: [frame({ t: "roster" })], directory: await store.directory() });
+    // A reclaimed seat's old key is cut off at once, like a removed member.
+    return ok({ approved: true }, { ...(b.replaces ? { disconnect: b.replaces } : {}), broadcast: [frame({ t: "roster" })], directory: await store.directory() });
   }
   const memberMatch = /^\/members\/([A-Za-z0-9_-]{20,})$/.exec(path);
   if (memberMatch && method === "DELETE") {

@@ -291,6 +291,18 @@ export class Channel {
     return { status: "approved", sponsored, access: { roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: r.epoch ?? 0, keys, signedKeys } };
   }
 
+  /**
+   * This key's access to a channel it's already a member of (re-running join with
+   * the same key, e.g. after the config was lost): nothing new is granted.
+   * Throws a RelayError 403 when the key isn't a member.
+   */
+  static async resume(relay: string, code: string, id: Identity): Promise<ChannelAccess> {
+    const { roomId, info, signedKeys } = await pinnedInfo(relay, code);
+    const r = await call<{ epoch: number; keys: Record<string, string> }>(relay, roomId, "/keys", { identity: id });
+    const keys = await unwrapKeys(id, roomId, r.keys, info.ownerPk, signedKeys);
+    return { roomId, ownerPk: info.ownerPk, ownerXpk: info.ownerXpk, epoch: r.epoch, keys, signedKeys };
+  }
+
   /** Fetch this member's wrapped keys (after a rotation) and unwrap them. */
   refreshKeys(): Promise<void> {
     this.refreshing ??= (async () => {
@@ -377,16 +389,21 @@ export class Channel {
       }[];
     }>("/requests", {}, { v: 2 });
     const out: JoinRequest[] = [];
+    const seats = requests.length ? (await this.members()).filter((m) => m.active && !m.unverified) : [];
     for (const r of requests) {
       if (!(await verify({ room: this.roomId, pk: r.pk, xpk: r.xpk, box: r.box, ts: r.ts, commit: r.commit, sig: r.sig }))) continue;
-      // A half that doesn't check out means the relay tampered with the request: leave it out.
-      const check = await this.codeCheck(r, opts.budget).catch(() => null);
-      if (!check) continue;
       const raw = await openFrom(this.identity.xsk!, r.box, requestInfo(this.roomId));
       let info: MemberInfo = { name: "?" };
       try {
         info = JSON.parse(raw ?? "{}") as MemberInfo;
       } catch {}
+      // An agent asking under a name a current member has: approving would move their seat, so a person
+      // checks it, never the budget. (A person is admitted under their account's handle, whatever they typed.)
+      const seat = r.kind === "human" ? undefined : seats.find((m) => nameKey(m.name) === nameKey(String(info.name ?? "")));
+      const reclaims = seat ? { name: seat.name, pk: seat.pk, kind: seat.kind, owner: seat.owner, ...(seat.sponsor ? { sponsor: seat.sponsor } : {}) } : undefined;
+      // A half that doesn't check out means the relay tampered with the request: leave it out.
+      const check = await this.codeCheck(r, reclaims ? undefined : opts.budget).catch(() => null);
+      if (!check) continue;
       // Whoever holds the join code chose these: keep them to one safe line each.
       out.push({
         name: inlineText(info.name, 40) || "?",
@@ -401,6 +418,8 @@ export class Channel {
         commit: r.commit,
         ...check,
         sponsoredBy: r.sponsorUser ? { user: r.sponsorUser, name: inlineText(r.sponsorName, 80) || r.sponsorUser, email: r.sponsorEmail ?? null } : null,
+        ...(reclaims ? { reclaims } : {}),
+        ...(info.reclaim === true ? { reclaim: true } : {}),
       });
     }
     return out;
@@ -480,6 +499,45 @@ export class Channel {
     const keys: Record<string, string> = {};
     for (const [e, k] of Object.entries(this.access.keys)) keys[e] = await wrapFor(this.identity, this.roomId, e, req.pk, req.xpk, k);
     await this.request("/members", { method: "POST", body: JSON.stringify({ pk: req.pk, xpk: req.xpk, rec: await sealRecord(current, rec), keys, request: req.id }) });
+    return { pk: req.pk, xpk: req.xpk, ...info, owner: false, at: rec.at, active: true };
+  }
+
+  /**
+   * Move a member's seat to the key in `req` (a reclaim): the same name, role,
+   * rules and person, so their tasks, claims and facts carry over. One relay step
+   * removes the old key and admits the new one; then the channel key rotates, and
+   * the owner signs a record of it. Refused unless the person behind the request
+   * is the one behind the seat, and never for the owner's or a person's own seat.
+   * `online` says the old key was active in the last minutes: that takes `force`.
+   */
+  async reclaim(req: JoinRequest, opts: { online: boolean; force?: boolean }): Promise<Member> {
+    this.ownerOnly();
+    const target = req.reclaims;
+    if (!target) throw new Error(`${req.name} isn't anyone's seat yet: approve it as a new member`);
+    if (req.check !== "ready" || !req.code) throw new Error(`${req.name} hasn't shown its code yet: approve once you've both seen the same 6 digits`);
+    const seat = (await this.members()).find((m) => m.active && m.pk === target.pk && !m.unverified);
+    if (!seat) throw new Error(`${target.name}'s seat changed since this request was read: read the requests again`);
+    if (seat.owner) throw new Error("the owner's seat can't be reclaimed");
+    if (seat.kind === "human") throw new Error(`${seat.name} is a person's own seat: they sign in again from their browser instead`);
+    if ((req.kind ?? "agent") !== "agent") throw new Error("only an agent can reclaim an agent's seat");
+    if ((req.sponsoredBy?.user ?? null) !== (seat.sponsor?.user ?? null)) {
+      throw new Error(`this request comes from ${req.sponsoredBy ? `${req.sponsoredBy.name}'s computer` : "a computer nobody vouched for"}, but ${seat.name} acts for ${seat.sponsor?.name ?? "nobody"}: refused`);
+    }
+    if (opts.online && !opts.force) throw new Error(`${seat.name} IS ONLINE NOW with its current key: this may be someone else taking its seat. Only go on if you're sure, with force`);
+    const info: MemberInfo = {
+      name: seat.name,
+      ...(seat.role ? { role: seat.role } : {}),
+      ...(seat.about ? { about: seat.about } : {}),
+      kind: "agent",
+      ...(seat.sponsor ? { sponsor: seat.sponsor } : {}),
+    };
+    const current = this.access.keys[String(this.access.epoch)]!;
+    const rec = await makeRecord(this.identity, this.roomId, { ...info, pk: req.pk, xpk: req.xpk });
+    const keys: Record<string, string> = {};
+    for (const [e, k] of Object.entries(this.access.keys)) keys[e] = await wrapFor(this.identity, this.roomId, e, req.pk, req.xpk, k);
+    await this.request("/members", { method: "POST", body: JSON.stringify({ pk: req.pk, xpk: req.xpk, rec: await sealRecord(current, rec), keys, request: req.id, replaces: seat.pk }) });
+    await this.rotate();
+    await this.send(`moved ${seat.name}'s seat to a new key`, { ev: { op: "seat.reclaim", member: seat.name, from: seat.pk.slice(0, 8), to: req.pk.slice(0, 8) } });
     return { pk: req.pk, xpk: req.xpk, ...info, owner: false, at: rec.at, active: true };
   }
 
