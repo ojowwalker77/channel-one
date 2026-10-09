@@ -1,5 +1,5 @@
 import { ArrowTurnBackwardIcon, Copy01Icon } from "@hugeicons/core-free-icons"
-import { memo, useEffect, useState } from "react"
+import { memo, useState } from "react"
 
 import { describeEvent } from "@mc/format.ts"
 import type { Message, Trust } from "@mc/protocol.ts"
@@ -38,7 +38,7 @@ export function EventRow({ m, state, onOpenTask }: { m: Message; state: ChannelS
           {formatTime(m.ts)}
         </time>
         {taskRef !== null && (
-          <button type="button" onClick={() => onOpenTask(taskRef)} className="ml-1.5 font-medium text-link hover:underline">
+          <button type="button" onClick={() => onOpenTask(taskRef)} className="ml-1.5 font-medium text-ink-2 hover:text-ink">
             Open task
           </button>
         )}
@@ -47,22 +47,40 @@ export function EventRow({ m, state, onOpenTask }: { m: Message; state: ChannelS
   )
 }
 
-/** A run of consecutive events. One stays a line; two or more collapse into "N updates". */
+/** Forged events, and events aimed at this member, stay on their own line. */
+export function standsAlone(m: Message, state: ChannelState, me: string): boolean {
+  if (state.trust.get(m.seq) === "forged") return true
+  const ev = m.ev
+  if (!ev) return false
+  if ((ev.op === "role.set" || ev.op === "role.refuse") && ev.member === me) return true
+  if (ev.op === "task.add" && ev.owner === me) return true
+  if (ev.op === "task.update" && ev.owner === me) return true
+  return false
+}
+
+function englishList(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? ""
+  if (names.length === 2) return `${names[0]} and ${names[1]}`
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
+}
+
+/** A same-day run. Three or more collapse; the latest line stays visible. */
 export function EventGroup({ messages, state, onOpenTask, highlight }: { messages: Message[]; state: ChannelState; onOpenTask: (id: number) => void; highlight: number | null }) {
   const [open, setOpen] = useState(false)
-  const seqs = messages.map((m) => m.seq).join(",")
-  useEffect(() => {
-    if (highlight !== null && messages.some((m) => m.seq === highlight)) setOpen(true)
-  }, [highlight, seqs, messages])
   const row = (m: Message) => <EventRow key={m.seq} m={m} state={state} onOpenTask={onOpenTask} />
-  if (messages.length < 2) return <>{messages.map(row)}</>
-  const n = messages.length
+  if (messages.length < 3) return <>{messages.map(row)}</>
+  const forced = highlight !== null && messages.some((m) => m.seq === highlight)
+  const shown = open || forced
+  const earlier = messages.slice(0, -1)
+  const last = messages[messages.length - 1]!
+  const names = englishList([...new Set(earlier.map((m) => memberName(state.members.get(m.from), m.from)))])
+  const n = earlier.length
   return (
-    <div className="my-2">
-      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="mx-auto block text-[12.5px] text-ink-3 hover:text-ink-2">
-        {open ? `Hide ${n} updates` : `${n} updates`}
+    <div className="my-1">
+      {shown ? messages.map(row) : row(last)}
+      <button type="button" aria-expanded={shown} onClick={() => setOpen(!shown)} className="mx-auto mt-0.5 block text-[12.5px] text-ink-3 hover:text-ink-2">
+        {shown ? "Hide earlier updates" : `${names}: ${n} earlier update${n === 1 ? "" : "s"}`}
       </button>
-      {open && <div className="mt-1">{messages.map(row)}</div>}
     </div>
   )
 }
