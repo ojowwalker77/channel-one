@@ -32,6 +32,7 @@ export function Sidebar({
   onAddDevice,
   usage,
   onUsage,
+  onPalette,
   className,
 }: {
   rows: ChannelRow[]
@@ -43,6 +44,7 @@ export function Sidebar({
   onAddDevice: () => void
   usage: MyUsage | null
   onUsage: () => void
+  onPalette: () => void
   className?: string
 }) {
   const auth = useAuth()
@@ -86,6 +88,10 @@ export function Sidebar({
 
       <div className="flex items-center justify-between pr-2 pl-4">
         <h2 className="text-[12px] font-semibold text-ink-2">Channels</h2>
+        <span className="flex-1" />
+        <IconButton label={`Go to… (${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}K)`} className="size-7" onClick={onPalette}>
+          <Icon icon={Search01Icon} size={15} />
+        </IconButton>
         <Menu
           align="end"
           className="w-52"

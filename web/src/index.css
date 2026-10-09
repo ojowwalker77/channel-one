@@ -100,10 +100,13 @@ button {
   cursor: default;
 }
 
-:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 1px;
-  border-radius: 6px;
+/* In the base layer, so a utility like focus-visible:outline-none can still take it off. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+    border-radius: 6px;
+  }
 }
 
 * {

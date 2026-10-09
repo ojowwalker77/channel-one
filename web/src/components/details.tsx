@@ -160,7 +160,7 @@ export function Details(p: Props) {
   }
 
   return (
-    <aside className="animate-slide-in flex h-full w-full flex-col bg-canvas shadow-[inset_0.5px_0_0_var(--line)] md:w-[340px]">
+    <aside className="animate-slide-in flex h-full w-full flex-col bg-canvas shadow-[inset_0.5px_0_0_var(--line)]">
       <header className="flex h-[56px] shrink-0 items-center justify-between pr-3 pl-5">
         <span className="text-[13px] font-semibold">Details</span>
         <IconButton label="Close details" onClick={p.onDismiss}>
@@ -221,7 +221,7 @@ export function Details(p: Props) {
         )}
 
         <Part title={`${active.length} ${active.length === 1 ? "member" : "members"}`}>
-          <div className="-mx-2 grid">
+          <div className="-mx-2 grid grid-cols-[minmax(0,1fr)]">
             {active.map((m) => {
               // Agents always show load, so a coordinator sees who's free; people only when they hold tasks.
               const load = memberLoad(p.state, m.name, p.now)
@@ -250,7 +250,7 @@ export function Details(p: Props) {
                           "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium",
                           load.level === "free" && "bg-wash text-ink-3",
                           load.level === "busy" && "bg-wash-2 text-ink-2",
-                          load.level === "overloaded" && "bg-wash-2 text-alert",
+                          load.level === "overloaded" && "bg-wash-2 text-alert"
                         )}
                       >
                         {LEVEL[load.level]}
@@ -282,7 +282,13 @@ export function Details(p: Props) {
                       </span>
                       {p.isOwner ? (
                         <span className="flex gap-1">
-                          <Button size="sm" disabled={busy} onClick={() => void run(() => p.onRole({ op: "role.set", member: m.name, role: asked.role ?? null, about: asked.about ?? null }), `${m.name} is now ${asked.role ?? "unassigned"}`)}>
+                          <Button
+                            size="sm"
+                            disabled={busy}
+                            onClick={() =>
+                              void run(() => p.onRole({ op: "role.set", member: m.name, role: asked.role ?? null, about: asked.about ?? null }), `${m.name} is now ${asked.role ?? "unassigned"}`)
+                            }
+                          >
                             Allow
                           </Button>
                           <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(() => p.onRole({ op: "role.refuse", member: m.name }), `Kept ${m.name}'s role`)}>
@@ -302,7 +308,7 @@ export function Details(p: Props) {
         </Part>
 
         <Part title="Show">
-          <div className="-mx-2 grid text-[13px]">
+          <div className="-mx-2 grid grid-cols-[minmax(0,1fr)] text-[13px]">
             <button type="button" className="flex items-center justify-between rounded-[8px] px-2 py-1.5 text-left hover:bg-wash" onClick={() => p.onFilter({ kind: "open" })}>
               Unanswered questions <span className="text-ink-3 tabular-nums">{p.state.openAsks.length}</span>
             </button>
@@ -341,7 +347,7 @@ export function Details(p: Props) {
 
         {facts.length > 0 && (
           <Part title="Facts">
-            <div className="-mx-2 grid">
+            <div className="-mx-2 grid grid-cols-[minmax(0,1fr)]">
               {facts.map((f) => (
                 <button
                   key={f.key}
@@ -376,7 +382,15 @@ export function Details(p: Props) {
         title={confirm?.kind === "role" ? `${confirm.member.name}’s role` : ""}
         message={
           <span className="mt-3 grid gap-2">
-            <TextField value={roleDraft.role} onChange={(e) => setRoleDraft((d) => ({ ...d, role: e.target.value }))} placeholder="Role, e.g. reviewer" maxLength={60} list="kiwi-roles" aria-label="Role" autoFocus />
+            <TextField
+              value={roleDraft.role}
+              onChange={(e) => setRoleDraft((d) => ({ ...d, role: e.target.value }))}
+              placeholder="Role, e.g. reviewer"
+              maxLength={60}
+              list="kiwi-roles"
+              aria-label="Role"
+              autoFocus
+            />
             <TextField value={roleDraft.about} onChange={(e) => setRoleDraft((d) => ({ ...d, about: e.target.value }))} placeholder="Rules (optional)" maxLength={200} aria-label="Rules" />
             <span className="text-[12px] text-ink-3">Everyone sees the role, and agents route work by it.</span>
           </span>
