@@ -19,6 +19,13 @@ const KINDS: { kind: Kind; label: string; hint: string }[] = [
 ]
 const MENTION = /(^|\s)@([\p{L}\p{N}_.-]*)$/u
 const LEADING = /^(?:\s*@([\p{L}\p{N}_.-]+)[\s,]*)+/u
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
+
+function imageName(file: File): string {
+  if (file.name) return file.name
+  const ext = file.type === "image/jpeg" ? "jpg" : (file.type.split("/")[1] ?? "png")
+  return `pasted.${ext}`
+}
 
 export interface Person {
   name: string
@@ -46,6 +53,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
   const [body, setBody] = useState("")
   const [kind, setKind] = useState<Kind>("msg")
   const [files, setFiles] = useState<{ name: string; mime: string; data: string }[]>([])
+  const [dropping, setDropping] = useState(false)
   const [sending, setSending] = useState(false)
   const [mention, setMention] = useState<{
     query: string
@@ -75,17 +83,32 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
     if (replyTo) area.current?.focus()
   }, [replyTo])
 
+  // A drop anywhere else in the window must not navigate the dashboard away.
+  useEffect(() => {
+    const block = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes("Files")) return
+      e.preventDefault()
+    }
+    window.addEventListener("dragover", block)
+    window.addEventListener("drop", block)
+    return () => {
+      window.removeEventListener("dragover", block)
+      window.removeEventListener("drop", block)
+    }
+  }, [])
+
   const canSend = !disabled && !sending && (body.trim().length > 0 || files.length > 0)
 
-  const pick = (list: FileList | null) => {
-    if (!list) return
+  const pick = (list: FileList | File[] | null) => {
+    if (!list || disabled) return
     for (const f of [...list].slice(0, 8 - files.length)) {
-      if (!f.type.startsWith("image/")) {
-        toast(`${f.name} isn’t an image. Only images can be attached.`, "error")
+      const name = imageName(f)
+      if (!IMAGE_TYPES.has(f.type)) {
+        toast(`${name} isn’t a PNG, JPEG, GIF, or WebP.`, "error")
         continue
       }
       if (f.size > MAX_IMAGE_BYTES) {
-        toast(`${f.name} is over ${Math.round(MAX_IMAGE_BYTES / 1024)} KB. Attach a smaller image.`, "error")
+        toast(`${name} is over ${Math.round(MAX_IMAGE_BYTES / 1024)} KB. Attach a smaller image.`, "error")
         continue
       }
       const reader = new FileReader()
@@ -96,7 +119,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
             ? [
                 ...prev,
                 {
-                  name: f.name,
+                  name,
                   mime: f.type,
                   data: url.slice(url.indexOf(",") + 1),
                 },
@@ -151,7 +174,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
 
   return (
     <div className="relative mx-auto w-full max-w-[760px] shrink-0 px-4 pt-2 pb-4 md:px-8">
-      <input ref={picker} type="file" accept="image/*" multiple className="hidden" onChange={(e) => (pick(e.target.files), (e.target.value = ""))} />
+      <input ref={picker} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" onChange={(e) => (pick(e.target.files), (e.target.value = ""))} />
 
       {matches.length > 0 && (
         <div className="animate-rise absolute bottom-full left-4 z-20 mb-1 w-64 overflow-hidden rounded-[10px] bg-raised p-1 shadow-pop md:left-8">
@@ -170,7 +193,32 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
         </div>
       )}
 
-      <div className="rounded-[18px] bg-raised shadow-[0_0_0_1px_var(--line),0_2px_8px_-4px_rgba(0,0,0,0.08)] transition-shadow focus-within:shadow-[0_0_0_1px_color-mix(in_srgb,var(--ink)_24%,transparent),0_2px_8px_-4px_rgba(0,0,0,0.08)]">
+      <div
+        className={cx(
+          "relative rounded-[18px] bg-raised shadow-[0_0_0_1px_var(--line),0_2px_8px_-4px_rgba(0,0,0,0.08)] transition-shadow focus-within:shadow-[0_0_0_1px_color-mix(in_srgb,var(--ink)_24%,transparent),0_2px_8px_-4px_rgba(0,0,0,0.08)]",
+          dropping && "shadow-[0_0_0_1.5px_var(--ink)]"
+        )}
+        onDragEnter={(e) => {
+          if (disabled || !e.dataTransfer.types.includes("Files")) return
+          e.preventDefault()
+          setDropping(true)
+        }}
+        onDragOver={(e) => {
+          if (disabled || !e.dataTransfer.types.includes("Files")) return
+          e.preventDefault()
+          e.dataTransfer.dropEffect = "copy"
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node)) return
+          setDropping(false)
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDropping(false)
+          pick(e.dataTransfer.files)
+        }}
+      >
+        {dropping && <div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-[14px] border border-dashed border-ink-3 bg-canvas/85 text-[13px] text-ink-2">Drop images</div>}
         {replyTo && (
           <div className="flex items-center gap-2 px-4 pt-2.5 text-[12.5px] text-ink-2">
             <span className="min-w-0 truncate">
@@ -209,6 +257,16 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
           onChange={(e) => {
             setBody(e.target.value)
             trackMention(e.target.value, e.target.selectionStart)
+          }}
+          onPaste={(e) => {
+            const fromItems = [...e.clipboardData.items]
+              .filter((item) => item.kind === "file")
+              .map((item) => item.getAsFile())
+              .filter((file): file is File => !!file)
+            const images = (e.clipboardData.files.length ? [...e.clipboardData.files] : fromItems).filter((f) => f.type.startsWith("image/"))
+            if (!images.length) return
+            if (!e.clipboardData.getData("text/plain")) e.preventDefault()
+            pick(images)
           }}
           onKeyDown={(e) => {
             if (matches.length && mention) {
