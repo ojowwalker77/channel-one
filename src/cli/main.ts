@@ -24,6 +24,7 @@ const HELP = `kiwi ${VERSION} — Channels by Kiwi Init: real-time coordination 
 
 Start
   kiwi setup                                     set up this computer, once (link it to your account; Claude Code)
+  kiwi doctor                                    check the install, this computer's link, the relay, and hooks
   kiwi create [alias] --as NAME [--role R]       create a channel you own; prints the join code and your dashboard
   kiwi join <code> [alias] --as NAME [--role R]  ask to join; waits until the owner approves, then prints instructions
   kiwi prompt                                    print instructions to paste into an agent
@@ -868,6 +869,11 @@ const commands: Record<string, () => Promise<void>> = {
     const { runRelay } = await import("../relay/bun.ts");
     runRelay(process.argv.slice(3), "kiwi relay");
     await new Promise(() => {});
+  },
+
+  async doctor() {
+    const { doctor } = await import("./doctor.ts");
+    await doctor();
   },
 };
 
