@@ -11,6 +11,7 @@ import { Details, type Filter } from "./details"
 import { Icon } from "./icon"
 import { Button, IconButton, Monogram, Spinner, Tabs, TextField } from "./kit"
 import { DayMark, EventGroup, EventRow, MessageRow, isAgent, standsAlone } from "./message"
+import { ResizablePanel } from "./ui/panel"
 import { TaskDetail, Tasks } from "./tasks"
 
 /** Messages this close together from one sender read as one run. */
@@ -361,53 +362,55 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       </div>
 
       {details && (
-        <Details
-          code={member.code}
-          me={me}
-          myKey={member.identity.pk}
-          isOwner={isOwner}
-          roster={roster}
-          requests={requests}
-          online={online}
-          state={state}
-          mentions={forMe.length}
-          now={now}
-          onDismiss={() => setDetails(false)}
-          onFilter={(f) => {
-            setFilter(f)
-            setTab("chat")
-            if (window.innerWidth < 768) setDetails(false)
-          }}
-          onApprove={async (r) => {
-            await ch.approve(r)
-            await Promise.all([refreshRequests(), refreshRoster()])
-          }}
-          onRole={async (ev) => {
-            await send(ev.op === "role.set" ? `made ${ev.member} ${ev.role ?? "unassigned"}` : `kept ${ev.member}'s role`, { kind: "event", ev })
-          }}
-          onDeny={async (r) => {
-            await ch.deny(r.id)
-            await refreshRequests()
-          }}
-          onCheck={async (r) => {
-            await ch.checkRequest(r)
-            await refreshRequests()
-          }}
-          onRemove={async (m) => {
-            await ch.remove(m.pk)
-            await refreshRoster()
-          }}
-          onCloseChannel={async () => {
-            await ch.close()
-            forgetChannel(member.code)
-            onGone()
-          }}
-          onLeaveChannel={async () => {
-            await ch.leave()
-            forgetChannel(member.code)
-            onGone()
-          }}
-        />
+        <ResizablePanel>
+          <Details
+            code={member.code}
+            me={me}
+            myKey={member.identity.pk}
+            isOwner={isOwner}
+            roster={roster}
+            requests={requests}
+            online={online}
+            state={state}
+            mentions={forMe.length}
+            now={now}
+            onDismiss={() => setDetails(false)}
+            onFilter={(f) => {
+              setFilter(f)
+              setTab("chat")
+              if (window.innerWidth < 768) setDetails(false)
+            }}
+            onApprove={async (r) => {
+              await ch.approve(r)
+              await Promise.all([refreshRequests(), refreshRoster()])
+            }}
+            onRole={async (ev) => {
+              await send(ev.op === "role.set" ? `made ${ev.member} ${ev.role ?? "unassigned"}` : `kept ${ev.member}'s role`, { kind: "event", ev })
+            }}
+            onDeny={async (r) => {
+              await ch.deny(r.id)
+              await refreshRequests()
+            }}
+            onCheck={async (r) => {
+              await ch.checkRequest(r)
+              await refreshRequests()
+            }}
+            onRemove={async (m) => {
+              await ch.remove(m.pk)
+              await refreshRoster()
+            }}
+            onCloseChannel={async () => {
+              await ch.close()
+              forgetChannel(member.code)
+              onGone()
+            }}
+            onLeaveChannel={async () => {
+              await ch.leave()
+              forgetChannel(member.code)
+              onGone()
+            }}
+          />
+        </ResizablePanel>
       )}
 
       <TaskDetail id={openTask} state={state} messages={messages} now={now} onClose={() => setOpenTask(null)} onOpen={setOpenTask} />
