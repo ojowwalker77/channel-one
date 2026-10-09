@@ -67,15 +67,16 @@ describe("channel files", () => {
     expect(Object.keys(files).some((p) => p.startsWith("/channels/"))).toBe(false);
   });
 
-  test("the current alias is a symlink to /channel, and find and grep -r don't count it twice", async () => {
-    const link = await runSh(files, "readlink /channels/proj && cat /channels/proj/facts/build.cmd");
-    expect(link.exitCode).toBe(0);
-    expect(link.stdout).toBe("/channel\nbun test\n");
-    const found = await runSh(files, "find /channel /channels -name build.cmd");
-    expect(found.stdout.trim().split("\n")).toEqual(["/channel/facts/build.cmd"]);
-    // just-bash 3.6.0 grep -r follows the link for files directly in the directory, so this checks a nested file.
-    const grepped = await runSh(files, "grep -r -l 'bun test' /channel/facts /channels/proj/facts");
-    expect(grepped.stdout.trim().split("\n")).toEqual(["/channel/facts/build.cmd"]);
+  test("a /channels/*/tasks glob lists other channels and not this alias", async () => {
+    const other: ChannelView = { ...view, alias: "other" };
+    const both = channelFiles([view, other]);
+    expect(both["/channels/proj/tasks/T2.md"]).toBeUndefined();
+    expect(Object.keys(both).some((p) => p.startsWith("/channels/proj"))).toBe(false);
+    const listed = await runSh(both, "echo /channels/*/tasks/*.md");
+    expect(listed.exitCode).toBe(0);
+    expect(listed.stdout.trim().split("\n")).toEqual(["/channels/other/tasks/T2.md"]);
+    const missing = await runSh(both, "ls /channels/proj");
+    expect(missing.exitCode).not.toBe(0);
   });
 
   test("later views are the other channels, and the current alias is not one of them", () => {
@@ -155,7 +156,7 @@ describe("the shell", () => {
   test("sees none of the real machine", async () => {
     const r = await runSh(files, "cat /etc/passwd; ls /Users /home /tmp /proc /etc; cat ~/.kiwi/config.json; echo \"$HOME $KIWI_HOME $KIWI_AS $PATH\"");
     expect(r.stdout.trim()).toBe("/channel   /usr/bin:/bin"); // the KIWI_* vars are empty
-    expect((await runSh(files, "ls /")).stdout).toBe("channel\nchannels\ndev\n");
+    expect((await runSh(files, "ls /")).stdout).toBe("channel\ndev\n");
   });
 
   test("runaway scripts end with an error, never a hang", async () => {

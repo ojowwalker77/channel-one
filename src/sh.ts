@@ -64,9 +64,9 @@ export const README = `Channel files (read-only; every run starts fresh). Writes
     members/<name>.json    role, about, kind, owner, sponsor, lastSeen, load
     facts/<key>            each shared fact's value
     claims                 active path claims
-  /channels/<alias>/…      other channels this same name belongs to. This channel's
-                           own entry is a symlink to /channel, so find and grep -r
-                           don't count it twice. Loaded when the script mentions /channels.
+  /channels/<alias>/…      other channels this same name belongs to. Not this one.
+                           All channels: /channel plus /channels/*. Loaded when
+                           the script mentions /channels.
 Forged messages never appear. Names and keys that aren't safe as file names are %-encoded.
 Examples: jq -r 'select(.kind=="ask") | "#\\(.seq) \\(.from): \\(.body)"' log.jsonl
           grep -l 'state: todo' tasks/*.md · jq -r 'select(.load.level=="free") | .name' members/*.json`;
@@ -161,28 +161,12 @@ export async function sessionViews(s: AgentSession, script: string): Promise<Cha
   return views;
 }
 
-/** The current channel is also /channels/<alias> → /channel, so a /channels/* glob still sees it and find/grep -r don't walk it twice. */
-async function linkCurrentChannel(fs: InMemoryFs, files: Record<string, string>): Promise<void> {
-  let channel = "";
-  try {
-    channel = JSON.parse(files["/channel/me"] ?? "").channel;
-  } catch {
-    return;
-  }
-  if (typeof channel !== "string" || !channel) return;
-  const link = `/channels/${segment(channel)}`;
-  if (Object.keys(files).some((p) => p === link || p.startsWith(`${link}/`))) return;
-  await fs.mkdir("/channels", { recursive: true });
-  await fs.symlink("/channel", link);
-}
-
 /** Run `script` against `files` (paths ending in "/" are empty directories). Never throws: every failure is a nonzero exit with a reason on stderr. */
 export async function runSh(files: Record<string, string>, script: string, opts: { cwd?: string } = {}): Promise<ShResult> {
   if (new TextEncoder().encode(script).length > MAX_SCRIPT_BYTES) return { stdout: "", stderr: `kiwi sh: script longer than ${MAX_SCRIPT_BYTES} bytes\n`, exitCode: 2 };
   const inner = new InMemoryFs(Object.fromEntries(Object.entries(files).filter(([p]) => !p.endsWith("/"))));
   for (const p of Object.keys(files)) if (p.endsWith("/")) inner.mkdirSync(p.slice(0, -1), { recursive: true });
   inner.writeFileSync(DEV_NULL, "");
-  await linkCurrentChannel(inner, files);
   const fs = new ReadOnlyFs(inner);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const stop = new AbortController();

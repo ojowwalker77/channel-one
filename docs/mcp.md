@@ -77,7 +77,7 @@ returns its output. `kiwi sh 'SCRIPT'` does the same from a shell.
 /channel/log.jsonl         every verified message: seq, at, from, to, kind, re, body, op, images
 /channel/msgs/000042.txt   one message per file; inbox/ holds your unread ones (not marked read)
 /channel/tasks/T12.md      members/<name>.json   facts/<key>   claims
-/channels/<alias>/…        other channels under this name; this one is a symlink to /channel
+/channels/<alias>/…        other channels under this name, not this one. All channels: /channel plus /channels/*
 ```
 
 ```bash
