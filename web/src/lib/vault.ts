@@ -197,9 +197,25 @@ export async function startVault(next: Session | null): Promise<void> {
   }
 }
 
+/** Setup found a vault already there: the page now offers to unlock it instead. */
+export class VaultExists extends VaultError {
+  constructor() {
+    super("You already have a vault for this account. Touch your passkey to unlock it, or use your recovery code.")
+  }
+}
+
+/** Show the vault that's there as locked, and say so. */
+async function alreadyThere(): Promise<never> {
+  const got = await fetchVault(location.origin, await token()).catch(() => null)
+  if (got) set({ kind: "locked", wraps: wrapsOf(got.blob), ...(got.resetAt ? { resetAt: got.resetAt } : {}) })
+  throw got ? new VaultExists() : new VaultError("Your vault couldn’t be saved. Reload the page and try again.")
+}
+
 /** First time: make a passkey, put every channel this browser has in a new vault. Returns the recovery code to show once. */
 export async function setUpVault(): Promise<string> {
   const s = session!
+  // A vault may exist already (another device, or an earlier try here that didn't finish): unlock it, and don't make a passkey for nothing.
+  if (await fetchVault(location.origin, await token())) return alreadyThere()
   // The WebAuthn user handle is the WorkOS user id: stable, and not personal data.
   const pk = await createPasskey({ id: s.user, name: s.email || s.name, displayName: s.name }, PRF_SALT)
   const contents: VaultContents<StoredMember> = { channels: allMembers(), gone: {} }
@@ -207,14 +223,22 @@ export async function setUpVault(): Promise<string> {
   const first = await openVault<StoredMember>(made.blob, s.user, made.key, 1)
   const code = newRecoveryCode()
   const blob = await addWrap(made.blob, s.user, made.key, first, 1, { kind: "recovery", label: "Recovery code", secret: recoverySecret(code)! })
-  const r = await putVault(location.origin, await token(), s.user, 0, blob, made.writer, made.writer.pk)
-  if ("conflict" in r) throw new VaultError("another device just set up your vault. Reload to unlock it.")
+  // Another save got there first (409, or 403 from a relay that checks the signer before the version): there's a vault now.
+  const r = await putVault(location.origin, await token(), s.user, 0, blob, made.writer, made.writer.pk).catch(() => alreadyThere())
+  if ("conflict" in r) return alreadyThere()
   saw(s.user, r.version)
+  // Saved. From here a hiccup in this browser must not leave the page offering setup again.
   rawKey = made.key
-  key = await vaultKey(made.key)
-  await keepVaultKey(s.user, key)
+  key = made.key
   synced = new Set(contents.channels.map(seat))
   set({ kind: "open", wraps: wrapsOf(blob) })
+  try {
+    key = await vaultKey(made.key)
+    await keepVaultKey(s.user, key)
+  } catch (err) {
+    // Without IndexedDB this browser syncs until it closes, then asks for the passkey again.
+    console.warn("vault: key not kept in this browser", err)
+  }
   return code
 }
 
