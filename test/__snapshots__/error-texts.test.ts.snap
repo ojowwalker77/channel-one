@@ -32,6 +32,7 @@ exports[`the relay's error texts are exactly these 1`] = `
   "room.ts 400 bad owner signature",
   "room.ts 400 bad request",
   "room.ts 400 bad request signature",
+  "room.ts 400 bad title",
   "room.ts 400 missing wrapped key for \${m.pk.slice(0, 8)}",
   "room.ts 400 missing wrapped key for epoch \${e}",
   "room.ts 400 request timestamp out of range",

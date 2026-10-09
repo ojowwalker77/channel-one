@@ -92,6 +92,7 @@ describe("owner routes need the owner key AND the owning person's session", () =
   const pk = "A".repeat(43);
   const routes: [string, string][] = [
     ["PUT", "/icon"],
+    ["PUT", "/title"],
     ["GET", "/requests?v=2"],
     ["POST", `/requests/${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}/nonce`],
     ["POST", `/requests/${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}/deny`],
