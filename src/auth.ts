@@ -7,7 +7,7 @@ import { signText, verifyText, type Identity } from "./identity.ts";
 /** How far a signed request's timestamp may drift from the relay's clock. */
 export const AUTH_SKEW_MS = 5 * 60_000;
 
-async function sha256Hex(s: string): Promise<string> {
+export async function sha256Hex(s: string): Promise<string> {
   const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
   return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
 }

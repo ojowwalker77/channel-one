@@ -98,18 +98,26 @@ QR code, and channels joined later reach their other devices on their own.
   person and never parses it (`src/relay/vault.ts`): it only orders saves by
   version, refusing a stale one (409) so two devices merge instead of
   overwriting each other.
+- **Every save is signed by the vault's writer key**, an Ed25519 key kept only
+  inside the encrypted vault; the relay takes no write or delete without it.
+  So a stolen sign-in can't overwrite or delete the vault either. Someone who
+  lost every passkey and the recovery code can only ask for a reset: it waits
+  a day, shows on every device that opens the vault, and any device that still
+  can save cancels it.
 - The vault key is sealed once per passkey, under a key derived from that
   passkey's WebAuthn PRF output, and once under a 160-bit recovery code. The
   PRF output and the code never leave the person's device. **A stolen sign-in
   alone yields ciphertext.**
 - Each sealed box is bound to the person, and the body to its version and to
-  the list of passkeys that may open it. So a relay can't move a box between
-  people or versions, add a passkey of its own, or strip one unnoticed.
+  every passkey's public record (id, kind, label, credential). So a relay
+  can't move a box between people or versions, add a passkey of its own, strip
+  one, or relabel one so the person removes the wrong passkey: the list a
+  device shows comes from inside the vault.
 - A relay *can* withhold the vault, refuse saves, or serve an old copy. Each
   device remembers the highest version it has opened and refuses anything
   older, loudly. Channels already on a device keep working either way.
-- Removing a passkey **rotates the vault key**: a device that held the old key
-  can't open anything saved after that. This device's passkey and a new
+- Removing a passkey **rotates the vault key and the writer key**: a device
+  that held the old ones can't open anything saved after that, or save. This device's passkey and a new
   recovery code open the new vault; other passkeys are added again. Lost a
   device? Rotate the vault, then close or leave its channels as below. The
   vault doesn't change what a lost device already had.

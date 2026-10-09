@@ -3,22 +3,36 @@
 // browser they sign in to opens all their channels with a passkey touch.
 // Shared by the web app and tests; WebCrypto only.
 //
-//   blob  { v, wraps: [{ id, kind, label, created, credentialId?, salt, box }], body }
-//   box   the vault key, sealed under HKDF(secret, salt): the secret is a passkey's
-//         PRF output, or a recovery code; neither ever leaves the person's device
-//   body  { v, user, version, wraps: [ids], channels, gone }, sealed under the vault key
+//   blob    { v, wraps: [{ id, kind, label, created, credentialId?, salt, box }], body }
+//   box     the vault key, sealed under HKDF(secret, salt): the secret is a passkey's
+//           PRF output, or a recovery code; neither ever leaves the person's device
+//   body    { v, user, version, wraps, writer, channels, gone }, sealed under the vault key
+//   writer  an Ed25519 key, kept only in the body, that signs every save: the relay
+//           takes no write without it, so a stolen sign-in can't overwrite the vault
 //
 // What the relay can't do, and how a device notices:
-//   - read or forge anything: it never holds the vault key or any secret;
-//   - move a box between people, versions or wraps: each is sealed with those as
-//     associated data, and the body repeats the user, version and wrap ids;
+//   - read, forge or overwrite anything: it never holds the vault key, any secret
+//     or the writer key;
+//   - move a box between people, versions or wraps, or relabel a passkey: boxes
+//     are sealed with those as associated data, and the body repeats the user, the
+//     version and every wrap's public record;
 //   - roll the vault back: each device remembers the highest version it opened
-//     and refuses anything lower (openVault's `highestSeen`).
+//     and refuses anything lower (openVault's `highestSeen`; callers persist it).
 // It can still withhold the vault or refuse saves; the person's channels then
 // stay where they are, as without a vault.
 
 import { RelayError } from "./client.ts";
 import { b64url, fromB64url, newChannelKey, openWith, sealWith } from "./crypto.ts";
+import { generateIdentity, sign, type Identity } from "./identity.ts";
+import { sha256Hex as blobHash } from "./auth.ts";
+
+export const VAULT_VERSION = 2;
+
+/**
+ * What every passkey is asked to evaluate (WebAuthn `prf: { eval: { first: PRF_SALT } }`).
+ * Fixed, so any device gets the same secret from the same passkey.
+ */
+export const PRF_SALT = new TextEncoder().encode("kiwi-vault-prf-v1");
 
 /**
  * The vault key: raw (base64url) right after an unlock, which adding or removing
@@ -27,47 +41,18 @@ import { b64url, fromB64url, newChannelKey, openWith, sealWith } from "./crypto.
  */
 export type VaultKey = string | CryptoKey;
 
-const enc = new TextEncoder();
-const dec = new TextDecoder();
-
-/** A non-extractable copy of a raw vault key: script can use it, never read it. */
-export function vaultKey(raw: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", fromB64url(raw), "AES-GCM", false, ["encrypt", "decrypt"]);
-}
-
-const aes = (k: VaultKey) => (typeof k === "string" ? vaultKey(k) : Promise.resolve(k));
-
-async function sealUnder(k: VaultKey, data: string, ad: string): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: enc.encode(ad) }, await aes(k), enc.encode(data));
-  return `${b64url(iv)}.${b64url(new Uint8Array(ct))}`;
-}
-
-async function openUnder(k: VaultKey, box: string, ad: string): Promise<string | null> {
-  try {
-    const [iv, ct] = box.split(".");
-    return dec.decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64url(iv!), additionalData: enc.encode(ad) }, await aes(k), fromB64url(ct!)));
-  } catch {
-    return null;
-  }
-}
-
-export const VAULT_VERSION = 1;
-
-/**
- * What every passkey is asked to evaluate (WebAuthn `prf: { eval: { first: PRF_SALT } }`).
- * Fixed, so any device gets the same secret from the same passkey.
- */
-export const PRF_SALT = new TextEncoder().encode("kiwi-vault-prf-v1");
-
-export interface VaultWrap {
+/** The public part of a wrap: what a passkey list shows. Authenticated once the vault is open. */
+export interface PublicWrap {
   id: string;
   kind: "passkey" | "recovery";
-  /** Shown when managing passkeys ("MacBook Touch ID"); public. */
+  /** "MacBook Touch ID". */
   label: string;
   created: number;
-  /** The passkey's credential id (base64url), to pick its box; public. */
+  /** The passkey's credential id (base64url), to pick its box. */
   credentialId?: string;
+}
+
+export interface VaultWrap extends PublicWrap {
   salt: string;
   box: string;
 }
@@ -91,16 +76,27 @@ export interface VaultContents<E extends VaultEntry = VaultEntry> {
   gone: Record<string, number>;
 }
 
+/** The key every save is signed with. */
+export type VaultWriter = Pick<Identity, "pk" | "sk">;
+
+/** An opened vault: its contents, the passkeys that open it (authenticated), and what saving it takes. */
+export interface OpenedVault<E extends VaultEntry = VaultEntry> extends VaultContents<E> {
+  version: number;
+  wraps: PublicWrap[];
+  writer: VaultWriter;
+}
+
 interface Body<E extends VaultEntry> extends VaultContents<E> {
   v: typeof VAULT_VERSION;
   user: string;
   version: number;
-  wraps: string[];
+  wraps: PublicWrap[];
+  writer: VaultWriter;
 }
 
 /** A secret that opens the vault: a passkey's PRF output, or a recovery code's bytes. */
 export interface WrapInput {
-  kind: VaultWrap["kind"];
+  kind: PublicWrap["kind"];
   label: string;
   secret: Uint8Array;
   credentialId?: string;
@@ -108,14 +104,38 @@ export interface WrapInput {
 
 export class VaultError extends Error {}
 
+const enc = new TextEncoder();
+const dec = new TextDecoder();
 const bodyAd = (user: string, version: number) => `kiwi-vault-body\n${user}\n${version}`;
 const wrapAd = (user: string, w: Pick<VaultWrap, "id" | "kind">) => `kiwi-vault-wrap\n${user}\n${w.id}\n${w.kind}`;
 export const seat = (e: Pick<VaultEntry, "code" | "identity">) => `${e.code} ${e.identity.pk}`;
 
+/** A non-extractable copy of a raw vault key: script can use it, never read it. */
+export function vaultKey(raw: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", fromB64url(raw), "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+const aes = (k: VaultKey) => (typeof k === "string" ? vaultKey(k) : Promise.resolve(k));
+
+async function sealUnder(k: VaultKey, data: string, ad: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: enc.encode(ad) }, await aes(k), enc.encode(data));
+  return `${b64url(iv)}.${b64url(new Uint8Array(ct))}`;
+}
+
+async function openUnder(k: VaultKey, box: string, ad: string): Promise<string | null> {
+  try {
+    const [iv, ct] = box.split(".");
+    return dec.decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64url(iv!), additionalData: enc.encode(ad) }, await aes(k), fromB64url(ct!)));
+  } catch {
+    return null;
+  }
+}
+
 /** The key that seals one wrap: HKDF over the secret, salted per wrap. */
 async function kek(secret: Uint8Array, salt: string): Promise<string> {
   const base = await crypto.subtle.importKey("raw", Uint8Array.from(secret), "HKDF", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: fromB64url(salt), info: new TextEncoder().encode("kiwi-vault-kek") }, base, 256);
+  const bits = await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: fromB64url(salt), info: enc.encode("kiwi-vault-kek") }, base, 256);
   return b64url(new Uint8Array(bits));
 }
 
@@ -125,6 +145,12 @@ async function wrap(user: string, key: string, input: WrapInput, now: number): P
   return { ...w, box: await sealWith(await kek(input.secret, w.salt), key, wrapAd(user, w)) };
 }
 
+const publicOf = ({ id, kind, label, created, credentialId }: PublicWrap): PublicWrap => ({ id, kind, label, created, ...(credentialId ? { credentialId } : {}) });
+const sameWraps = (a: PublicWrap[], b: PublicWrap[]) => {
+  const key = (ws: PublicWrap[]) => JSON.stringify(ws.map(publicOf).sort((x, y) => x.id.localeCompare(y.id)));
+  return key(a) === key(b);
+};
+
 function parse(blob: string): VaultBlob {
   try {
     const b = JSON.parse(blob) as VaultBlob;
@@ -133,21 +159,30 @@ function parse(blob: string): VaultBlob {
   throw new VaultError("this vault is damaged or from a newer version of Channels");
 }
 
-async function seal<E extends VaultEntry>(user: string, key: VaultKey, wraps: VaultWrap[], version: number, c: VaultContents<E>): Promise<string> {
-  const body: Body<E> = { v: VAULT_VERSION, user, version, wraps: wraps.map((w) => w.id), channels: c.channels, gone: c.gone };
+async function seal<E extends VaultEntry>(user: string, key: VaultKey, wraps: VaultWrap[], writer: VaultWriter, version: number, c: VaultContents<E>): Promise<string> {
+  const body: Body<E> = { v: VAULT_VERSION, user, version, wraps: wraps.map(publicOf), writer: { pk: writer.pk, sk: writer.sk }, channels: c.channels, gone: c.gone };
   const out: VaultBlob = { v: VAULT_VERSION, wraps, body: await sealUnder(key, JSON.stringify(body), bodyAd(user, version)) };
   return JSON.stringify(out);
 }
 
-/** A new vault holding `contents`, opened by `first`; save it as version 1 (PUT with version 0). */
-export async function newVault<E extends VaultEntry>(user: string, contents: VaultContents<E>, first: WrapInput, now = Date.now()): Promise<{ key: string; blob: string }> {
-  const key = newChannelKey();
-  return { key, blob: await seal(user, key, [await wrap(user, key, first, now)], 1, contents) };
+async function newWriter(): Promise<VaultWriter> {
+  const { pk, sk } = await generateIdentity("vault");
+  return { pk, sk };
 }
 
-/** The passkeys and recovery codes that open a vault, without opening it (for WebAuthn's allowCredentials). */
-export function wrapsOf(blob: string): Omit<VaultWrap, "salt" | "box">[] {
-  return parse(blob).wraps.map(({ id, kind, label, created, credentialId }) => ({ id, kind, label, created, ...(credentialId ? { credentialId } : {}) }));
+/**
+ * A new vault holding `contents`, opened by `first`. Save it with
+ * putVault(…, 0, blob, writer, writer.pk): the first save names its writer.
+ */
+export async function newVault<E extends VaultEntry>(user: string, contents: VaultContents<E>, first: WrapInput, now = Date.now()): Promise<{ key: string; blob: string; writer: VaultWriter }> {
+  const key = newChannelKey();
+  const writer = await newWriter();
+  return { key, writer, blob: await seal(user, key, [await wrap(user, key, first, now)], writer, 1, contents) };
+}
+
+/** The passkeys and recovery codes a vault lists, before it's opened: only to pick a credential (allowCredentials). Show the list from openVault. */
+export function wrapsOf(blob: string): PublicWrap[] {
+  return parse(blob).wraps.map(publicOf);
 }
 
 /**
@@ -167,48 +202,57 @@ export async function unlock(blob: string, user: string, secret: Uint8Array, cre
 /**
  * Open version `version` of `user`'s vault (the version the relay served). Refuses
  * anything sealed for someone else or another version, wraps that don't match the
- * ones the body lists, and versions older than `highestSeen`, the highest this
- * device has opened before (a relay rolling the vault back).
+ * records the body lists, and versions older than `highestSeen`, the highest this
+ * device has opened before (a relay rolling the vault back). Callers persist the
+ * highest version they open or save.
  */
-export async function openVault<E extends VaultEntry>(blob: string, user: string, key: VaultKey, version: number, highestSeen = 0): Promise<VaultContents<E>> {
+export async function openVault<E extends VaultEntry>(blob: string, user: string, key: VaultKey, version: number, highestSeen = 0): Promise<OpenedVault<E>> {
   if (version < highestSeen) throw new VaultError(`the relay served vault version ${version}, older than the ${highestSeen} this device already saw: it may be rolling your vault back`);
   const b = parse(blob);
   const raw = await openUnder(key, b.body, bodyAd(user, version));
   if (raw === null) throw new VaultError("this vault doesn't open with this key, for this account and version");
   const body = JSON.parse(raw) as Body<E>;
   if (body.v !== VAULT_VERSION || body.user !== user || body.version !== version) throw new VaultError("this vault was sealed for another account or version");
-  const ids = b.wraps.map((w) => w.id).sort();
-  if (JSON.stringify(ids) !== JSON.stringify([...body.wraps].sort())) throw new VaultError("this vault's passkeys were changed by someone without its key");
-  return { channels: Array.isArray(body.channels) ? body.channels : [], gone: body.gone && typeof body.gone === "object" ? body.gone : {} };
+  if (!Array.isArray(body.wraps) || !sameWraps(b.wraps, body.wraps)) throw new VaultError("this vault's passkeys were changed by someone without its key");
+  return {
+    version,
+    wraps: body.wraps.map(publicOf),
+    writer: body.writer,
+    channels: Array.isArray(body.channels) ? body.channels : [],
+    gone: body.gone && typeof body.gone === "object" ? body.gone : {},
+  };
 }
 
-/** The same vault, re-sealed as `version` with new contents (wraps unchanged). */
-export async function resealVault<E extends VaultEntry>(blob: string, user: string, key: VaultKey, version: number, contents: VaultContents<E>): Promise<string> {
-  return seal(user, key, parse(blob).wraps, version, contents);
+/** The same vault, re-sealed as `version` with new contents (same passkeys and writer). */
+export async function resealVault<E extends VaultEntry>(blob: string, user: string, key: VaultKey, opened: OpenedVault<E>, version: number, contents: VaultContents<E>): Promise<string> {
+  return seal(user, key, parse(blob).wraps, opened.writer, version, contents);
 }
 
 /** Add a passkey or recovery code to an open vault; the result is `version`. */
-export async function addWrap<E extends VaultEntry>(blob: string, user: string, key: string, version: number, contents: VaultContents<E>, input: WrapInput, now = Date.now()): Promise<string> {
-  return seal(user, key, [...parse(blob).wraps, await wrap(user, key, input, now)], version, contents);
+export async function addWrap<E extends VaultEntry>(blob: string, user: string, key: string, opened: OpenedVault<E>, version: number, input: WrapInput, now = Date.now()): Promise<string> {
+  return seal(user, key, [...parse(blob).wraps, await wrap(user, key, input, now)], opened.writer, version, opened);
 }
 
 /**
  * Remove a passkey for real: a device that already has the vault key keeps
- * opening anything sealed under it, so removing a box isn't enough. A new vault
- * key, re-sealed contents, opened only by `keep` (this device's passkey) and a new
- * recovery code. Other passkeys are added again from here.
+ * opening anything sealed under it, and its copy of the writer key keeps saving,
+ * so removing a box isn't enough. A new vault key and writer, opened only by
+ * `keep` (this device's passkey) and a new recovery code. Save it with
+ * putVault(…, opened.writer, writer.pk): the old writer hands over to the new one.
+ * Other passkeys are added again from here.
  */
 export async function rotateVault<E extends VaultEntry>(
   user: string,
+  opened: OpenedVault<E>,
   version: number,
-  contents: VaultContents<E>,
   keep: WrapInput,
   now = Date.now(),
-): Promise<{ key: string; blob: string; recoveryCode: string }> {
+): Promise<{ key: string; blob: string; writer: VaultWriter; recoveryCode: string }> {
   const key = newChannelKey();
+  const writer = await newWriter();
   const recoveryCode = newRecoveryCode();
   const wraps = [await wrap(user, key, keep, now), await wrap(user, key, { kind: "recovery", label: "Recovery code", secret: recoverySecret(recoveryCode)! }, now)];
-  return { key, blob: await seal(user, key, wraps, version, contents), recoveryCode };
+  return { key, writer, recoveryCode, blob: await seal(user, key, wraps, writer, version, opened) };
 }
 
 /**
@@ -277,27 +321,55 @@ async function fail(res: Response): Promise<never> {
   throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`);
 }
 
-/** The stored vault, or null if this person has none yet. */
-export async function fetchVault(relay: string, human: string): Promise<{ version: number; blob: string } | null> {
+const signer = (w: VaultWriter): Identity => ({ name: "vault", pk: w.pk, sk: w.sk });
+
+/**
+ * The stored vault, or null if this person has none. `resetAt` means someone
+ * asked to reset it without the writer key: show it loudly, and save to cancel.
+ */
+export async function fetchVault(relay: string, human: string): Promise<{ version: number; blob: string; resetAt?: number } | null> {
   const res = await call(relay, human, "GET");
   if (res.status === 404) return null;
   if (!res.ok) return fail(res);
-  const { version, blob } = (await res.json()) as { version: number; blob: string };
-  return { version, blob };
+  const { version, blob, resetAt } = (await res.json()) as { version: number; blob: string; resetAt?: number };
+  return { version, blob, ...(resetAt ? { resetAt } : {}) };
 }
 
-/** Save `blob` over version `expected` (0: first save). A conflict returns the version that's there now. */
-export async function putVault(relay: string, human: string, expected: number, blob: string): Promise<{ version: number } | { conflict: number }> {
-  const res = await call(relay, human, "PUT", { version: expected, blob });
+/**
+ * Save `blob` over version `expected` (0: first save), signed by `writer`; pass
+ * `handover` to make another key the writer from now on (first save, rotation).
+ * A conflict returns the version that's there now.
+ */
+export async function putVault(relay: string, human: string, user: string, expected: number, blob: string, writer: VaultWriter, handover?: string): Promise<{ version: number } | { conflict: number }> {
+  const auth = await sign(signer(writer), { user, expected, hash: await blobHash(blob), ...(handover ? { writer: handover } : {}) });
+  const res = await call(relay, human, "PUT", { version: expected, blob, auth, ...(handover ? { writer: handover } : {}) });
   if (res.status === 409) return { conflict: ((await res.json()) as { version: number }).version };
   if (!res.ok) return fail(res);
   return { version: ((await res.json()) as { version: number }).version };
 }
 
+/** Delete the vault (signed by its writer). Devices keep the channels they have. */
+export async function deleteVault(relay: string, human: string, user: string, expected: number, writer: VaultWriter): Promise<void> {
+  const res = await call(relay, human, "DELETE", { version: expected, auth: await sign(signer(writer), { user, expected, op: "delete" }) });
+  if (!res.ok) return fail(res);
+}
+
+/**
+ * Lost every passkey and the recovery code: ask the relay to drop the vault. It
+ * waits a day (VAULT_RESET_MS), shows on every device, and any device that still
+ * opens the vault cancels it by saving.
+ */
+export async function requestVaultReset(relay: string, human: string): Promise<{ resetAt: number }> {
+  const res = await call(relay, human, "DELETE", { reset: true });
+  if (!res.ok) return fail(res);
+  return (await res.json()) as { resetAt: number };
+}
+
 /**
  * Apply `change` to the stored vault and save it, re-reading and re-applying on
  * a conflict, so two devices saving at once both land. `change` must be a delta
- * (add these seats, forget that one), never "replace with my copy".
+ * (add these seats, forget that one), never "replace with my copy". Persist the
+ * returned version as the new `highestSeen`.
  */
 export async function syncVault<E extends VaultEntry>(
   relay: string,
@@ -311,8 +383,9 @@ export async function syncVault<E extends VaultEntry>(
   for (let i = 0; i < tries; i++) {
     const got = await fetchVault(relay, human);
     if (!got) throw new VaultError("there's no vault to save into: create one first");
-    const contents = change(await openVault<E>(got.blob, user, key, got.version, highestSeen));
-    const r = await putVault(relay, human, got.version, await resealVault(got.blob, user, key, got.version + 1, contents));
+    const opened = await openVault<E>(got.blob, user, key, got.version, highestSeen);
+    const contents = change(opened);
+    const r = await putVault(relay, human, user, got.version, await resealVault(got.blob, user, key, opened, got.version + 1, contents), opened.writer);
     if ("version" in r) return { version: r.version, contents };
     highestSeen = Math.max(highestSeen, got.version);
   }
