@@ -21,8 +21,8 @@ function call(relay: string, human: string, path: string, method = "GET", body?:
 }
 
 async function fail(res: Response): Promise<never> {
-  const json = (await res.json().catch(() => ({}))) as { error?: string };
-  throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`);
+  const json = (await res.json().catch(() => ({}))) as { error?: string; tag?: string };
+  throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`, json.tag);
 }
 
 /** Encrypt `data` under a new secret and leave the ciphertext at the relay for 10 minutes. */

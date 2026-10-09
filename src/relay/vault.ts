@@ -17,6 +17,7 @@ import { sha256Hex } from "../auth.ts";
 import { canonical, verify } from "../identity.ts";
 import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
 import { HttpError } from "./room.ts";
+import { fits, Present, VaultVersion } from "./schema.ts";
 
 export interface VaultRecord {
   version: number;
@@ -76,7 +77,7 @@ async function body(req: Request): Promise<Record<string, unknown>> {
 }
 
 function version(v: unknown): number {
-  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) throw new HttpError(400, "version must be the vault version you read (0 for a new vault)");
+  if (!fits(VaultVersion, v)) throw new HttpError(400, "version must be the vault version you read (0 for a new vault)");
   return v;
 }
 
@@ -100,8 +101,8 @@ async function live(store: VaultStore, user: string, now: number): Promise<Vault
 function conflict(current: VaultRecord | null): Response {
   return Response.json(
     current
-      ? { error: "the vault changed since you read it: read it again, merge, and save", version: current.version, exists: true }
-      : { error: "there's no vault any more: start a new one", version: 0, exists: false },
+      ? { error: "the vault changed since you read it: read it again, merge, and save", tag: "VaultConflict", version: current.version, exists: true }
+      : { error: "there's no vault any more: start a new one", tag: "VaultConflict", version: 0, exists: false },
     { status: 409 },
   );
 }
@@ -112,7 +113,7 @@ export async function onVaultHttp(req: Request, store: VaultStore, human: HumanA
   if (path !== "/v1/me/vault") return null;
   if (!human) throw new HttpError(404, "this relay has no sign-in");
   const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
-  if (!user) throw new HttpError(401, "sign in first");
+  if (!user) throw new HttpError(401, "sign in first", "SignInRequired");
   const method = req.method.toUpperCase();
 
   if (method === "GET") {
@@ -124,9 +125,9 @@ export async function onVaultHttp(req: Request, store: VaultStore, human: HumanA
   if (method === "PUT") {
     const b = await body(req);
     const expected = version(b.version);
-    if (typeof b.blob !== "string" || !b.blob) throw new HttpError(400, "missing blob");
+    if (!fits(Present, b.blob)) throw new HttpError(400, "missing blob");
     if (b.blob.length > MAX_VAULT) throw new HttpError(413, "the vault is larger than 1MB");
-    if (b.writer !== undefined && (typeof b.writer !== "string" || !b.writer)) throw new HttpError(400, "bad writer");
+    if (b.writer !== undefined && !fits(Present, b.writer)) throw new HttpError(400, "bad writer");
     const handover = b.writer as string | undefined;
     const current = await live(store, user, now);
     // A stale version is a conflict, whoever signed it: a second setup on a vault that already
@@ -158,7 +159,7 @@ export async function onVaultHttp(req: Request, store: VaultStore, human: HumanA
     }
     const expected = version(b.version);
     await authorize(b.auth, { user, expected, op: "delete" }, current.writer);
-    if (!(await store.remove(user, expected))) return Response.json({ error: "the vault changed since you read it", version: current.version }, { status: 409 });
+    if (!(await store.remove(user, expected))) return Response.json({ error: "the vault changed since you read it", tag: "VaultConflict", version: current.version }, { status: 409 });
     return Response.json({ removed: true });
   }
 

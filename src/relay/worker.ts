@@ -78,7 +78,7 @@ export class Channel extends DurableObject<Env> {
       if (route.rest === "/ws") {
         if (store.isLegacy()) {
           await this.apply({ wipe: true });
-          throw new HttpError(404, "no such channel");
+          throw new HttpError(404, "no such channel", "ChannelGone");
         }
         if (req.headers.get("upgrade") !== "websocket") throw new HttpError(426, "expected websocket");
         const pk = await authenticateSocket(store, req);

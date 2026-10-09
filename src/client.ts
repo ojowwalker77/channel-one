@@ -3,6 +3,7 @@
 // Runs in Bun and in the browser.
 
 import { signRequest } from "./auth.ts";
+import { isErrorTag, tagForStatus, type ErrorTag } from "./errors.ts";
 import {
   decodeJoinCode,
   encodeJoinCode,
@@ -48,11 +49,15 @@ export interface SendOptions {
 }
 
 export class RelayError extends Error {
+  /** What the refusal means; read from the relay's answer, or from the status for relays that don't say. */
+  readonly tag: ErrorTag;
   constructor(
     readonly status: number,
     message: string,
+    tag?: unknown,
   ) {
     super(message);
+    this.tag = isErrorTag(tag) ? tag : tagForStatus(status);
   }
 }
 
@@ -103,8 +108,8 @@ async function call<T>(
   if (init.identity) headers.authorization = `Bearer ${await signRequest(init.identity, roomId, method, path + u.search, body)}`;
   if (init.human) headers["x-human-token"] = init.human;
   const res = await fetch(u, { method, body: method === "GET" || method === "DELETE" ? undefined : body, headers });
-  const json = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`);
+  const json = (await res.json().catch(() => ({}))) as T & { error?: string; tag?: string };
+  if (!res.ok) throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`, json.tag);
   return json;
 }
 
@@ -809,8 +814,9 @@ export class Channel {
 /** Map the relay errors that mean "you're out" to ChannelGone; leave everything else alone. */
 function gone(err: unknown): unknown {
   if (!(err instanceof RelayError)) return err;
-  if (err.status === 403 && /not a member/.test(err.message)) return new ChannelGone("removed");
-  if (err.status === 404 && /no such channel/.test(err.message)) return new ChannelGone("closed");
+  // By tag; by text too, for relays from before tags (0.7 and older).
+  if (err.tag === "NotMember" || (err.status === 403 && /not a member/.test(err.message))) return new ChannelGone("removed");
+  if (err.tag === "ChannelGone" || (err.status === 404 && /no such channel/.test(err.message))) return new ChannelGone("closed");
   return err;
 }
 
@@ -839,8 +845,8 @@ export interface MyChannel {
 /** Every channel the signed-in person owns, is in, or has agents in, across all their devices. */
 export async function myChannels(relay: string, human: string): Promise<MyChannel[]> {
   const res = await fetch(new URL("/v1/me/channels", relay), { headers: { "x-human-token": human } });
-  const json = (await res.json().catch(() => ({}))) as { channels?: MyChannel[]; error?: string };
-  if (!res.ok) throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`);
+  const json = (await res.json().catch(() => ({}))) as { channels?: MyChannel[]; error?: string; tag?: string };
+  if (!res.ok) throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`, json.tag);
   return json.channels ?? [];
 }
 
@@ -853,8 +859,8 @@ export interface MyUsage {
 
 export async function myUsage(relay: string, human: string): Promise<MyUsage> {
   const res = await fetch(new URL("/v1/me/usage", relay), { headers: { "x-human-token": human } });
-  const json = (await res.json().catch(() => ({}))) as MyUsage & { error?: string };
-  if (!res.ok) throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`);
+  const json = (await res.json().catch(() => ({}))) as MyUsage & { error?: string; tag?: string };
+  if (!res.ok) throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`, json.tag);
   return json;
 }
 

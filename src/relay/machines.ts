@@ -16,6 +16,7 @@ import { MACHINE_SCOPE, machineCode, vouchStatement } from "../vouch.ts";
 import { inlineText } from "../membership.ts";
 import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
 import { HttpError } from "./room.ts";
+import { fits, SignedByMachine } from "./schema.ts";
 
 /** A computer as the relay knows it: its public key, the label its person sees, and whose it is. */
 export interface MachineRecord {
@@ -80,7 +81,7 @@ export async function onMachineHttp(req: Request, store: MachineStore, human: Hu
   const body = method === "GET" || method === "DELETE" ? "" : await req.text();
   const person = async () => {
     const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
-    if (!user) throw new HttpError(401, "sign in first");
+    if (!user) throw new HttpError(401, "sign in first", "SignInRequired");
     return user;
   };
   const signedBy = async (pk: string) => {
@@ -96,7 +97,7 @@ export async function onMachineHttp(req: Request, store: MachineStore, human: Hu
     } catch {
       throw new HttpError(400, "bad json");
     }
-    if (typeof b.pk !== "string" || typeof b.ts !== "number" || !(await verify(b as object))) throw new HttpError(400, "bad signature");
+    if (!fits(SignedByMachine, b) || !(await verify(b))) throw new HttpError(400, "bad signature");
     if (Math.abs(Date.now() - b.ts) > 5 * 60_000) throw new HttpError(400, "clock is off by more than 5 minutes");
     const prior = await current(store, b.pk);
     if (prior?.user) return Response.json({ status: "linked" });

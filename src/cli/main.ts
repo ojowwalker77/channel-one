@@ -438,7 +438,9 @@ const commands: Record<string, () => Promise<void>> = {
     // Asking again with the same key resumes the same request, so re-running this is always safe.
     // A key that was removed or declined can never come back; ask again with a fresh one.
     const req = await Channel.requestJoin(relay, code, id, info, null, await vouch()).catch(async (err: unknown) => {
-      if (!(err instanceof RelayError && err.status === 403 && /removed|denied/.test(err.message))) throw err;
+      // By tag; by text too, for relays from before tags (0.7 and older).
+      const refused = err instanceof RelayError && (err.tag === "Removed" || err.tag === "Denied" || (err.status === 403 && /removed|denied/.test(err.message)));
+      if (!refused) throw err;
       forgetIdentity(name, roomId);
       id = await loadIdentity(name, roomId);
       return Channel.requestJoin(relay, code, id, info, null, await vouch());

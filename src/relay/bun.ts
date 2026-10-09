@@ -201,7 +201,7 @@ export function startRelay(
         if (route.rest === "/ws") {
           if (store.isLegacy()) {
             apply(route.roomId, { wipe: true });
-            throw new HttpError(404, "no such channel");
+            throw new HttpError(404, "no such channel", "ChannelGone");
           }
           const pk = await authenticateSocket(store, req);
           const since = Number(url.searchParams.get("since") ?? 0) || 0;

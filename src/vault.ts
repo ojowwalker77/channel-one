@@ -317,8 +317,8 @@ function call(relay: string, human: string, method: string, body?: unknown): Pro
 }
 
 async function fail(res: Response): Promise<never> {
-  const json = (await res.json().catch(() => ({}))) as { error?: string };
-  throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`);
+  const json = (await res.json().catch(() => ({}))) as { error?: string; tag?: string };
+  throw new RelayError(res.status, json.error ?? `relay returned ${res.status}`, json.tag);
 }
 
 const signer = (w: VaultWriter): Identity => ({ name: "vault", pk: w.pk, sk: w.sk });

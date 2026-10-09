@@ -13,6 +13,7 @@
 
 import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
 import { HttpError } from "./room.ts";
+import { fits, Present } from "./schema.ts";
 
 export interface DeviceTransfer {
   id: string;
@@ -38,7 +39,7 @@ export async function onDeviceHttp(req: Request, store: DeviceStore, human: Huma
   if (!path.startsWith("/v1/me/devices")) return null;
   if (!human) throw new HttpError(404, "this relay has no sign-in");
   const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
-  if (!user) throw new HttpError(401, "sign in first");
+  if (!user) throw new HttpError(401, "sign in first", "SignInRequired");
   const method = req.method.toUpperCase();
   // Expired codes go as soon as anyone looks.
   const live = async () => {
@@ -57,7 +58,7 @@ export async function onDeviceHttp(req: Request, store: DeviceStore, human: Huma
     } catch {
       throw new HttpError(400, "bad json");
     }
-    if (typeof box !== "string" || !box) throw new HttpError(400, "missing box");
+    if (!fits(Present, box)) throw new HttpError(400, "missing box");
     if (box.length > MAX_BOX) throw new HttpError(413, "too much to hand over at once");
     // One code at a time: showing a new one retires the last.
     for (const t of await store.list(user)) await store.remove(user, t.id);

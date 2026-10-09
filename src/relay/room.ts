@@ -16,6 +16,8 @@
 // The relay stores public keys, opaque sealed blobs and ciphertext. Member
 // names, roles and every message stay end-to-end encrypted.
 
+import { tagForStatus, type ErrorTag } from "../errors.ts";
+import { fits, JoinRequest, MemberRecord, SealedIcon, StoredEnvelope } from "./schema.ts";
 import { verifyRequest } from "../auth.ts";
 import { encodeJoinCode, ownerFingerprint } from "../crypto.ts";
 import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
@@ -40,12 +42,16 @@ export interface Sql {
   all<T>(query: string, ...params: (string | number | null)[]): T[];
 }
 
+/** A refusal: its status, its text (API: clients show and match it), and what it means (src/errors.ts). */
 export class HttpError extends Error {
+  readonly tag: ErrorTag;
   constructor(
     readonly status: number,
     message: string,
+    tag?: ErrorTag,
   ) {
     super(message);
+    this.tag = tag ?? tagForStatus(status);
   }
 }
 
@@ -228,7 +234,7 @@ export class RoomStore {
   }
 
   meta(): Meta {
-    if (!this.exists()) throw new HttpError(404, "no such channel");
+    if (!this.exists()) throw new HttpError(404, "no such channel", "ChannelGone");
     return {
       ownerPk: this.get("owner_pk")!,
       ownerXpk: this.get("owner_xpk")!,
@@ -245,10 +251,10 @@ export class RoomStore {
   /** The member key that signed this request, or a 401/403. */
   async authenticate(req: Request, method: string, path: string, body: string): Promise<string> {
     // A closed channel has no tables at all: say so, so members forget it.
-    if (!this.exists()) throw new HttpError(404, "no such channel");
+    if (!this.exists()) throw new HttpError(404, "no such channel", "ChannelGone");
     const pk = await verifyRequest(requestToken(req), this.roomId, method, path, body);
     if (!pk) throw new HttpError(401, "bad or expired signature");
-    if (!this.isMember(pk)) throw new HttpError(403, "not a member of this channel");
+    if (!this.isMember(pk)) throw new HttpError(403, "not a member of this channel", "NotMember");
     return pk;
   }
 
@@ -257,7 +263,7 @@ export class RoomStore {
   }
 
   append(iv: string, ct: string, e: number): Envelope {
-    if (typeof iv !== "string" || typeof ct !== "string" || !iv || !ct) throw new HttpError(400, "bad envelope");
+    if (!fits(StoredEnvelope, { iv, ct })) throw new HttpError(400, "bad envelope");
     if (ct.length > MAX_CT_LENGTH) throw new HttpError(413, "message too large");
     const epoch = this.meta().epoch;
     // Sealed with a retired key: the sender must fetch the new one and resend.
@@ -407,11 +413,9 @@ export class RoomStore {
     const at = Date.now();
     if (icon === null) this.set("icon", "");
     else {
-      const i = icon as { e?: unknown; iv?: unknown; ct?: unknown };
-      // About a 32KB image, sealed and base64'd, with room to spare; nothing bigger.
-      if (!Number.isSafeInteger(i?.e) || (i.e as number) < 0 || (i.e as number) > this.meta().epoch || typeof i.iv !== "string" || typeof i.ct !== "string" || i.ct.length > 48 * 1024) {
-        throw new HttpError(400, "bad icon (at most 32KB, sealed with a channel key)");
-      }
+      // About a 32KB image, sealed and base64'd, with room to spare; nothing bigger; and a key this channel has.
+      if (!fits(SealedIcon, icon) || icon.e > this.meta().epoch) throw new HttpError(400, "bad icon (at most 32KB, sealed with a channel key)");
+      const i = icon;
       this.set("icon", JSON.stringify({ e: i.e, iv: i.iv, ct: i.ct }));
     }
     this.set("icon_at", at);
@@ -471,7 +475,7 @@ export class RoomStore {
   }
 
   private putMember(m: MemberBody, epoch: number): void {
-    if (typeof m.pk !== "string" || typeof m.xpk !== "string" || typeof m.rec !== "string") throw new HttpError(400, "bad member");
+    if (!fits(MemberRecord, m)) throw new HttpError(400, "bad member");
     this.sql.run(
       "INSERT INTO members (pk, xpk, rec, rec_e, since, active) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT (pk) DO UPDATE SET xpk = excluded.xpk, rec = excluded.rec, rec_e = excluded.rec_e, active = 1",
       m.pk,
@@ -497,7 +501,7 @@ export class RoomStore {
     this.migrate();
     const { pk, xpk, box, ts, sig, commit } = body ?? ({} as RequestBody);
     if (typeof commit !== "string") throw new HttpError(426, UPDATE_KIWI);
-    if (![pk, xpk, box, sig].every((x) => typeof x === "string") || typeof ts !== "number" || !NONCE_RE.test(commit)) throw new HttpError(400, "bad request");
+    if (!fits(JoinRequest, body)) throw new HttpError(400, "bad request");
     if (box.length > 4096) throw new HttpError(413, "request too large");
     if (!(await verify({ room: this.roomId, pk, xpk, box, ts, commit, sig }))) throw new HttpError(400, "bad request signature");
     if (Math.abs(Date.now() - ts) > REQUEST_TTL_MS) throw new HttpError(400, "request timestamp out of range");
@@ -505,8 +509,8 @@ export class RoomStore {
     // Expiry and order use when the relay received a request, not the time the requester claims.
     this.sql.run("DELETE FROM requests WHERE status = 'pending' AND COALESCE(received, ts) < ?", Date.now() - REQUEST_TTL_MS);
     const existing = this.sql.all<{ id: string; status: string }>("SELECT id, status FROM requests WHERE pk = ?", pk)[0];
-    if (existing?.status === "denied") throw new HttpError(403, "this key was denied");
-    if (this.sql.all("SELECT 1 FROM members WHERE pk = ? AND active = 0", pk).length) throw new HttpError(403, "this key was removed; join with a new identity");
+    if (existing?.status === "denied") throw new HttpError(403, "this key was denied", "Denied");
+    if (this.sql.all("SELECT 1 FROM members WHERE pk = ? AND active = 0", pk).length) throw new HttpError(403, "this key was removed; join with a new identity", "Removed");
     if (existing) {
       // Asking again from a computer its person has since linked: the vouch applies now.
       if (vouchUser && !human) this.sql.run("UPDATE requests SET sponsor_user = ? WHERE id = ? AND status = 'pending' AND sponsor_user IS NULL AND kind = 'agent'", vouchUser, existing.id);
@@ -786,13 +790,13 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
   const ok = (data: unknown, fx?: Effects) => ({ res: Response.json(data), fx });
 
   // Shared-code rooms from before owners existed: delete them outright the first time anything touches them.
-  if (store.isLegacy()) return { res: Response.json({ error: "no such channel" }, { status: 404 }), fx: { wipe: true } };
+  if (store.isLegacy()) return { res: Response.json({ error: "no such channel", tag: "ChannelGone" }, { status: 404 }), fx: { wipe: true } };
 
   /** The signed-in human behind this request, when the relay requires sign-in. */
   const signedIn = async (): Promise<string | null> => {
     if (!human) return null;
     const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
-    if (!user) throw new HttpError(401, "sign in required: channels on this relay are owned and run by a signed-in human (use the dashboard)");
+    if (!user) throw new HttpError(401, "sign in required: channels on this relay are owned and run by a signed-in human (use the dashboard)", "SignInRequired");
     return user;
   };
 
@@ -821,7 +825,7 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     const token = req.headers.get(HUMAN_HEADER);
     if (!token) return null;
     const user = await human.verify(token);
-    if (!user) throw new HttpError(401, "sign in again: that session isn't valid");
+    if (!user) throw new HttpError(401, "sign in again: that session isn't valid", "SignInRequired");
     const profile = (await human.profile?.(user).catch(() => null)) ?? null;
     return { user, name: profile?.name ?? user };
   };
@@ -861,11 +865,11 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
   // Owner actions need the owner key's signature and, on relays that require sign-in,
   // the owning human's live session: a copied key file alone can't approve anyone.
   const owner = async () => {
-    if (me !== store.meta().ownerPk) throw new HttpError(403, "only the channel owner can do that");
+    if (me !== store.meta().ownerPk) throw new HttpError(403, "only the channel owner can do that", "NotOwner");
     const want = store.ownerUser();
     if (human && want) {
       const user = await signedIn();
-      if (user !== want) throw new HttpError(403, "only the human who owns this channel can do that");
+      if (user !== want) throw new HttpError(403, "only the human who owns this channel can do that", "NotOwner");
     }
   };
 
@@ -952,7 +956,7 @@ export async function authenticateSocket(store: RoomStore, req: Request): Promis
 }
 
 export function errorResponse(err: unknown): Response {
-  if (err instanceof HttpError) return Response.json({ error: err.message }, { status: err.status });
+  if (err instanceof HttpError) return Response.json({ error: err.message, tag: err.tag }, { status: err.status });
   // Never log request details: room ids and keys are nobody's business.
   console.error(err instanceof Error ? err.message : "error");
   return Response.json({ error: "internal error" }, { status: 500 });
@@ -970,7 +974,7 @@ export { CLOSE_CLOSED, CLOSE_REMOVED };
 export async function myChannels(req: Request, human: HumanAuth | null, list: (user: string) => Promise<DirectoryEntry[]>): Promise<Response> {
   if (!human) throw new HttpError(404, "this relay has no sign-in");
   const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
-  if (!user) throw new HttpError(401, "sign in to see your channels");
+  if (!user) throw new HttpError(401, "sign in to see your channels", "SignInRequired");
   const channels = (await list(user)).sort((a, b) => b.at - a.at);
   return Response.json({ channels });
 }
@@ -988,7 +992,7 @@ export async function myUsage(
 ): Promise<Response> {
   if (!human) throw new HttpError(404, "this relay has no sign-in");
   const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
-  if (!user) throw new HttpError(401, "sign in to see your usage");
+  if (!user) throw new HttpError(401, "sign in to see your usage", "SignInRequired");
   const owned = (await list(user)).filter((c) => c.owner);
   const channels = await Promise.all(owned.map(async (c) => ({ room: c.room, code: c.code, ...((await usageOf(c.room)) ?? { messagesToday: 0, bytes: 0, members: 0 }) })));
   return Response.json({
