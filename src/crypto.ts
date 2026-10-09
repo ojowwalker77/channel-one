@@ -19,6 +19,12 @@ export interface ChannelAccess {
   keys: Record<string, string>;
   /** The owner signed that every key it wraps carries its signature: accept no other. */
   signedKeys?: boolean;
+  /**
+   * This client has seen a title the owner signed for this room. Older rooms
+   * (created before titles were signed) then refuse an unsigned title, so a
+   * relay can't swap the signed one back for a member-sealed `{ name }`.
+   */
+  signedTitle?: boolean;
 }
 
 // Plain implementations (no Buffer) so this module also runs in the browser.

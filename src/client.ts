@@ -119,7 +119,7 @@ export interface Info {
   ownerSig: string;
   epoch: number;
   rotate: boolean;
-  /** The channel's name, sealed with the epoch-0 key. */
+  /** The channel's name, sealed with the epoch-0 key. New rooms sign it; older ones may be a plain `{ name }`. */
   title?: { iv: string; ct: string } | null;
   /** The owner's name from sign-in, vouched by the relay (null without sign-in). */
   ownerName?: string | null;
@@ -132,11 +132,20 @@ export interface Info {
  * sign a second promise into it (v: 2): every channel key the owner hands out
  * carries its signature. The relay can't fake or strip that promise, so a
  * member of such a channel never accepts a key the owner didn't sign.
+ * Channels made from now on also sign `titles: "signed"`: their titles are
+ * owner-signed, and an unsigned `{ name }` blob is refused.
  */
 export async function ownerStatement(roomId: string, info: { ownerPk: string; ownerXpk: string; ownerSig: string }): Promise<"signed-keys" | "legacy" | null> {
+  // The titles promise is tried first: a signature that includes it does not verify as the older v: 2 statement.
+  if (await verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, v: 2, titles: "signed", sig: info.ownerSig })) return "signed-keys";
   if (await verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, v: 2, sig: info.ownerSig })) return "signed-keys";
   if (await verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, sig: info.ownerSig })) return "legacy";
   return null;
+}
+
+/** Whether this room's owner signed that its titles are owner-signed. The relay can't strip the field: it's inside the signature. */
+export async function titlesSigned(roomId: string, info: { ownerPk: string; ownerXpk: string; ownerSig: string }): Promise<boolean> {
+  return verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, v: 2, titles: "signed", sig: info.ownerSig });
 }
 
 /** Fetch a room's public info and check it against the owner pinned in the join code. */
@@ -234,7 +243,7 @@ export class Channel {
   ): Promise<{ code: string; access: ChannelAccess }> {
     if (!owner.xpk) throw new Error("owner identity has no exchange key");
     const key = newChannelKey();
-    const ownerSig = await sign(owner, { room: roomId, xpk: owner.xpk, v: 2 });
+    const ownerSig = await sign(owner, { room: roomId, xpk: owner.xpk, v: 2, titles: "signed" });
     const enroll = async (id: Identity, info: MemberInfo, isOwner: boolean) => ({
       pk: id.pk,
       xpk: id.xpk!,
@@ -242,7 +251,7 @@ export class Channel {
       keys: { "0": await wrapFor(owner, roomId, 0, id.pk, id.xpk!, key) },
     });
     const members = [await enroll(owner, ownerInfo, true), ...(await Promise.all(agents.map((a) => enroll(a, a.info, false))))];
-    const sealedTitle = title ? await seal(key, roomId, { name: title }) : undefined;
+    const sealedTitle = title ? await seal(key, roomId, await sign(owner, { what: "channel-title", room: roomId, name: title.slice(0, 80) })) : undefined;
     await call(relay, roomId, "/create", {
       method: "POST",
       identity: owner,
@@ -342,13 +351,50 @@ export class Channel {
     return call<Info>(this.relay, this.roomId, "/info");
   }
 
-  /** The channel's name, if its creator gave one (only members can read it). */
+  /** Remember that this room's title is owner-signed, and tell whoever persists access. */
+  private noteSignedTitle(): void {
+    if (this.access.signedTitle) return;
+    this.access = { ...this.access, signedTitle: true };
+    this.onAccess?.(this.access);
+  }
+
+  /**
+   * The channel's name, if a member can trust it. A new room's owner signed
+   * `titles: "signed"` into the channel statement, so an unsigned blob is
+   * refused. An older room still shows a plain `{ name }` until this client
+   * has seen a title the owner signed; after that, unsigned is refused too.
+   * A title sealed by a member (they hold the channel key) never shows.
+   */
   async title(): Promise<string | null> {
-    const t = (await this.info()).title;
+    const info = await this.info();
+    const t = info.title;
     const key = this.access.keys["0"];
     if (!t || !key) return null;
-    const opened = (await open(key, this.roomId, t.iv, t.ct).catch(() => null)) as { name?: unknown } | null;
-    return typeof opened?.name === "string" ? opened.name.slice(0, 80) : null;
+    const opened = (await open(key, this.roomId, t.iv, t.ct).catch(() => null)) as { what?: unknown; room?: unknown; name?: unknown; pk?: string; sig?: string } | null;
+    if (!opened || typeof opened.name !== "string") return null;
+    const name = opened.name.slice(0, 80);
+    if (!name) return null;
+    const ownerSigned = opened.what === "channel-title" && opened.room === this.roomId && opened.pk === this.access.ownerPk && (await verify(opened));
+    if (ownerSigned) {
+      this.noteSignedTitle();
+      return name;
+    }
+    // Anything beyond a plain { name } is a member's forgery, not an old title.
+    if (opened.what !== undefined || opened.room !== undefined || opened.pk !== undefined || opened.sig !== undefined) return null;
+    if ((await titlesSigned(this.roomId, info)) || this.access.signedTitle) return null;
+    return name;
+  }
+
+  /** Owner only: rename the channel. The new name is signed and sealed, like the icon. */
+  async setTitle(name: string): Promise<void> {
+    this.ownerOnly();
+    const title = name.trim().slice(0, 80);
+    if (!title) throw new Error("a channel title can't be empty");
+    const key = this.access.keys["0"];
+    if (!key) throw new Error("missing the channel key");
+    const sealed = await seal(key, this.roomId, await sign(this.identity, { what: "channel-title", room: this.roomId, name: title }));
+    await this.request("/title", { method: "PUT", body: JSON.stringify({ title: sealed }) });
+    this.noteSignedTitle();
   }
 
   /** The channel's icon, if the owner set one (only members can read it). */

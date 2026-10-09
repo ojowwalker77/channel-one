@@ -255,7 +255,7 @@ export function forgetIdentities(roomId: string): void {
 export function saveAccess(alias: string, access: ChannelAccess): void {
   updateConfig((cfg) => {
     const c = cfg.channels[alias];
-    if (c) cfg.channels[alias] = { ...c, epoch: access.epoch, keys: { ...c.keys, ...access.keys } };
+    if (c) cfg.channels[alias] = { ...c, epoch: access.epoch, keys: { ...c.keys, ...access.keys }, ...(access.signedTitle ? { signedTitle: true } : {}) };
   });
 }
 

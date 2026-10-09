@@ -388,7 +388,9 @@ export class RoomStore {
     const { owner, members } = body;
     if (!owner || signer !== owner.pk) throw new HttpError(401, "create must be signed by the owner");
     const signed =
-      (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, v: 2, sig: owner.sig })) || (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, sig: owner.sig }));
+      (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, v: 2, titles: "signed", sig: owner.sig })) ||
+      (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, v: 2, sig: owner.sig })) ||
+      (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, sig: owner.sig }));
     if (!signed) throw new HttpError(400, "bad owner signature");
     if (!members?.some((m) => m.pk === owner.pk)) throw new HttpError(400, "the owner must be a member");
     this.init();
@@ -426,10 +428,17 @@ export class RoomStore {
     return Number(this.get("icon_at")) || null;
   }
 
-  /** The channel's sealed name, if its creator gave one. */
+  /** The channel's sealed name, if its creator gave one. The relay can't read it. */
   title(): { iv: string; ct: string } | null {
     const t = this.get("title");
     return t ? (JSON.parse(t) as { iv: string; ct: string }) : null;
+  }
+
+  /** Replace the sealed name. The caller has already checked that this is the owner. */
+  setTitle(title: unknown): void {
+    const t = title as { iv?: unknown; ct?: unknown };
+    if (typeof t?.iv !== "string" || typeof t.ct !== "string" || t.ct.length === 0 || t.ct.length >= 2048) throw new HttpError(400, "bad title");
+    this.set("title", JSON.stringify({ iv: t.iv, ct: t.ct }));
   }
 
   // ---------- who this channel is listed for ----------
@@ -891,6 +900,11 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     await owner();
     const at = store.setIcon(json<{ icon?: unknown }>().icon ?? null);
     return ok({ at }, { broadcast: [frame({ t: "info" })] });
+  }
+  if (path === "/title" && method === "PUT") {
+    await owner();
+    store.setTitle(json<{ title?: unknown }>().title);
+    return ok({ ok: true }, { broadcast: [frame({ t: "info" })] });
   }
   if (path === "/members" && method === "GET") return ok({ members: store.members() });
   if (path === "/members/me" && method === "DELETE") {
