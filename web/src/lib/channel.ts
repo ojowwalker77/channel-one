@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react"
 
 import { Channel, ChannelGone, myChannels, ownerStatement, type HumanSession, type MyChannel, type SendOptions } from "@mc/client.ts"
 import { decodeJoinCode, fromB64url, newRoomId, ownerFingerprint, type ChannelAccess } from "@mc/crypto.ts"
@@ -12,6 +12,32 @@ import { fold, type ChannelState, type Roster } from "@mc/state.ts"
 const HISTORY = 2_000
 /** Presence beacons arrive every 60s; treat 2.5 missed beats as offline. */
 const PRESENCE_TTL = 150_000
+
+/**
+ * A clock the render path can read without calling `Date.now()` (the compiler
+ * treats that as impure). The value moves once a second; hooks subscribe at
+ * their own pace. `unref` so a test import doesn't keep the process alive.
+ */
+let latest = Date.now()
+const clockTimer = setInterval(() => {
+  latest = Date.now()
+}, 1000) as unknown as { unref?: () => void }
+clockTimer.unref?.()
+
+export function clockNow(): number {
+  return latest
+}
+
+/** Latest signed-in session for a channel, so the client can stay put while the token refreshes. */
+const humanSessions = new Map<string, HumanSession | undefined>()
+
+export function useClock(intervalMs: number): number {
+  const subscribe = useCallback((onChange: () => void) => {
+    const timer = setInterval(onChange, intervalMs)
+    return () => clearInterval(timer)
+  }, [intervalMs])
+  return useSyncExternalStore(subscribe, clockNow)
+}
 
 export type Connection = "connecting" | "live" | "reconnecting"
 
@@ -146,7 +172,9 @@ export function forgetChannel(code: string): void {
   localStorage.removeItem(RECENT_KEY(code))
   try {
     localStorage.setItem(REGISTRY_KEY, JSON.stringify(knownChannels().filter((c) => c.code !== code)))
-  } catch {}
+  } catch {
+    // Private mode and a full disk both refuse the write. The in-memory list still updates.
+  }
   changed()
 }
 
@@ -177,7 +205,9 @@ export function saveRecent(code: string, r: Recent): void {
   if (localStorage.getItem(RECENT_KEY(code)) === next) return
   try {
     localStorage.setItem(RECENT_KEY(code), next)
-  } catch {}
+  } catch {
+    // A full disk drops the preview cache. The channel itself is unaffected.
+  }
   changed()
 }
 
@@ -217,8 +247,10 @@ export function useChannelList(signedIn: boolean, token: () => Promise<string | 
   const local = useKnownChannels()
   const [pending, setPending] = useState(pendingChannels)
   const [remote, setRemote] = useState<MyChannel[]>([])
-  const tokenRef = useRef(token)
-  tokenRef.current = token
+  // Signed out: nothing remote is ours. Clearing as `signedIn` flips keeps the
+  // next sign-in from flashing the previous account's channels.
+  if (!signedIn && remote.length > 0) setRemote([])
+  const readToken = useEffectEvent(token)
 
   useEffect(() => {
     const update = () => setPending(pendingChannels())
@@ -227,17 +259,18 @@ export function useChannelList(signedIn: boolean, token: () => Promise<string | 
   }, [])
 
   useEffect(() => {
-    if (!signedIn) {
-      setRemote([])
-      return
-    }
+    if (!signedIn) return
     let timer: number | undefined
+    let cancelled = false
     const load = async () => {
-      const t = await tokenRef.current()
-      if (!t) return
+      const t = await readToken()
+      if (!t || cancelled) return
       try {
-        setRemote(await myChannels(location.origin, t))
-      } catch {}
+        const rows = await myChannels(location.origin, t)
+        if (!cancelled) setRemote(rows)
+      } catch {
+        // The relay didn't answer. Keep the last list.
+      }
     }
     const soon = () => {
       clearTimeout(timer)
@@ -248,6 +281,7 @@ export function useChannelList(signedIn: boolean, token: () => Promise<string | 
     window.addEventListener("focus", soon)
     window.addEventListener(CHANGED, soon)
     return () => {
+      cancelled = true
       clearTimeout(timer)
       clearInterval(every)
       window.removeEventListener("focus", soon)
@@ -282,7 +316,7 @@ export function useChannelList(signedIn: boolean, token: () => Promise<string | 
         continue
       }
       if (rows.has(room)) continue
-      rows.set(room, { code: p.code, room, title: untitled(room), recent: null, ts: Date.now(), state: "pending", owner: false, agents: 0 })
+      rows.set(room, { code: p.code, room, title: untitled(room), recent: null, ts: clockNow(), state: "pending", owner: false, agents: 0 })
     }
     for (const r of remote) {
       if (rows.has(r.room)) continue
@@ -333,7 +367,9 @@ function rememberChannel(code: string): void {
   const next = [{ code, at: Date.now(), ...(name ? { name } : {}) }, ...knownChannels().filter((c) => c.code !== code)].slice(0, 200)
   try {
     localStorage.setItem(REGISTRY_KEY, JSON.stringify(next))
-  } catch {}
+  } catch {
+    // Private mode and a full disk both refuse the write. The channel is still open in this tab.
+  }
 }
 
 /**
@@ -444,7 +480,9 @@ const browserBudget: SigningBudget = {
   save: (roomId, signed) => {
     try {
       localStorage.setItem(`mc.checks.${roomId}`, JSON.stringify(signed))
-    } catch {}
+    } catch {
+      // Remembering the budget is a convenience. Signing still works without it.
+    }
   },
 }
 
@@ -468,8 +506,12 @@ export interface ChannelHandle {
 
 /** Stream a channel as a member: messages, presence, member list, and (for the owner) join requests. */
 export function useChannel(member: StoredMember, human?: HumanSession): ChannelHandle {
-  const humanRef = useRef(human)
-  humanRef.current = human
+  useEffect(() => {
+    humanSessions.set(member.code, human)
+    return () => {
+      if (humanSessions.get(member.code) === human) humanSessions.delete(member.code)
+    }
+  }, [human, member.code])
   const ch = useMemo(
     () =>
       new Channel(
@@ -477,7 +519,10 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
         location.origin,
         member.identity,
         (access) => saveMember({ ...(loadMember(member.code) ?? member), access }),
-        async () => (humanRef.current ? humanRef.current() : null)
+        async () => {
+          const session = humanSessions.get(member.code)
+          return session ? await session() : null
+        }
       ),
     [member]
   )
@@ -487,13 +532,8 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
   const [roster, setRoster] = useState<Member[]>([])
   const [online, setOnline] = useState<Map<string, Online>>(new Map())
   const [requests, setRequests] = useState<JoinRequest[]>([])
-  const [now, setNow] = useState(Date.now())
+  const now = useClock(15_000)
   const isOwner = ch.isOwner
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 15_000)
-    return () => clearInterval(t)
-  }, [])
 
   // Members can read the channel's sealed name; remember it for the channel list.
   useEffect(() => {
@@ -607,13 +647,15 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
   const live = useMemo(() => new Map([...online].filter(([name, o]) => !!o.pk && keyOf.get(name) === o.pk && now - o.at < PRESENCE_TTL)), [online, keyOf, now])
 
   const chRef = useRef(ch)
-  chRef.current = ch
+  useEffect(() => {
+    chRef.current = ch
+  }, [ch])
   const send = useCallback(
     async (body: string, opts: SendOptions) => {
       try {
         return await chRef.current.send(body, opts)
       } catch (err) {
-        if (onGone(err)) throw new Error("you no longer have access to this channel")
+        if (onGone(err)) throw new Error("you no longer have access to this channel", { cause: err })
         throw err
       }
     },

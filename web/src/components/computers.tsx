@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 
 import { machineCode } from "@mc/vouch.ts"
 import { displayName, useAuth } from "@/lib/auth"
+import { clockNow } from "@/lib/channel"
 import { computerInfo, confirmComputer, myComputers, removeComputer, type Computer } from "@/lib/computers"
 import { formatAgo } from "@/lib/format"
 import { Button, Modal, Spinner, Wordmark, errorText, toast } from "./kit"
@@ -109,11 +110,27 @@ function usage(c: Computer, now: number): string {
 export function ComputersModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const auth = useAuth()
   const [list, setList] = useState<Computer[] | null>(null)
+  const [fetchFor, setFetchFor] = useState({ open, auth })
+  if (fetchFor.open !== open || fetchFor.auth !== auth) {
+    setFetchFor({ open, auth })
+    setList(null)
+  }
 
   useEffect(() => {
     if (!open) return
-    setList(null)
-    void auth.token().then((t) => (t ? myComputers(t).then(setList) : setList([]))).catch(() => setList([]))
+    let cancelled = false
+    void auth
+      .token()
+      .then((t) => (t ? myComputers(t) : []))
+      .then((rows) => {
+        if (!cancelled) setList(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setList([])
+      })
+    return () => {
+      cancelled = true
+    }
   }, [open, auth])
 
   const remove = async (c: Computer) => {
@@ -142,7 +159,7 @@ export function ComputersModal({ open, onClose }: { open: boolean; onClose: () =
             <div key={c.pk} className="flex items-center gap-3 rounded-[8px] py-1.5">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[13.5px] font-medium">{c.label}</p>
-                <p className="text-[12px] text-ink-3">{usage(c, Date.now())}</p>
+                <p className="text-[12px] text-ink-3">{usage(c, clockNow())}</p>
               </div>
               <Button size="sm" variant="danger" onClick={() => void remove(c)}>
                 Remove

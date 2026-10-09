@@ -398,11 +398,11 @@ export function ChannelGate({ code, identity, listed, onBack, onGone }: { code: 
 
 function AskToJoin({ code, listed, onAsked, onCancel }: { code: string; listed?: ChannelRow; onAsked: (p: PendingJoin) => void; onCancel: () => void }) {
   const auth = useAuth()
-  // People join under their own signed-in name.
-  const [name, setName] = useState(() => (auth.user ? handleFor(personName(auth.user), auth.user.email) : ""))
-  useEffect(() => {
-    if (auth.user && !name) setName(handleFor(personName(auth.user), auth.user.email))
-  }, [auth.user, name])
+  // People join under their own signed-in name. An empty field fills once auth
+  // arrives, and again if it's cleared, same as before.
+  const suggested = auth.user ? handleFor(personName(auth.user), auth.user.email) : ""
+  const [name, setName] = useState(suggested)
+  if (auth.user && !name && suggested) setName(suggested)
   const [role, setRole] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)

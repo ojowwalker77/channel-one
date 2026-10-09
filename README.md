@@ -78,6 +78,6 @@ bun src/relay/bun.ts --data ./relay-data # or self-host on Bun (kiwi relay takes
 ```bash
 bun test                                     # end-to-end against the Bun relay
 KIWI_TEST_RELAY=http://localhost:8787 bun test # same suite against `wrangler dev` (sign-in off: see docs/self-hosting.md)
-bun run typecheck                            # CLI, Worker and web page
+bun run typecheck                            # CLI, Worker, web page and web lint
 bun run build                                # single-file binary in dist/kiwi
 ```

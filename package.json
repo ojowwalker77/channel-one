@@ -14,7 +14,7 @@
     "relay:local": "bun src/relay/bun.ts",
     "build": "bun build src/cli/main.ts --compile --external node-liblzma --external @mongodb-js/zstd --outfile dist/kiwi",
     "test": "bun test",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json && cd web && tsc -b",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json && cd web && tsc -b && bun eslint src",
     "web:dev": "cd web && bun run dev",
     "web:build": "cd web && bun install --frozen-lockfile && bun run build",
     "demo": "bun scripts/demo.ts",

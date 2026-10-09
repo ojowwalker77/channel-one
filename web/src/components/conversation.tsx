@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 import type { Message } from "@mc/protocol.ts"
 import { useAuth } from "@/lib/auth"
-import { channelTitle, forgetChannel, loadRecent, saveRecent, useChannel, useKnownChannels, type StoredMember } from "@/lib/channel"
+import { channelTitle, forgetChannel, loadRecent, saveRecent, useChannel, useClock, useKnownChannels, type StoredMember } from "@/lib/channel"
 import { excerpt, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
 import { Composer } from "./composer"
@@ -17,23 +17,22 @@ import { TaskDetail, Tasks } from "./tasks"
 const RUN_GAP = 5 * 60_000
 
 function useNow(intervalMs = 30_000): number {
-  const [now, setNow] = useState(Date.now())
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), intervalMs)
-    return () => clearInterval(t)
-  }, [intervalMs])
-  return now
+  return useClock(intervalMs)
 }
 
 /** Unread count in the tab title while the tab is in the background. */
 function useTitleBadge(count: number) {
-  const [base, setBase] = useState(count)
+  const [mark, setMark] = useState(count)
+  const [hidden, setHidden] = useState(() => document.hidden)
   useEffect(() => {
-    const onVisible = () => !document.hidden && setBase(count)
-    if (!document.hidden) setBase(count)
-    document.addEventListener("visibilitychange", onVisible)
-    return () => document.removeEventListener("visibilitychange", onVisible)
+    const onChange = () => {
+      if (document.hidden) setMark(count)
+      setHidden(document.hidden)
+    }
+    document.addEventListener("visibilitychange", onChange)
+    return () => document.removeEventListener("visibilitychange", onChange)
   }, [count])
+  const base = hidden ? mark : count
   useEffect(() => {
     const unread = count - base
     document.title = unread > 0 ? `(${unread}) Channels` : "Channels"
