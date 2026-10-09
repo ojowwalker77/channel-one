@@ -62,7 +62,8 @@ export function IconButton({
         type={type}
         aria-label={label}
         className={cx(
-          "relative inline-flex size-8 shrink-0 items-center justify-center rounded-[8px] transition-colors duration-150 disabled:opacity-40",
+          "relative inline-flex shrink-0 items-center justify-center rounded-[8px] transition-colors duration-150 disabled:opacity-40",
+          !/(^|\s)size-/.test(className ?? "") && "size-8",
           active ? "bg-wash-2 text-ink" : "text-ink-2 hover:bg-wash hover:text-ink data-popup-open:bg-wash-2 data-popup-open:text-ink",
           className
         )}

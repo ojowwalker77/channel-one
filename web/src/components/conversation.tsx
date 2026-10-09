@@ -9,7 +9,7 @@ import { cx } from "@/lib/utils"
 import { Composer } from "./composer"
 import { Details, type Filter } from "./details"
 import { Icon } from "./icon"
-import { Button, IconButton, Spinner, Tabs, TextField } from "./kit"
+import { Button, IconButton, Monogram, Spinner, Tabs, TextField } from "./kit"
 import { DayMark, EventRow, MessageRow, isAgent } from "./message"
 import { TaskDetail, Tasks } from "./tasks"
 
@@ -67,7 +67,10 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const people = useMemo(() => active.map((m) => ({ name: m.name, label: memberName(m), agent: isAgent(m) })), [active])
   // The channel's name can arrive after this view opens (members decrypt it), so follow the list.
   const known = useKnownChannels()
-  const title = channelTitle({ name: member.name ?? known.find((c) => c.code === member.code)?.name }, others.length ? { from: "", text: "", ts: 0, people: others.map((m) => memberName(m)) } : loadRecent(member.code))
+  const title = channelTitle(
+    { name: member.name ?? known.find((c) => c.code === member.code)?.name },
+    others.length ? { from: "", text: "", ts: 0, people: others.map((m) => memberName(m)) } : loadRecent(member.code)
+  )
   const forMe = useMemo(() => messages.filter((m) => m.from !== me && m.to?.includes(me)), [messages, me])
   const openTasks = useMemo(() => [...state.tasks.values()].filter((t) => t.state !== "done").length, [state.tasks])
   useTitleBadge(messages.filter((m) => m.from !== me).length)
@@ -184,8 +187,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
     )
   }
 
-  const filterLabel =
-    filter?.kind === "from" ? `Only ${nameOf(filter.name)}` : filter?.kind === "open" ? "Unanswered questions" : filter?.kind === "mine" ? "Messages to you" : null
+  const filterLabel = filter?.kind === "from" ? `Only ${nameOf(filter.name)}` : filter?.kind === "open" ? "Unanswered questions" : filter?.kind === "mine" ? "Messages to you" : null
   const subtitle =
     connection === "connecting"
       ? "Connecting…"
@@ -195,6 +197,8 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
           ? `${memberCount} members, ${online.size} online`
           : `${memberCount} ${memberCount === 1 ? "member" : "members"}`
   const asking = isOwner ? requests : []
+  // Who's here right now, people first: a glance at the header says who's working.
+  const here = active.filter((m) => online.has(m.name)).sort((a, b) => Number(isAgent(a)) - Number(isAgent(b)))
 
   return (
     <div className="flex h-full min-w-0 flex-1">
@@ -204,8 +208,19 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
             <Icon icon={ArrowLeft01Icon} size={20} />
           </IconButton>
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-[14px] leading-tight font-semibold tracking-[-0.01em]">{title}</h1>
-            <p className={cx("truncate text-[12px] leading-tight", connection === "live" ? "text-ink-2" : "text-ink-3")}>{subtitle}</p>
+            <h1 className="truncate text-[15px] leading-tight font-semibold tracking-[-0.015em]">{title}</h1>
+            <button type="button" onClick={() => setDetails(true)} className="mt-0.5 flex max-w-full items-center gap-1.5 rounded-[6px] text-left transition-colors hover:text-ink">
+              {connection === "live" && here.length > 0 && (
+                <span className="flex shrink-0 -space-x-1" aria-hidden>
+                  {here.slice(0, 5).map((m) => (
+                    <span key={m.name} className="flex bg-canvas p-px" style={{ borderRadius: isAgent(m) ? 6 : 999 }}>
+                      <Monogram name={memberName(m)} agent={isAgent(m)} size={16} />
+                    </span>
+                  ))}
+                </span>
+              )}
+              <span className={cx("truncate text-[12px] leading-tight", connection === "live" ? "text-ink-2" : "text-ink-3")}>{subtitle}</span>
+            </button>
           </div>
           <Tabs
             value={tab}
@@ -282,7 +297,11 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
                 <Centered>
                   <p className="text-[14px] font-semibold">{search ? "No results" : filter ? "Nothing here" : "No messages yet"}</p>
                   <p className="mt-1 max-w-xs text-[13px] leading-normal text-ink-2">
-                    {search ? `No message mentions “${search}”.` : filter ? "Clear the filter to see the whole conversation." : "Invite an agent from Details. What it says shows up here the moment it’s sent."}
+                    {search
+                      ? `No message mentions “${search}”.`
+                      : filter
+                        ? "Clear the filter to see the whole conversation."
+                        : "Invite an agent from Details. What it says shows up here the moment it’s sent."}
                   </p>
                 </Centered>
               ) : (
