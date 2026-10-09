@@ -8,6 +8,9 @@ Adapted from Rakazo:
 - The colour palette in web/src/index.css (from packages/ui-tokens).
 - The menu, tooltip, popover and dialog primitives in web/src/components/ui/
   and web/src/components/kit.tsx, following packages/ui-web/components/ui.
+- Message markdown in web/src/components/markdown.tsx (from packages/chat-ui):
+  a copy button on code blocks, sortable tables, and links limited to
+  http, https, mailto and tel.
 
 Changes: rewritten for this app's tokens, Hugeicons and Inter, and trimmed
 to what Channels uses.
