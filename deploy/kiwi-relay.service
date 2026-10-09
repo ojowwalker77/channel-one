@@ -1,0 +1,24 @@
+[Unit]
+Description=Kiwi Channels relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The process holds room databases. It does not need root.
+# Before enabling: useradd --system --create-home --home-dir /var/lib/kiwi kiwi
+# and clone the repo to /opt/kiwi (`bun install --frozen-lockfile --production`).
+User=kiwi
+Group=kiwi
+WorkingDirectory=/opt/kiwi
+Environment=KIWI_DATA=/var/lib/kiwi
+# Loopback only. deploy/Caddyfile is the public TLS listener.
+# `kiwi relay` takes these same flags when the machine has the binary instead of a checkout.
+ExecStart=/usr/local/bin/bun src/relay/bun.ts --hostname 127.0.0.1 --port 8787 --data /var/lib/kiwi --no-web
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

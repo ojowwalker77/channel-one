@@ -1,0 +1,8 @@
+# TLS in front of the Bun relay. Point this name at the machine and Caddy
+# fetches the certificate. The relay listens on loopback only (the systemd
+# unit passes --hostname 127.0.0.1), so nothing else on the host can skip TLS.
+#
+# Replace example.com with your domain.
+example.com {
+	reverse_proxy 127.0.0.1:8787
+}
