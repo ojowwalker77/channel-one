@@ -117,6 +117,8 @@ export interface Info {
   ownerPk: string;
   ownerXpk: string;
   ownerSig: string;
+  /** Owner's separate promise that titles are signed. Absent on older rooms; a relay can omit it. */
+  titlesSig?: string | null;
   epoch: number;
   rotate: boolean;
   /** The channel's name, sealed with the epoch-0 key. New rooms sign it; older ones may be a plain `{ name }`. */
@@ -132,20 +134,23 @@ export interface Info {
  * sign a second promise into it (v: 2): every channel key the owner hands out
  * carries its signature. The relay can't fake or strip that promise, so a
  * member of such a channel never accepts a key the owner didn't sign.
- * Channels made from now on also sign `titles: "signed"`: their titles are
- * owner-signed, and an unsigned `{ name }` blob is refused.
+ * This statement stays exactly that shape, so a 0.7 client can still join a
+ * newer room. The titles promise is a separate signature (see titlesSigned).
  */
 export async function ownerStatement(roomId: string, info: { ownerPk: string; ownerXpk: string; ownerSig: string }): Promise<"signed-keys" | "legacy" | null> {
-  // The titles promise is tried first: a signature that includes it does not verify as the older v: 2 statement.
-  if (await verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, v: 2, titles: "signed", sig: info.ownerSig })) return "signed-keys";
   if (await verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, v: 2, sig: info.ownerSig })) return "signed-keys";
   if (await verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, sig: info.ownerSig })) return "legacy";
   return null;
 }
 
-/** Whether this room's owner signed that its titles are owner-signed. The relay can't strip the field: it's inside the signature. */
-export async function titlesSigned(roomId: string, info: { ownerPk: string; ownerXpk: string; ownerSig: string }): Promise<boolean> {
-  return verify({ room: roomId, pk: info.ownerPk, xpk: info.ownerXpk, v: 2, titles: "signed", sig: info.ownerSig });
+/**
+ * Whether this room's owner signed that its titles are owner-signed. Kept out
+ * of the key statement so older clients ignore it. A relay can strip it, which
+ * drops the room back to the older rule until a signed title has been seen.
+ */
+export async function titlesSigned(roomId: string, ownerPk: string, titlesSig: string | null | undefined): Promise<boolean> {
+  if (!titlesSig) return false;
+  return verify({ room: roomId, pk: ownerPk, titles: "signed", sig: titlesSig });
 }
 
 /** Fetch a room's public info and check it against the owner pinned in the join code. */
@@ -243,7 +248,8 @@ export class Channel {
   ): Promise<{ code: string; access: ChannelAccess }> {
     if (!owner.xpk) throw new Error("owner identity has no exchange key");
     const key = newChannelKey();
-    const ownerSig = await sign(owner, { room: roomId, xpk: owner.xpk, v: 2, titles: "signed" });
+    const ownerSig = await sign(owner, { room: roomId, xpk: owner.xpk, v: 2 });
+    const titlesSig = await sign(owner, { room: roomId, titles: "signed" });
     const enroll = async (id: Identity, info: MemberInfo, isOwner: boolean) => ({
       pk: id.pk,
       xpk: id.xpk!,
@@ -256,7 +262,7 @@ export class Channel {
       method: "POST",
       identity: owner,
       human,
-      body: JSON.stringify({ owner: { pk: owner.pk, xpk: owner.xpk, sig: ownerSig.sig }, members, ...(sealedTitle ? { title: sealedTitle } : {}) }),
+      body: JSON.stringify({ owner: { pk: owner.pk, xpk: owner.xpk, sig: ownerSig.sig, titlesSig: titlesSig.sig }, members, ...(sealedTitle ? { title: sealedTitle } : {}) }),
     });
     const access: ChannelAccess = { roomId, ownerPk: owner.pk, ownerXpk: owner.xpk, epoch: 0, keys: { "0": key }, signedKeys: true };
     return { code: encodeJoinCode({ roomId, ownerFp: await ownerFingerprint(owner.pk) }), access };
@@ -359,11 +365,12 @@ export class Channel {
   }
 
   /**
-   * The channel's name, if a member can trust it. A new room's owner signed
-   * `titles: "signed"` into the channel statement, so an unsigned blob is
-   * refused. An older room still shows a plain `{ name }` until this client
-   * has seen a title the owner signed; after that, unsigned is refused too.
-   * A title sealed by a member (they hold the channel key) never shows.
+   * The channel's name, if a member can trust it. A new room carries a separate
+   * owner signature that titles are signed, so an unsigned blob is refused.
+   * An older room, or a new one whose relay stripped that signature, still
+   * shows a plain `{ name }` until this client has seen a title the owner
+   * signed; after that, unsigned is refused too. A title sealed by a member
+   * (they hold the channel key) never shows.
    */
   async title(): Promise<string | null> {
     const info = await this.info();
@@ -381,7 +388,7 @@ export class Channel {
     }
     // Anything beyond a plain { name } is a member's forgery, not an old title.
     if (opened.what !== undefined || opened.room !== undefined || opened.pk !== undefined || opened.sig !== undefined) return null;
-    if ((await titlesSigned(this.roomId, info)) || this.access.signedTitle) return null;
+    if ((await titlesSigned(this.roomId, info.ownerPk, info.titlesSig)) || this.access.signedTitle) return null;
     return name;
   }
 

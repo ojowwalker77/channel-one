@@ -388,15 +388,15 @@ export class RoomStore {
     const { owner, members } = body;
     if (!owner || signer !== owner.pk) throw new HttpError(401, "create must be signed by the owner");
     const signed =
-      (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, v: 2, titles: "signed", sig: owner.sig })) ||
-      (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, v: 2, sig: owner.sig })) ||
-      (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, sig: owner.sig }));
+      (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, v: 2, sig: owner.sig })) || (await verify({ room: this.roomId, pk: owner.pk, xpk: owner.xpk, sig: owner.sig }));
     if (!signed) throw new HttpError(400, "bad owner signature");
     if (!members?.some((m) => m.pk === owner.pk)) throw new HttpError(400, "the owner must be a member");
     this.init();
     this.set("owner_pk", owner.pk);
     this.set("owner_xpk", owner.xpk);
     this.set("owner_sig", owner.sig);
+    // Separate from owner_sig, so a 0.7 client still verifies the key statement. The relay can drop it.
+    if (typeof owner.titlesSig === "string" && owner.titlesSig.length > 0 && owner.titlesSig.length < 200) this.set("titles_sig", owner.titlesSig);
     this.set("epoch", 0);
     this.set("created", Date.now());
     if (ownerUser) this.set("owner_user", ownerUser);
@@ -426,6 +426,11 @@ export class RoomStore {
 
   iconAt(): number | null {
     return Number(this.get("icon_at")) || null;
+  }
+
+  /** The owner's separate promise that titles are signed, if /create sent one. */
+  getTitlesSig(): string | null {
+    return this.get("titles_sig") || null;
   }
 
   /** The channel's sealed name, if its creator gave one. The relay can't read it. */
@@ -697,7 +702,7 @@ export interface MemberBody {
 export interface CreateBody {
   /** The channel's name, sealed with the epoch-0 key. */
   title?: { iv: string; ct: string };
-  owner: { pk: string; xpk: string; sig: string };
+  owner: { pk: string; xpk: string; sig: string; titlesSig?: string };
   members: MemberBody[];
 }
 
@@ -814,7 +819,7 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     // Who invited you, as sign-in knows them: anyone holding the code may see the owner's name.
     const owner = store.ownerUser();
     const ownerName = owner && human?.profile ? ((await human.profile(owner).catch(() => null))?.name ?? null) : null;
-    return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, epoch: m.epoch, rotate: m.rotate, title: store.title(), ownerName, iconAt: store.iconAt() });
+    return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, titlesSig: store.getTitlesSig(), epoch: m.epoch, rotate: m.rotate, title: store.title(), ownerName, iconAt: store.iconAt() });
   }
   if (path === "/create" && method === "POST") {
     const signer = await verifyRequest(requestToken(req), store.roomId, method, path + url.search, body);
