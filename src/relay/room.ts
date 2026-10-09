@@ -62,6 +62,8 @@ export interface Effects {
   wipe?: boolean;
   /** Update signed-in people's channel lists (a null entry drops this channel from theirs). */
   directory?: DirectoryUpdate[];
+  /** The room was active: if it stays idle until this time, it expires (adapters schedule the check). */
+  expireAt?: number;
 }
 
 /**
@@ -307,6 +309,37 @@ export class RoomStore {
       if (freed >= need) break;
     }
     return this.dropThrough(through);
+  }
+
+  // ---------- idle rooms expire ----------
+
+  /**
+   * Note activity (a stored message, a connection). On relays that expire idle rooms, returns
+   * when this room expires if nothing else happens. Written at most once an hour, so a busy
+   * room doesn't pay a write per message for it.
+   */
+  touch(): number | null {
+    const days = this.policy.expireAfterDays;
+    if (!days || !this.exists()) return null;
+    const now = this.now();
+    if (now - Number(this.get("active") ?? 0) < 3_600_000 && this.get("room")) return null;
+    this.set("active", now);
+    // The Worker's alarm runs without a request, so the room keeps its own id.
+    this.set("room", this.roomId);
+    return now + days * 86_400_000;
+  }
+
+  /** Whether the room has gone quiet for longer than the relay keeps idle rooms. */
+  idleExpired(): boolean {
+    const days = this.policy.expireAfterDays;
+    if (!days || !this.exists()) return false;
+    const last = Number(this.get("active") ?? this.get("created") ?? 0);
+    return this.now() - last >= days * 86_400_000;
+  }
+
+  /** Expire exactly as a close would: off everyone's channel list, then every row gone. */
+  expire(): Effects {
+    return { directory: this.unlinkAll(), wipe: true };
   }
 
   /** How many members (people and agents) are in the channel now. */
@@ -586,7 +619,7 @@ export function onClientFrame(store: RoomStore, raw: string, sender = ""): Effec
   if (!allow(`${store.roomId}:${sender}`, MESSAGES_PER_MINUTE)) return { reply: frame({ t: "err", error: "too many messages; wait a minute", id: f.id }) };
   try {
     const e = store.append(f.iv, f.ct, Number(f.e ?? 0));
-    return { broadcast: [msgFrame(e)], reply: frame({ t: "ack", id: f.id, seq: e.seq }) };
+    return { broadcast: [msgFrame(e)], reply: frame({ t: "ack", id: f.id, seq: e.seq }), expireAt: store.touch() ?? undefined };
   } catch (err) {
     return { reply: frame({ t: "err", error: err instanceof Error ? err.message : String(err), id: f.id }) };
   }
@@ -662,7 +695,7 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
       throw new HttpError(429, `you own ${most} channels, the most this relay allows per person; close one to create another`);
     }
     await store.create(signer, json<CreateBody>(), user);
-    return ok({ head: 0 }, user ? { directory: await store.directory() } : undefined);
+    return ok({ head: 0 }, { ...(user ? { directory: await store.directory() } : {}), expireAt: store.touch() ?? undefined });
   }
   /** The signed-in human behind a request, with their name as WorkOS knows it. */
   const person = async (): Promise<{ user: string; name: string } | null> => {
@@ -714,7 +747,7 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     if (!allow(`${store.roomId}:${me}`, MESSAGES_PER_MINUTE)) throw new HttpError(429, "too many messages; wait a minute");
     const b = json<{ iv?: string; ct?: string; e?: number }>();
     const e = store.append(b.iv as string, b.ct as string, Number(b.e ?? 0));
-    return ok({ seq: e.seq, ts: e.ts }, { broadcast: [msgFrame(e)] });
+    return ok({ seq: e.seq, ts: e.ts }, { broadcast: [msgFrame(e)], expireAt: store.touch() ?? undefined });
   }
   if (path === "/keys" && method === "GET") return ok(store.keysFor(me));
   if (path === "/members" && method === "GET") return ok({ members: store.members() });

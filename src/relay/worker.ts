@@ -83,6 +83,7 @@ export class Channel extends DurableObject<Env> {
         this.ctx.acceptWebSocket(server);
         server.serializeAttachment({ pk, room: route.roomId });
         for (const f of welcomeFrames(store, Number(url.searchParams.get("since") ?? 0) || 0)) server.send(f);
+        await this.apply({ expireAt: store.touch() ?? undefined });
         return new Response(null, { status: 101, webSocket: client, headers: wsHeaders(req) });
       }
       const { res, fx } = await onHttp(store, req, route.rest, {
@@ -128,10 +129,26 @@ export class Channel extends DurableObject<Env> {
       );
     }
     if (fx.wipe) {
-      // Closing leaves no breadcrumbs: every row and table goes.
+      // Closing leaves no breadcrumbs: every row and table goes, alarms included.
+      await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
       for (const ws of sockets) close(ws, CLOSE_CLOSED, "channel closed");
+    } else if (fx.expireAt) {
+      await this.ctx.storage.setAlarm(fx.expireAt);
     }
+  }
+
+  /** An idle room's expiry check: expire it if nobody's connected and nothing was stored since. */
+  override async alarm(): Promise<void> {
+    const room = (this.sql.all<{ v: string }>("SELECT v FROM meta WHERE k = 'room'")[0] ?? null)?.v;
+    if (!room) return;
+    const store = this.store(room);
+    const days = store.policy.expireAfterDays;
+    if (!days) return;
+    // Someone's still connected: look again later rather than cut them off.
+    if (this.ctx.getWebSockets().length) return void (await this.ctx.storage.setAlarm(Date.now() + days * 86_400_000));
+    if (store.idleExpired()) await this.apply(store.expire());
+    else await this.ctx.storage.setAlarm(Number(this.sql.all<{ v: string }>("SELECT v FROM meta WHERE k = 'active'")[0]?.v ?? Date.now()) + days * 86_400_000);
   }
 }
 

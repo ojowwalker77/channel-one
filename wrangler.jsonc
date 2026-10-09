@@ -33,7 +33,20 @@
     // comma-separated) create channels; anyone can still ask to join one. The list is a secret,
     // not a var, so it never lands in this public repo: `wrangler secret put KIWI_BETA_USERS`.
     // Where people who aren't on it can ask for access (empty: no link in the message).
-    "KIWI_BETA_WAITLIST_URL": ""
+    "KIWI_BETA_WAITLIST_URL": "",
+    // The future free tier. Each is off when unset (self-hosted relays leave them out).
+    // Channels one person owns at once; closing one frees the slot.
+    "KIWI_QUOTA_CHANNELS_PER_OWNER": "2",
+    // Active members per channel, people and agents together.
+    "KIWI_QUOTA_MEMBERS_PER_CHANNEL": "8",
+    // Messages stored per channel per UTC day; the refusal says when it resets.
+    "KIWI_QUOTA_MESSAGES_PER_DAY": "2000",
+    // Stored ciphertext per channel (50 MB); the oldest messages make room. Every relay caps
+    // this at 1 GB when unset.
+    "KIWI_QUOTA_BYTES_PER_CHANNEL": "52428800",
+    // A channel with no new message and nobody connected for this many days is deleted,
+    // exactly like a close.
+    "KIWI_EXPIRE_AFTER_DAYS": "90"
   },
   "build": { "command": "bun run web:build" },
   // No request logs: room ids and timing are nobody's business, and a closed

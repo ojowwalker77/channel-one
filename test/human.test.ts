@@ -278,3 +278,23 @@ describe("channels per person", () => {
     }
   });
 });
+
+describe("expiry and channel lists", () => {
+  test("an expired channel leaves everyone's list, like a close", async () => {
+    const { OPEN_POLICY } = await import("../src/relay/policy.ts");
+    const dir = mkdtempSync(join(tmpdir(), "mc-expire-"));
+    const clock = { now: Date.now() };
+    const r = startRelay({ port: 0, hostname: "127.0.0.1", dataDir: dir, human, policy: { ...OPEN_POLICY, expireAfterDays: 90 }, now: () => clock.now });
+    try {
+      const owner = await generateIdentity("a");
+      const { access } = await Channel.create(r.url.origin, owner, { name: "alice-owner", kind: "human" }, [], undefined, await token("user_alice"));
+      expect((await myChannels(r.url.origin, await token("user_alice"))).some((c) => c.room === access.roomId)).toBe(true);
+      clock.now += 91 * 86_400_000;
+      expect(r.sweep()).toBe(1);
+      expect((await myChannels(r.url.origin, await token("user_alice"))).some((c) => c.room === access.roomId)).toBe(false);
+    } finally {
+      r.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

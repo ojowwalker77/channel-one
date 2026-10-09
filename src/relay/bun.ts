@@ -4,7 +4,7 @@
 // Usage: bun src/relay/bun.ts --help
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
@@ -109,7 +109,27 @@ export function startRelay(
     }
   };
 
-  return Bun.serve<SocketData>({
+  /**
+   * Expire idle rooms: the Bun relay's version of the Worker's alarm. Runs hourly when the relay
+   * expires idle rooms at all; returns how many it expired (tests call it directly).
+   */
+  const sweep = (): number => {
+    if (!policy.expireAfterDays) return 0;
+    let expired = 0;
+    for (const f of readdirSync(dataDir)) {
+      const m = /^([0-9a-f]{32})\.sqlite$/.exec(f);
+      if (!m || sockets.get(m[1]!)?.size) continue;
+      const store = storeFor(m[1]!, false);
+      if (!store.idleExpired()) continue;
+      apply(m[1]!, store.expire());
+      expired++;
+    }
+    return expired;
+  };
+  const sweeper = policy.expireAfterDays ? setInterval(sweep, 3_600_000) : undefined;
+  sweeper?.unref?.();
+
+  const server = Bun.serve<SocketData>({
     port: opts.port ?? 8787,
     hostname: opts.hostname ?? "0.0.0.0",
     idleTimeout: 0,
@@ -169,7 +189,10 @@ export function startRelay(
         let set = sockets.get(ws.data.roomId);
         if (!set) sockets.set(ws.data.roomId, (set = new Set()));
         set.add(ws);
-        for (const f of welcomeFrames(storeFor(ws.data.roomId, false), ws.data.since)) ws.send(f);
+        const store = storeFor(ws.data.roomId, false);
+        for (const f of welcomeFrames(store, ws.data.since)) ws.send(f);
+        // A connection counts as activity for idle expiry.
+        store.touch();
       },
       message(ws, data) {
         const raw = typeof data === "string" ? data : new TextDecoder().decode(data);
@@ -183,6 +206,7 @@ export function startRelay(
       },
     },
   });
+  return Object.assign(server, { sweep });
 }
 
 /**

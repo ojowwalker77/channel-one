@@ -1,7 +1,7 @@
 // Per-person and per-channel limits (the future free tier), and the safety caps every relay keeps.
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel } from "../src/client.ts";
@@ -23,7 +23,7 @@ function relayWith(policy: Partial<RelayPolicy>, clock = { now: Date.now() }) {
   dirs.push(dataDir);
   const server = startRelay({ port: 0, hostname: "127.0.0.1", dataDir, policy: { ...OPEN_POLICY, ...policy }, now: () => clock.now });
   servers.push(server);
-  return { relay: server.url.origin, dataDir, clock };
+  return { relay: server.url.origin, dataDir, clock, server };
 }
 
 async function channelOn(relay: string, members = 1) {
@@ -100,5 +100,32 @@ describe("stored bytes per channel", () => {
     const { messages } = await a.history(0);
     expect(messages.at(-1)!.body).toStartWith("message 11");
     await expect(a.send("y".repeat(5000))).rejects.toMatchObject({ status: 413 });
+  });
+});
+
+describe("idle rooms expire", () => {
+  test("activity keeps a room; a quiet one is wiped like a close, and members learn it's gone", async () => {
+    const clock = { now: Date.UTC(2026, 9, 8, 12) };
+    const { relay, dataDir, server } = relayWith({ expireAfterDays: 1 }, clock);
+    const { access, agents } = await channelOn(relay, 1);
+    const a = agents[0]!;
+    await a.send("still here");
+    clock.now += 20 * 3_600_000;
+    expect(server.sweep()).toBe(0);
+    await a.send("still here, later"); // activity: the clock restarts
+    clock.now += 20 * 3_600_000;
+    expect(server.sweep()).toBe(0);
+    clock.now += 5 * 3_600_000;
+    expect(server.sweep()).toBe(1);
+    expect(existsSync(join(dataDir, `${access.roomId}.sqlite`))).toBe(false);
+    await expect(a.send("anyone?")).rejects.toMatchObject({ why: "closed" });
+  });
+
+  test("off unless configured: nothing expires", async () => {
+    const clock = { now: Date.UTC(2026, 9, 8, 12) };
+    const { relay, server } = relayWith({}, clock);
+    await channelOn(relay, 0);
+    clock.now += 400 * 86_400_000;
+    expect(server.sweep()).toBe(0);
   });
 });
