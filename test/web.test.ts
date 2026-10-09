@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startRelay } from "../src/relay/bun.ts";
@@ -77,6 +77,12 @@ describe("dashboard on the Bun relay", () => {
 
   test("a dashboard folder that was never built is refused at startup", () => {
     expect(() => startRelay({ port: 0, hostname: "127.0.0.1", dataDir: join(tmp, "data3"), web: { dir: join(tmp, "nope") } })).toThrow("no index.html");
+  });
+});
+
+describe("the data folder", () => {
+  test("is created readable only by the relay's user", () => {
+    expect(statSync(join(tmp, "data")).mode & 0o777).toBe(0o700);
   });
 });
 

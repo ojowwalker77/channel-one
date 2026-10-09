@@ -49,7 +49,8 @@ export function startRelay(
   const policy = opts.policy ?? policyFrom(process.env);
   const web = opts.web ? webApp(opts.web) : null;
   const dataDir = opts.dataDir ?? ".relay-data";
-  mkdirSync(dataDir, { recursive: true });
+  // Rooms hold ciphertext, member keys and join codes: only the relay's own user reads them.
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const dbs = new Map<string, Database>();
   const sockets = new Map<string, Set<ServerWebSocket<SocketData>>>();
   const file = (roomId: string) => join(dataDir, `${roomId}.sqlite`);
