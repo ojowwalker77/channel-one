@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { loadJson, loadLine, memberLoad } from "../src/load.ts";
+import { loadJson, loadLine, loadSummary, memberLoad, showsLoad } from "../src/load.ts";
 import type { ChannelState, Claim, Task } from "../src/state.ts";
 
 const now = 1_000_000;
@@ -38,5 +38,17 @@ describe("member load", () => {
     const l = memberLoad(s, "win", now);
     expect(loadLine(l)).toBe("doing T7 Fix the login redirect · 1 queued · 1 claim");
     expect(loadJson(l)).toEqual({ level: "busy", current: [{ id: "T7", title: "Fix the login redirect" }], queued: [{ id: "T8", title: "task 8" }], waiting: [], claims: [{ path: "web/src", expires: now + 60_000 }] });
+  });
+
+  test("agents always show load; people and owners only when they hold something", () => {
+    const free = memberLoad(board([]), "x", now);
+    const busy = memberLoad(board([task(1, "x", "todo")]), "x", now);
+    expect(showsLoad({ kind: "agent" }, free)).toBe(true);
+    expect(showsLoad(undefined, free)).toBe(true);
+    expect(showsLoad({ kind: "human" }, free)).toBe(false);
+    expect(showsLoad({ owner: true }, free)).toBe(false);
+    expect(showsLoad({ owner: true }, busy)).toBe(true);
+    expect(loadSummary(free)).toBe("free");
+    expect(loadSummary(busy)).toBe("busy: 1 queued");
   });
 });

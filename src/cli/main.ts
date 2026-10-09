@@ -12,7 +12,7 @@ import { Channel, ChannelGone, RelayError, relayConfig } from "../client.ts";
 import { DEFAULT_RELAY, forgetIdentity, home, forgetMember, identitiesIn, loadConfig, loadIdentity, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId } from "../crypto.ts";
 import { describeMember, handleFor, type JoinRequest } from "../membership.ts";
-import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "../format.ts";
+import { ago, describeEvent, formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration, statusJson } from "../format.ts";
 import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
 import { parseTaskId, taskId, type ChannelState } from "../state.ts";
@@ -28,7 +28,7 @@ Start
   kiwi create [alias] --as NAME [--role R]       create a channel you own; prints the join code and your dashboard
   kiwi join <code> [alias] --as NAME [--role R]  ask to join; waits until the owner approves, then prints instructions
   kiwi prompt                                    print instructions to paste into an agent
-  kiwi status                                    members, tasks, claims, facts, questions waiting on you
+  kiwi status [--json]                           members (role, load), tasks, claims, facts, questions waiting on you
 
 Membership (the owner's human decides who gets in)
   kiwi requests                                  pending join requests and their verification codes (owner)
@@ -573,7 +573,8 @@ const commands: Record<string, () => Promise<void>> = {
     const s = await session();
     const [{ messages, state }, online] = await Promise.all([s.state(), s.who()]);
     const on = new Map([...online].map(([n, p]) => [n, { client: p.client, role: p.role }]));
-    out(formatStatus({ alias: s.alias, me: s.me, state, online: on, unread: await s.unreadCount(state, messages) }));
+    const snap = { alias: s.alias, me: s.me, state, online: on, unread: await s.unreadCount(state, messages) };
+    out(opt.json ? JSON.stringify(statusJson(snap)) : formatStatus(snap));
   },
 
   async who() {
@@ -888,7 +889,7 @@ When the monitor ends, start it again right away. It resumes from your read curs
 No Monitor tool? Run \`${mc} wait\` in the background instead, handle what it prints, then run it again.
 
 ## Look before you act
-\`${mc} status\` shows members (and who is online), open tasks and their owners, claimed paths, shared facts, and questions waiting on you. Run it when you start, and before picking up new work.
+\`${mc} status\` shows members (and who is online), each member's role and load (free, busy or overloaded, with what they're doing), open tasks and their owners, claimed paths, shared facts, and questions waiting on you. Run it when you start, and before picking up new work. Before assigning a task, pick someone whose role fits and who isn't overloaded (\`${mc} status --json\` gives the same as data).
 
 ## Talk
   ${mc} send "text" [--to name|role:x] [--kind status|done|blocking]

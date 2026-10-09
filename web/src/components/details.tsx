@@ -1,7 +1,7 @@
 import { Cancel01Icon, Copy01Icon } from "@hugeicons/core-free-icons"
 import { useState, type ReactNode } from "react"
 
-import { loadLine, memberLoad, type Load } from "@mc/load.ts"
+import { loadLine, memberLoad, showsLoad, type Load } from "@mc/load.ts"
 import type { JoinRequest, Member as RosterMember } from "@mc/membership.ts"
 import { taskId } from "@mc/state.ts"
 import type { ChannelState } from "@mc/state.ts"
@@ -160,9 +160,9 @@ export function Details(p: Props) {
         <Part title={`${active.length} ${active.length === 1 ? "member" : "members"}`}>
           <div className="-mx-2 grid">
             {active.map((m) => {
-              // People show load only when they hold tasks; agents always do, so a coordinator sees who's free.
+              // Agents always show load, so a coordinator sees who's free; people only when they hold tasks.
               const load = memberLoad(p.state, m.name, p.now)
-              const showLoad = m.kind !== "human" || load.level !== "free" || load.waiting.length > 0
+              const showLoad = showsLoad(m, load)
               return (
                 <div key={m.pk} className="group flex items-center gap-3 rounded-[8px] px-2 py-1.5 hover:bg-wash">
                   <Monogram name={memberName(m)} agent={m.kind !== "human"} size={26} online={p.online.has(m.name)} />

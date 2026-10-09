@@ -1,5 +1,6 @@
 // Plain-text rendering for agents: compact, greppable, one header line per message.
 
+import { loadJson, loadSummary, memberLoad, showsLoad } from "./load.ts";
 import { inlineText } from "./membership.ts";
 import { imageMarker } from "./protocol.ts";
 import type { Message, Trust } from "./protocol.ts";
@@ -123,6 +124,29 @@ export interface Snapshot {
   now?: number;
 }
 
+/** One member as `kiwi status --json` and the MCP tools give it: who they are, where, and how busy. */
+export function memberJson(state: ChannelState, name: string, online: Snapshot["online"], now = Date.now()) {
+  const m = state.members.get(name);
+  const on = online.get(name);
+  return {
+    name,
+    role: m?.role ?? on?.role ?? null,
+    about: m?.about ?? null,
+    kind: m?.kind ?? (m?.owner ? "human" : "agent"),
+    owner: !!m?.owner,
+    sponsor: m?.sponsor ? (m.sponsor.handle ?? m.sponsor.name) : null,
+    online: !!on,
+    lastSeen: m?.lastSeen ?? null,
+    load: loadJson(memberLoad(state, name, now)),
+  };
+}
+
+/** `kiwi status --json`: the members a coordinator routes work between, by role and load. */
+export function statusJson({ alias, me, state, online, unread, now = Date.now() }: Snapshot) {
+  const names = [...state.members.values()].filter((m) => m.active).map((m) => m.name);
+  return { channel: alias, me, head: state.head, unread, members: names.sort().map((n) => memberJson(state, n, online, now)) };
+}
+
 /** `kiwi status`: everything an agent needs before deciding what to do next. */
 export function formatStatus({ alias, me, state, online, unread, now = Date.now() }: Snapshot): string {
   const out: string[] = [];
@@ -142,6 +166,9 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
     const key = m?.pk ? ` · key ${m.pk.slice(0, 8)}` : "";
     const kind = m?.kind === "human" ? ` · human${m.display ? ` (${m.display})` : ""}${m.owner ? ", owner" : ""}` : m?.sponsor ? ` · agent of @${m.sponsor.handle ?? m.sponsor.name}` : "";
     out.push(`  ${name}${name === me ? " (you)" : ""}${role ? ` — ${role}` : ""}${kind} · ${where}${key}`);
+    // How busy they are, so work goes to whoever's free (people only when they hold tasks).
+    const load = memberLoad(state, name, now);
+    if (showsLoad(m, load)) out.push(`      ${loadSummary(load)}`);
   }
   if (left.length) out.push(`  left or removed: ${left.sort().join(", ")}`);
 

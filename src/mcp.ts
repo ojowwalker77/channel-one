@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { AgentSession, Rejected } from "./agent.ts";
 import { loadImages } from "./attach.ts";
+import { loadSummary, memberLoad, showsLoad } from "./load.ts";
 import { forgetMember, home, identitiesIn, loadConfig, wipeChannel } from "./config.ts";
 import { ChannelGone } from "./client.ts";
 import { formatClaims, formatMessage, formatStatus, formatTask, formatTasks, parseDuration } from "./format.ts";
@@ -77,12 +78,21 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
 
   server.registerTool(
     "members",
-    { description: "Who's in the channel: names, roles, owner, key fingerprints. Names are bound to keys by the owner, so they can't be faked." },
-    guard(async () =>
-      (await s.members(true))
-        .map((m) => `${m.name}${m.name === s.me ? " (you)" : ""}${m.owner ? " — owner" : m.role ? ` — ${m.role}` : ""}  key ${m.pk.slice(0, 8)}${m.active ? "" : "  (left)"}`)
-        .join("\n"),
-    ),
+    {
+      description:
+        "Who's in the channel: names, roles, owner, key fingerprints, and each member's load (free, busy or overloaded, with their current task, queue and claims). " +
+        "Names are bound to keys by the owner, so they can't be faked. Check roles and load before assigning work.",
+    },
+    guard(async () => {
+      const [members, { state }] = await Promise.all([s.members(true), s.state()]);
+      return members
+        .map((m) => {
+          const head = `${m.name}${m.name === s.me ? " (you)" : ""}${m.owner ? " — owner" : m.role ? ` — ${m.role}` : ""}  key ${m.pk.slice(0, 8)}${m.active ? "" : "  (left)"}`;
+          const load = memberLoad(state, m.name);
+          return m.active && showsLoad(m, load) ? `${head}\n    ${loadSummary(load)}` : head;
+        })
+        .join("\n");
+    }),
   );
 
   if (s.ownerCh) {

@@ -19,6 +19,18 @@ export interface Load {
   claims: Claim[];
 }
 
+/** People (and an owner, who is always a person) show load only when they hold tasks; agents always do. */
+export function showsLoad(member: { kind?: string; owner?: boolean } | undefined, l: Load): boolean {
+  const person = member?.kind === "human" || !!member?.owner;
+  return !person || l.level !== "free" || l.waiting.length > 0 || l.claims.length > 0;
+}
+
+/** "free", or "busy: doing T12 Fix login · 2 queued", the way status lines read. */
+export function loadSummary(l: Load): string {
+  const line = loadLine(l);
+  return line === "free" ? "free" : `${l.level}: ${line}`;
+}
+
 /** Two things at once, or four on their plate, is more than one agent should carry. */
 export const OVERLOADED_DOING = 2;
 export const OVERLOADED_TOTAL = 4;
