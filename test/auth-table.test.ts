@@ -11,6 +11,7 @@ import { Channel } from "../src/client.ts";
 import { decodeJoinCode } from "../src/crypto.ts";
 import { generateIdentity, type Identity } from "../src/identity.ts";
 import { newMachine, registerMachine, vouchFor } from "../src/machine.ts";
+import { CLOSE_REMOVED, WS_PROTOCOL } from "../src/protocol.ts";
 import { startRelay } from "../src/relay/bun.ts";
 import { devHumanAuth } from "../src/relay/human.ts";
 import { checked } from "./check.ts";
@@ -25,6 +26,9 @@ let owner: Identity;
 let member: Identity;
 let stranger: Identity;
 let requestId: string;
+let ownerCh: Channel;
+let code: string;
+let linked: Awaited<ReturnType<typeof newMachine>> & { linked: { name: null; at: number } };
 
 beforeAll(async () => {
   // A sign-in relay (dev sign-in: the token dev:<name> is dev_<name>), so the human-session checks are live.
@@ -35,11 +39,12 @@ beforeAll(async () => {
   stranger = await generateIdentity("eve");
   const made = await Channel.create(relay, owner, { name: "alice", kind: "human" }, [], undefined, "dev:alice");
   roomId = made.access.roomId;
-  const ownerCh = new Channel(made.access, relay, owner, undefined, async () => "dev:alice");
+  code = made.code;
+  ownerCh = new Channel(made.access, relay, owner, undefined, async () => "dev:alice");
   const m = await newMachine(relay);
   await registerMachine(m);
   await fetch(`${relay}/v1/machines/${m.identity.pk}/confirm`, { method: "POST", headers: { "x-human-token": "dev:alice" }, body: "{}" });
-  const linked = { ...m, linked: { name: null, at: Date.now() } };
+  linked = { ...m, linked: { name: null, at: Date.now() } };
   const ask = await Channel.requestJoin(relay, made.code, member, { name: "win" }, null, await vouchFor(linked, decodeJoinCode(made.code).roomId, member.pk));
   await ownerCh.approve((await checked(ownerCh, relay, made.code, [{ id: member, requestId: ask.requestId }]))[0]!);
   // A pending request from someone else, for the request routes.
@@ -169,4 +174,41 @@ describe("person routes need a sign-in", () => {
       expect(refused(bad.status)).toBe(true);
     });
   }
+});
+
+describe("the live stream (WebSocket)", () => {
+  /** Open the room's socket as `as`; resolves to "open" or the close code if it never opens. */
+  const connect = async (as?: Identity) => {
+    const u = new URL(`/v1/rooms/${roomId}/ws`, relay);
+    u.protocol = "ws:";
+    const protocols = as ? [WS_PROTOCOL, await signRequest(as, roomId, "GET", "/ws")] : [WS_PROTOCOL];
+    const ws = new WebSocket(u, protocols);
+    const opened = await new Promise<"open" | number>((resolve) => {
+      ws.onopen = () => resolve("open");
+      ws.onclose = (e) => resolve(e.code);
+      ws.onerror = () => {};
+    });
+    return { ws, opened };
+  };
+
+  test("no key, or a stranger's, can't open it; a member can", async () => {
+    expect((await connect()).opened).not.toBe("open");
+    expect((await connect(stranger)).opened).not.toBe("open");
+    const m = await connect(member);
+    expect(m.opened).toBe("open");
+    m.ws.close();
+  });
+
+  test("a removed member's open socket is closed (CLOSE_REMOVED), and it can't open another", async () => {
+    const bye = await generateIdentity("bye");
+    const ask = await Channel.requestJoin(relay, code, bye, { name: "bye" }, null, await vouchFor(linked, roomId, bye.pk));
+    const req = (await checked(ownerCh, relay, code, [{ id: bye, requestId: ask.requestId }])).find((r) => r.pk === bye.pk)!;
+    await ownerCh.approve(req);
+    const { ws, opened } = await connect(bye);
+    expect(opened).toBe("open");
+    const closed = new Promise<number>((resolve) => (ws.onclose = (e) => resolve(e.code)));
+    await ownerCh.remove(bye.pk);
+    expect(await closed).toBe(CLOSE_REMOVED);
+    expect((await connect(bye)).opened).not.toBe("open");
+  });
 });
