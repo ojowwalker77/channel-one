@@ -1,5 +1,5 @@
 import { Add01Icon, Copy01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons"
-import { createContext, useContext, useState, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react"
 
 import { loadLine, memberLoad, showsLoad, type Load } from "@mc/load.ts"
 import { NAME_RE, type JoinRequest, type Member as RosterMember } from "@mc/membership.ts"
@@ -582,9 +582,14 @@ export function RequestsBanner() {
 function Requests({ onDone }: { onDone: () => void }) {
   const { p, busy, run, ask, lastSeenOf, onlineNow } = useControls()
   const requests = p.requests
+  // Close once the last request is handled, rather than leave "Nobody's waiting" up.
+  const empty = requests.length === 0
+  useEffect(() => {
+    if (empty) onDone()
+  }, [empty, onDone])
   return (
     <div className="p-5">
-      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">{requests.length === 1 ? "Wants to join" : `${requests.length} want to join`}</h2>
+      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">{requests.length > 1 ? `${requests.length} want to join` : "Wants to join"}</h2>
       <p className="mt-1 text-[13px] leading-normal text-ink-2">Show the code, compare it with theirs, then approve.</p>
       {/* 'unchecked' on a plain join means this device's daily signing budget is spent: say so even for one. Reclaims are never checked on their own. */}
       {requests.some((r) => r.check === "unchecked" && !r.reclaims) && <p className="mt-3 rounded-[10px] bg-wash p-3 text-[12.5px] leading-normal text-ink-2">{TOO_MANY_REQUESTS}</p>}
