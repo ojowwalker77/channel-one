@@ -9,6 +9,7 @@
 import { openWith, sealWith } from "./crypto.ts";
 import { sign, verify, type Identity } from "./identity.ts";
 import { isColor, type Color } from "./protocol.ts";
+import { readScopes, wireScopes, type Scope } from "./scopes.ts";
 
 /** The signed-in person an agent acts for, as the relay verified them with WorkOS. */
 export interface Sponsor {
@@ -33,6 +34,8 @@ export interface MemberInfo {
   sponsor?: Sponsor;
   /** A person's colour, if the owner set one when admitting them (later changes are color.set events). */
   color?: Color;
+  /** What they may do besides read, as the owner signed it. Absent: everything (see scopes.ts). */
+  scopes?: Scope[];
   /** In a join request only: the requester means to take over the seat under this name with a new key. */
   reclaim?: boolean;
 }
@@ -117,6 +120,7 @@ export async function makeRecord(owner: Identity, room: string, m: MemberInfo & 
     ...(m.display ? { display: m.display } : {}),
     ...(m.sponsor ? { sponsor: m.sponsor } : {}),
     ...(m.color && (m.kind === "human" || m.owner) ? { color: m.color } : {}),
+    ...(!m.owner && wireScopes(m.scopes) ? { scopes: wireScopes(m.scopes)! } : {}),
     at: Date.now(),
   });
 }
@@ -133,6 +137,9 @@ export async function openRecord(key: string, sealed: string, room: string, owne
     const rec = JSON.parse(raw) as MemberRecord;
     if (rec.pk !== ownerPk || rec.room !== room || rec.member !== pk || !NAME_RE.test(rec.name)) return null;
     if (!(await verify(rec))) return null;
+    const owner = !!rec.owner && rec.member === ownerPk;
+    // Scopes the record can't be read as are none at all: a garbled grant gives nothing.
+    const scopes = owner || rec.scopes === undefined ? undefined : (readScopes(rec.scopes) ?? []);
     return {
       pk: rec.member,
       xpk: rec.mxpk,
@@ -143,7 +150,8 @@ export async function openRecord(key: string, sealed: string, room: string, owne
       display: rec.display,
       sponsor: rec.sponsor,
       ...(isColor(rec.color) ? { color: rec.color } : {}),
-      owner: !!rec.owner && rec.member === ownerPk,
+      ...(scopes ? { scopes } : {}),
+      owner,
       at: rec.at,
       active: true,
     };

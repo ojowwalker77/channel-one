@@ -22,6 +22,7 @@ export const MemberRecord = Schema.Struct({
   xpk: Schema.String,
   rec: Schema.String,
   keys: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  post: Schema.optional(Schema.Boolean),
 });
 
 /** A message as stored: AES-GCM iv and ciphertext. */

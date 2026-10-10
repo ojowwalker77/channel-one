@@ -19,7 +19,7 @@ import { Bash, InMemoryFs, type CommandName, type IFileSystem } from "just-bash"
 import { identitiesIn, loadConfig, readCursor } from "./config.ts";
 import { AgentSession, wants } from "./agent.ts";
 import { describeEvent, formatClaims, formatMessage, formatStatus, formatTask, markedText, memberJson, statusJson } from "./format.ts";
-import type { Message } from "./protocol.ts";
+import { ignored, type Message } from "./protocol.ts";
 import { taskId, type ChannelState } from "./state.ts";
 
 /**
@@ -86,7 +86,7 @@ const pad = (seq: number) => String(seq).padStart(6, "0");
 function channelTree(v: ChannelView, now: number): Record<string, string> {
   const { state, me } = v;
   // Only what the owner-signed roster vouches for: forged messages are dropped before anything is built.
-  const verified = v.messages.filter((m) => state.trust.get(m.seq) !== "forged");
+  const verified = v.messages.filter((m) => !ignored(state.trust.get(m.seq)));
   // A key ending in "/" is a directory, so empty ones (no unread, no facts) still exist.
   const files: Record<string, string> = { "inbox/": "", "msgs/": "", "tasks/": "", "members/": "", "facts/": "" };
   const role = state.members.get(me)?.role ?? null;

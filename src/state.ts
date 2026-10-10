@@ -5,7 +5,8 @@
 // and what the facts are, without the relay ever reading any of it.
 // Conflicts resolve deterministically: the earlier sequence number wins.
 
-import type { Color, Message, TaskState, Trust } from "./protocol.ts";
+import { ignored, type Color, type Message, type TaskState, type Trust } from "./protocol.ts";
+import { readScopes, refusal, SCOPES, scopesOf, type Scope } from "./scopes.ts";
 
 export interface Member {
   name: string;
@@ -20,6 +21,8 @@ export interface Member {
   roleRequest?: { role?: string; about?: string; seq: number; at: number };
   /** A person's colour; agents wear their person's (colorOf). */
   color?: Color;
+  /** What they may do besides read, after every scope.set so far (see scopes.ts). */
+  scopes: Scope[];
   owner: boolean;
   /** When the owner admitted them. */
   joined: number;
@@ -42,6 +45,8 @@ export type Roster = {
   display?: string;
   sponsor?: { user: string; name: string; handle?: string };
   color?: Color;
+  /** As the owner signed them into this key's record; absent is everything. */
+  scopes?: Scope[];
 }[];
 
 export interface TaskNote {
@@ -164,6 +169,7 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
       display: r.display,
       sponsor: r.sponsor,
       color: r.color,
+      scopes: scopesOf(r),
       owner: r.owner,
       joined: r.at,
       lastSeen: r.at,
@@ -185,6 +191,10 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
     if (!set) keysByName.set(r.name, (set = new Set()));
     set.add(r.pk);
   }
+  // What each key may do: scopes belong to a key, so a name admitted again under a new key starts
+  // from its own record, and an old key's history is judged by what that key was allowed.
+  const scopesByKey = new Map<string, Scope[]>();
+  for (const r of roster) scopesByKey.set(r.pk, scopesOf(r));
   const tasks = new Map<number, Task>();
   let claims: Claim[] = [];
   const facts = new Map<string, Fact>();
@@ -207,6 +217,13 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
       trust.set(m.seq, t);
       if (t === "forged" || !member) {
         rejected.set(m.seq, member ? `not signed by ${m.from}'s key` : `${m.from} isn't a member`);
+        continue;
+      }
+      // Scopes: a message the owner hasn't let this key send counts for nothing, as if never sent.
+      const refused = refusal(scopesByKey.get(m.pk!) ?? [], m);
+      if (refused) {
+        trust.set(m.seq, "refused");
+        rejected.set(m.seq, `${m.from} ${refused}`);
         continue;
       }
       member.lastSeen = Math.max(member.lastSeen, at);
@@ -264,6 +281,26 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
             if (ev.about !== undefined) target.about = ev.about || undefined;
           }
           target.roleRequest = undefined;
+          break;
+        }
+
+        case "scope.set": {
+          if (!member.owner) {
+            reject("only the owner sets what members may do");
+            break;
+          }
+          if (!keysByName.get(ev.member)?.has(ev.pk)) {
+            reject(members.has(ev.member) ? `that key isn't ${ev.member}'s` : `no member named ${ev.member}`);
+            break;
+          }
+          if (members.get(ev.member)?.owner) {
+            reject("the owner may do everything");
+            break;
+          }
+          const scopes = ev.scopes === null ? [...SCOPES] : (readScopes(ev.scopes) ?? []);
+          scopesByKey.set(ev.pk, scopes);
+          // Losing claims lets go of the ones held now; tasks they own stay theirs until reassigned.
+          if (!scopes.includes("claims")) claims = claims.filter((c) => c.owner !== ev.member);
           break;
         }
 
@@ -379,11 +416,12 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
 
   const openAsks = messages.filter((m) => {
     if (m.kind !== "ask" && m.kind !== "blocking") return false;
-    if (trust.get(m.seq) === "forged") return false;
+    if (ignored(trust.get(m.seq))) return false;
     const by = answered.get(m.seq);
     return !by || [...by].every((n) => n === m.from);
   });
 
+  for (const member of members.values()) member.scopes = scopesByKey.get(member.pk) ?? [];
   for (const [key, fact] of facts) if (fact.expires !== undefined && fact.expires <= now) facts.delete(key);
 
   return {

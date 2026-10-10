@@ -2,7 +2,7 @@ import { Cancel01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
 import { useState } from "react"
 
 import { describeEvent } from "@mc/format.ts"
-import type { Message, TaskState } from "@mc/protocol.ts"
+import { ignored, type Message, type TaskState } from "@mc/protocol.ts"
 import { taskId, waitingOn, type ChannelState, type Task } from "@mc/state.ts"
 import { formatAgo, formatFull } from "@/lib/format"
 import { cx } from "@/lib/utils"
@@ -209,7 +209,7 @@ export function TaskDetail({
   onOpen: (id: number) => void
 }) {
   const task = id === null ? undefined : state.tasks.get(id)
-  const history = id === null ? [] : messages.filter((m) => relatedTo(m, id) && state.trust.get(m.seq) !== "forged")
+  const history = id === null ? [] : messages.filter((m) => relatedTo(m, id) && !ignored(state.trust.get(m.seq)))
 
   return (
     <Modal open={id !== null} onClose={onClose} wide>

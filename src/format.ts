@@ -2,8 +2,9 @@
 
 import { loadJson, loadSummary, memberLoad, showsLoad } from "./load.ts";
 import { inlineText } from "./membership.ts";
-import { imageMarker } from "./protocol.ts";
+import { ignored, imageMarker } from "./protocol.ts";
 import type { Message, TaskState, Trust } from "./protocol.ts";
+import { describeScopes, presetOf, readScopes, SCOPE_LABELS, type Scope } from "./scopes.ts";
 import { colorOf, taskId, waitingOn, type ChannelState, type Claim, type Fact, type Task } from "./state.ts";
 
 export function ago(ts: number, now = Date.now()): string {
@@ -85,6 +86,8 @@ export function describeEvent(m: Message, state?: ChannelState): string {
       return `kept ${ev.member}'s role as it was`;
     case "color.set":
       return ev.color ? `${ev.member === m.from ? "picked" : `gave ${ev.member}`} the colour ${ev.color}` : `cleared ${ev.member === m.from ? "their" : `${ev.member}'s`} colour`;
+    case "scope.set":
+      return `set what ${ev.member} may do: ${ev.scopes === null ? "full" : describeScopes(readScopes(ev.scopes) ?? [])}`;
     case "seat.reclaim":
       return `moved ${ev.member}'s seat to a new key (${ev.from} → ${ev.to}): the old key is out`;
     case "task.add":
@@ -139,7 +142,7 @@ export function formatMessage(m: Message, trust?: Trust, state?: ChannelState): 
   const to = m.to?.includes("*") ? "everyone" : m.to?.length ? m.to.map((t) => inlineText(t, 40)).join(",") : "all";
   const kind = m.kind === "msg" ? "" : ` [${inlineText(m.kind, 20)}]`;
   const re = m.re?.length ? ` re #${m.re.map((n) => Number(n) || 0).join(",#")}` : "";
-  const flag = trust === "forged" ? " [forged — ignore]" : "";
+  const flag = trust === "forged" ? " [forged — ignore]" : trust === "refused" ? " [not allowed by the owner — ignore]" : "";
   const body = cleanBody(m.kind === "event" ? describeEvent(m, state) : String(m.body ?? "")).replace(/\n/g, "\n  │ ");
   const imgs = m.imgs?.length ? ` ${m.imgs.map((i) => imageMarker({ name: inlineText(i.name, 80), data: i.data })).join(" ")}` : "";
   return `#${m.seq} ${who(inlineText(m.from, 40), state)} → ${to}${kind}${re}${flag}: ${body}${imgs}`;
@@ -186,10 +189,18 @@ export function memberJson(state: ChannelState, name: string, online: Snapshot["
     owner: !!m?.owner,
     sponsor: m?.sponsor ? inlineText(m.sponsor.handle ?? m.sponsor.name, 80) || null : null,
     color: colorOf(state, name),
+    scopes: m ? m.scopes : null,
     online: !!on,
     lastSeen: m?.lastSeen ?? null,
     load: loadJson(memberLoad(state, name, now)),
   };
+}
+
+/** "read only", or what the scopes cover: "write messages; claim paths (contributor)". */
+export function mayDo(scopes: readonly Scope[]): string {
+  if (!scopes.length) return "read only";
+  const preset = presetOf(scopes);
+  return `read; ${scopes.map((s) => SCOPE_LABELS[s]).join("; ")}${preset ? ` (${preset})` : ""}`;
 }
 
 /** `kiwi status --json`: the members a coordinator routes work between, by role and load. */
@@ -203,6 +214,7 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
   const out: string[] = [];
   const meM = state.members.get(me);
   out.push(`channel ${alias} · you are ${me}${meM?.role ? ` (${inlineText(meM.role, 80)})` : ""} · head #${state.head}${unread ? ` · ${unread} unread` : ""}`);
+  if (meM && presetOf(meM.scopes) !== "full") out.push(`the owner lets you: ${mayDo(meM.scopes)}`);
 
   // Only people and agents still in the channel; anyone who left or was removed is listed apart.
   const current = [...state.members.values()].filter((m) => m.active).map((m) => m.name);
@@ -216,7 +228,8 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
     const role = inlineText(m?.role ?? on?.role, 80);
     const key = m?.pk ? ` · key ${m.pk.slice(0, 8)}` : "";
     const kind = m?.kind === "human" ? ` · human${m.display ? ` (${inlineText(m.display, 80)})` : ""}${m.owner ? ", owner" : ""}` : m?.sponsor ? ` · agent of @${inlineText(m.sponsor.handle ?? m.sponsor.name, 80)}` : "";
-    out.push(`  ${name}${name === me ? " (you)" : ""}${role ? ` — ${role}` : ""}${kind} · ${where}${key}`);
+    const may = m && presetOf(m.scopes) !== "full" ? ` · may: ${describeScopes(m.scopes)}` : "";
+    out.push(`  ${name}${name === me ? " (you)" : ""}${role ? ` — ${role}` : ""}${kind}${may} · ${where}${key}`);
     // How busy they are, so work goes to whoever's free (people only when they hold tasks).
     const load = memberLoad(state, name, now);
     if (showsLoad(m, load)) out.push(`      ${loadSummary(load)}`);
@@ -298,9 +311,9 @@ export function formatShown(m: Message, messages: Message[], state: ChannelState
   if (savedImages.length) out.push(`  images saved: ${savedImages.join(", ")}`);
   for (const r of m.re ?? []) {
     const parent = messages.find((x) => x.seq === r);
-    if (parent && state.trust.get(parent.seq) !== "forged") out.push(`answers #${parent.seq} ${who(parent.from, state)}: ${oneLine(parent.kind === "event" ? describeEvent(parent, state) : parent.body)}`);
+    if (parent && !ignored(state.trust.get(parent.seq))) out.push(`answers #${parent.seq} ${who(parent.from, state)}: ${oneLine(parent.kind === "event" ? describeEvent(parent, state) : parent.body)}`);
   }
-  const replies = messages.filter((x) => x.re?.includes(m.seq) && state.trust.get(x.seq) !== "forged");
+  const replies = messages.filter((x) => x.re?.includes(m.seq) && !ignored(state.trust.get(x.seq)));
   if (replies.length) {
     out.push(`replies (${replies.length}):`);
     for (const x of replies) out.push(`  #${x.seq} ${who(x.from, state)}: ${oneLine(x.body)}`);

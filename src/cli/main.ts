@@ -13,9 +13,10 @@ import { TOO_MANY_REQUESTS } from "../sas.ts";
 import { DEFAULT_RELAY, forgetIdentity, home, forgetMember, identitiesIn, loadConfig, loadIdentity, readCursor, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId, type ChannelAccess } from "../crypto.ts";
 import { describeMember, handleFor, type JoinRequest } from "../membership.ts";
-import { ago, describeEvent, formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, parseDuration, statusJson } from "../format.ts";
+import { ago, describeEvent, formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, mayDo, parseDuration, statusJson } from "../format.ts";
+import { describeScopes, parseScopes, presetOf, SCOPES } from "../scopes.ts";
 import { fingerprint } from "../identity.ts";
-import { CHAT_KINDS, COLORS, isColor, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
+import { CHAT_KINDS, COLORS, ignored, isColor, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
 import { parseTaskId, similarOpenTasks, taskId, type ChannelState } from "../state.ts";
 import { VERSION } from "../version.ts";
 import { channelFiles, runSh, sessionViews } from "../sh.ts";
@@ -38,8 +39,10 @@ Start
 Membership (the owner's human decides who gets in)
   kiwi requests                                  pending join requests and their verification codes (owner)
   kiwi check KEY                                 start the code check for one request (a reclaim, or past the day's share)
-  kiwi approve CODE [--yes] [--force]            let a requester in, after your human confirms the code (owner);
+  kiwi approve CODE [--scopes S] [--yes] [--force]   let a requester in, after your human confirms the code (owner);
                                                a RECLAIM moves that member's seat to the new key (--force if it's online)
+  kiwi scope [NAME SCOPES]                       what each member may do besides read; the owner sets it. SCOPES is
+                                               read-only, contributor (all but tasks), full, or a list: post,ask,tasks,claims,facts
   kiwi role [allow|refuse NAME | NAME ROLE]      role requests; the owner sets, allows or refuses roles
   kiwi deny CODE|KEY                             refuse a request; that key can't ask again (owner)
   kiwi members                                   who's in, their roles, and their key fingerprints
@@ -132,6 +135,7 @@ const { values: opt, positionals: args } = parseArgs({
     reclaim: { type: "boolean" },
     clear: { type: "boolean" },
     force: { type: "boolean" },
+    scopes: { type: "string" },
     n: { type: "string", short: "n" },
     help: { type: "boolean", short: "h" },
     version: { type: "boolean", short: "v" },
@@ -321,7 +325,7 @@ async function reclaimSeat(s: AgentSession, r: JoinRequest): Promise<void> {
   const question = `Move ${target.name}'s seat from key ${fingerprint(target.pk)} to ${fingerprint(r.pk)}? Verification code ${r.code}. The old key is out for good.`;
   if (!(await confirm(question))) die(`reclaiming needs your human's go-ahead: once they confirm the joining agent shows ${r.code}, re-run with --yes${online ? " --force" : ""}`);
   if (online && !opt.force) die(`${target.name} is online: only if your human is sure the old key is lost, re-run with --force`);
-  await s.ownerCh!.reclaim(r, { online, force: opt.force });
+  await s.ownerCh!.reclaim(r, { online, force: opt.force, scopes: state.members.get(target.name)?.scopes ?? [] });
   out(`moved ${target.name}'s seat to key ${fingerprint(r.pk)} (${r.code}); the old key is out and the channel key rotated`);
 }
 
@@ -644,17 +648,22 @@ const commands: Record<string, () => Promise<void>> = {
 
   async approve() {
     const s = await session();
-    const r = await findRequest(s, args[1] ?? die("usage: kiwi approve CODE [--name NEWNAME] [--yes] [--force]"));
-    if (r.reclaims && !opt.name) return reclaimSeat(s, r);
+    const r = await findRequest(s, args[1] ?? die("usage: kiwi approve CODE [--name NEWNAME] [--scopes S] [--yes] [--force]"));
+    const scopes = opt.scopes === undefined ? undefined : (parseScopes(opt.scopes) ?? die(`"${opt.scopes}" isn't scopes: say read-only, contributor, full, or a list of ${SCOPES.join(",")}`));
+    if (r.reclaims && !opt.name) {
+      if (scopes) die("a reclaimed seat keeps what it may do; change that after with: kiwi scope NAME SCOPES");
+      return reclaimSeat(s, r);
+    }
     const name = opt.name ?? r.name;
     if (!NAME_RE.test(name) || name === OWNER_NAME) die(`"${name}" isn't an allowed name; approve with --name NAME`);
     const taken = (await s.members(true)).find((m) => m.name === name && m.active);
     if (taken) die(`"${name}" is already a member; approve under another name with --name`);
-    if (!(await confirm(`Let "${name}"${r.role ? ` (${r.role})` : ""} in? Verification code ${r.code}`))) {
+    const may = scopes ? `, to ${mayDo(scopes)}` : "";
+    if (!(await confirm(`Let "${name}"${r.role ? ` (${r.role})` : ""} in${may}? Verification code ${r.code}`))) {
       die(`approving needs your human's go-ahead: once they confirm the joining agent shows ${r.code}, re-run with --yes`);
     }
-    const admitted = await s.ownerCh!.approve(r, { name, role: r.role, about: r.about });
-    out(`approved ${admitted.name} (${r.code})`);
+    const admitted = await s.ownerCh!.approve(r, { name, role: r.role, about: r.about, ...(scopes ? { scopes } : {}) });
+    out(`approved ${admitted.name} (${r.code})${scopes ? `; they may ${describeScopes(scopes)}` : ""}`);
   },
 
   async deny() {
@@ -666,9 +675,31 @@ const commands: Record<string, () => Promise<void>> = {
 
   async members() {
     const s = await session();
-    for (const m of await s.members(true)) {
-      out(`${describeMember(m)}${m.name === s.me ? " (you)" : ""}${m.role ? ` — ${m.role}` : ""}${m.active ? "" : "  (left)"}`);
+    await s.members(true);
+    const { state } = await s.state();
+    for (const m of await s.members()) {
+      const scopes = m.active ? state.members.get(m.name)?.scopes : undefined;
+      const may = scopes && presetOf(scopes) !== "full" ? ` · may: ${describeScopes(scopes)}` : "";
+      out(`${describeMember(m)}${m.name === s.me ? " (you)" : ""}${m.role ? ` — ${m.role}` : ""}${may}${m.active ? "" : "  (left)"}`);
     }
+  },
+
+  /** What each member may do besides read: listed for anyone, set by the owner. */
+  async scope() {
+    const s = await session();
+    const [name, given] = args.slice(1);
+    const { state } = await s.state();
+    if (!name) {
+      for (const m of [...state.members.values()].filter((x) => x.active).sort((a, b) => a.name.localeCompare(b.name))) {
+        out(`${m.name}${m.name === s.me ? " (you)" : ""}: ${m.owner ? "everything (owner)" : mayDo(m.scopes)}`);
+      }
+      return;
+    }
+    if (!s.ownerCh) die("only the channel owner's machine sets what members may do");
+    const scopes = parseScopes(given ?? die("usage: kiwi scope NAME read-only|contributor|full|post,ask,tasks,claims,facts [--yes]")) ?? die(`"${given}" isn't scopes: say read-only, contributor, full, or a list of ${SCOPES.join(",")}`);
+    if (!(await confirm(`Let ${name} ${mayDo(scopes)}?`))) die("changing what a member may do needs your human's go-ahead; re-run with --yes");
+    await s.setScopes(name, scopes);
+    out(`${name} may now ${mayDo(scopes)}`);
   },
 
 
@@ -843,7 +874,7 @@ const commands: Record<string, () => Promise<void>> = {
     const { messages, state } = await s.state();
     if (!messages.some((m) => m.seq === seq)) die(`no message #${seq}`);
     const root = state.threadOf.get(seq) ?? seq;
-    for (const m of messages) if (state.threadOf.get(m.seq) === root && state.trust.get(m.seq) !== "forged") out(render(m, state));
+    for (const m of messages) if (state.threadOf.get(m.seq) === root && !ignored(state.trust.get(m.seq))) out(render(m, state));
   },
 
   async read() {

@@ -20,7 +20,7 @@ function errorTexts(): string[] {
     for (const m of src.matchAll(/(?:new HttpError|refuse)\(\s*(\d{3}),\s*([`"'])((?:\\.|(?!\2).)*)\2/g)) out.add(`${m[1]} ${m[3]}`);
     // A text kept in a string constant counts as that text.
     const consts = new Map([...src.matchAll(/const\s+(\w+)\s*=\s*"((?:\\.|[^"])*)"/g)].map((m) => [m[1]!, m[2]!]));
-    for (const m of src.matchAll(/(?:new HttpError|refuse)\(\s*(\d{3}),\s*([A-Za-z_][\w.]*(?:\([^)]*\))?)\s*\)/g)) out.add(`${m[1]} ${consts.get(m[2]!) ?? `<${m[2]}>`}`);
+    for (const m of src.matchAll(/(?:new HttpError|refuse)\(\s*(\d{3}),\s*([A-Za-z_][\w.]*(?:\([^)]*\))?)\s*(?:,\s*"\w+"\s*)?\)/g)) out.add(`${m[1]} ${consts.get(m[2]!) ?? `<${m[2]}>`}`);
     for (const m of src.matchAll(/signedInPerson\(\s*([A-Za-z_]\w*)\s*\)/g)) if (consts.has(m[1]!)) out.add(`404 ${consts.get(m[1]!)}`);
     for (const m of src.matchAll(/error:\s*([`"'])((?:\\.|(?!\1).)*)\1/g)) out.add(`body ${m[2]}`);
     // A person route's 404 on a relay without sign-in is passed to signedInPerson as its text.

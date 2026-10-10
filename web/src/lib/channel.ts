@@ -653,6 +653,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
         kind: m.kind,
         display: m.display,
         sponsor: m.sponsor,
+        ...(m.scopes ? { scopes: m.scopes } : {}),
       })),
     [roster]
   )

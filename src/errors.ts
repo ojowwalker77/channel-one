@@ -12,6 +12,7 @@ export const ERROR_TAGS = [
   "Removed",
   "Denied",
   "Forbidden",
+  "ReadOnly",
   "ChannelGone",
   "NotFound",
   "MethodNotAllowed",

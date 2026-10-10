@@ -18,6 +18,7 @@ import {
 } from "./crypto.ts";
 import { sign, signText, verify, verifyText, type Identity } from "./identity.ts";
 import { commitTo, joinCheckCode, joinNonce, ownerNonceStatement, spendAuto, type SigningBudget } from "./sas.ts";
+import { canPost, scopesOf, wireScopes, type Scope } from "./scopes.ts";
 import { handleFor, inlineText, makeRecord, NAME_RE, nameKey, openRecord, RESERVED_NAMES, sealRecord, type JoinRequest, type Member, type MemberInfo } from "./membership.ts";
 import {
   CLOSE_CLOSED,
@@ -596,12 +597,15 @@ export class Channel {
       kind,
       ...(kind === "human" && req.sponsoredBy ? { display: req.sponsoredBy.name } : {}),
       ...(sponsor ? { sponsor } : {}),
+      // What they may do besides read; left out, everything (as before scopes).
+      ...(wireScopes(as?.scopes) ? { scopes: wireScopes(as?.scopes)! } : {}),
     };
     const current = this.access.keys[String(this.access.epoch)]!;
     const rec = await makeRecord(this.identity, this.roomId, { ...info, pk: req.pk, xpk: req.xpk });
     const keys: Record<string, string> = {};
     for (const [e, k] of Object.entries(this.access.keys)) keys[e] = await wrapFor(this.identity, this.roomId, e, req.pk, req.xpk, k);
-    await this.request("/members", { method: "POST", body: JSON.stringify({ pk: req.pk, xpk: req.xpk, rec: await sealRecord(current, rec), keys, request: req.id }) });
+    const post = canPost(scopesOf(info));
+    await this.request("/members", { method: "POST", body: JSON.stringify({ pk: req.pk, xpk: req.xpk, rec: await sealRecord(current, rec), keys, request: req.id, ...(post ? {} : { post }) }) });
     return { pk: req.pk, xpk: req.xpk, ...info, owner: false, at: rec.at, active: true };
   }
 
@@ -611,9 +615,12 @@ export class Channel {
    * removes the old key and admits the new one; then the channel key rotates, and
    * the owner signs a record of it. Refused unless the person behind the request
    * is the one behind the seat, and never for the owner's or a person's own seat.
-   * `online` says the old key was active in the last minutes: that takes `force`.
+   * `online` says the old key was active in the last minutes: that takes `force`. Pass `scopes`, what
+   * the seat may do now, from the fold: the owner's scope.set events name the old key, so the new
+   * key's record must carry them, or a reclaim would hand back whatever the old record said.
+   * Without them, the old record's scopes carry over.
    */
-  async reclaim(req: JoinRequest, opts: { online: boolean; force?: boolean }): Promise<Member> {
+  async reclaim(req: JoinRequest, opts: { online: boolean; force?: boolean; scopes?: Scope[] }): Promise<Member> {
     this.ownerOnly();
     const target = req.reclaims;
     if (!target) throw new Error(`${req.name} isn't anyone's seat yet: approve it as a new member`);
@@ -633,12 +640,17 @@ export class Channel {
       ...(seat.about ? { about: seat.about } : {}),
       kind: "agent",
       ...(seat.sponsor ? { sponsor: seat.sponsor } : {}),
+      ...(wireScopes(opts.scopes ?? seat.scopes) ? { scopes: wireScopes(opts.scopes ?? seat.scopes)! } : {}),
     };
     const current = this.access.keys[String(this.access.epoch)]!;
     const rec = await makeRecord(this.identity, this.roomId, { ...info, pk: req.pk, xpk: req.xpk });
     const keys: Record<string, string> = {};
     for (const [e, k] of Object.entries(this.access.keys)) keys[e] = await wrapFor(this.identity, this.roomId, e, req.pk, req.xpk, k);
-    await this.request("/members", { method: "POST", body: JSON.stringify({ pk: req.pk, xpk: req.xpk, rec: await sealRecord(current, rec), keys, request: req.id, replaces: seat.pk }) });
+    const post = canPost(scopesOf(info));
+    await this.request("/members", {
+      method: "POST",
+      body: JSON.stringify({ pk: req.pk, xpk: req.xpk, rec: await sealRecord(current, rec), keys, request: req.id, replaces: seat.pk, ...(post ? {} : { post }) }),
+    });
     await this.rotate();
     await this.send(`moved ${seat.name}'s seat to a new key`, { ev: { op: "seat.reclaim", member: seat.name, from: seat.pk.slice(0, 8), to: req.pk.slice(0, 8) } });
     return { pk: req.pk, xpk: req.xpk, ...info, owner: false, at: rec.at, active: true };
@@ -647,6 +659,12 @@ export class Channel {
   async deny(requestId: string): Promise<void> {
     this.ownerOnly();
     await this.request(`/requests/${requestId}/deny`, { method: "POST", body: "{}" });
+  }
+
+  /** Whether a member may post: the one bit of their scopes the relay enforces (the scope.set event is the record). */
+  async setCanPost(pk: string, post: boolean): Promise<void> {
+    this.ownerOnly();
+    await this.request(`/members/${pk}/post`, { method: "PUT", body: JSON.stringify({ post }) });
   }
 
   /** Remove a member and rotate the key so they can't read anything newer. */

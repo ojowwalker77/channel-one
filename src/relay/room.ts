@@ -137,6 +137,8 @@ export function allow(key: string, limit: number): boolean {
 const MAX_PENDING = 20;
 /** Pending requests expire after this long. */
 const REQUEST_TTL_MS = 60 * 60_000;
+/** What a member the owner lets only read is told when they post anyway. */
+const READ_ONLY = "the owner lets you only read in this channel";
 /** What a client that speaks an old path is told. */
 export const UPDATE_KIWI = "update kiwi to join or approve here: curl -fsSL https://channels.kiwiinit.com/install | sh (Windows: irm https://channels.kiwiinit.com/install.ps1 | iex)";
 
@@ -216,6 +218,10 @@ export class RoomStore {
    * (its sponsor: the person whose linked computer it joined from).
    */
   private migrate(): void {
+    // A key the owner lets only read (member scopes): the one bit of them the relay knows.
+    if (!this.sql.all<{ name: string }>("PRAGMA table_info(members)").some((c) => c.name === "read_only")) {
+      this.sql.run("ALTER TABLE members ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0");
+    }
     const cols = new Set(this.sql.all<{ name: string }>("PRAGMA table_info(requests)").map((c) => c.name));
     for (const [col, def] of [
       ["kind", "TEXT NOT NULL DEFAULT 'agent'"],
@@ -274,7 +280,9 @@ export class RoomStore {
     return this.sql.all<{ s: number | null }>("SELECT MAX(seq) AS s FROM msgs")[0]?.s ?? 0;
   }
 
-  append(iv: string, ct: string, e: number): Envelope {
+  append(iv: string, ct: string, e: number, sender: string): Envelope {
+    // Every client refuses a read-only member's messages anyway; refusing them here keeps them out of storage.
+    if (this.sql.all("SELECT 1 FROM members WHERE pk = ? AND read_only = 1", sender).length) throw new HttpError(403, READ_ONLY, "ReadOnly");
     if (!fits(StoredEnvelope, { iv, ct })) throw new HttpError(400, "bad envelope");
     if (ct.length > MAX_CT_LENGTH) throw new HttpError(413, "message too large");
     const epoch = this.meta().epoch;
@@ -503,12 +511,13 @@ export class RoomStore {
   private putMember(m: MemberBody, epoch: number): void {
     if (!fits(MemberRecord, m)) throw new HttpError(400, "bad member");
     this.sql.run(
-      "INSERT INTO members (pk, xpk, rec, rec_e, since, active) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT (pk) DO UPDATE SET xpk = excluded.xpk, rec = excluded.rec, rec_e = excluded.rec_e, active = 1",
+      "INSERT INTO members (pk, xpk, rec, rec_e, since, active, read_only) VALUES (?, ?, ?, ?, ?, 1, ?) ON CONFLICT (pk) DO UPDATE SET xpk = excluded.xpk, rec = excluded.rec, rec_e = excluded.rec_e, active = 1, read_only = excluded.read_only",
       m.pk,
       m.xpk,
       m.rec,
       epoch,
       Date.now(),
+      m.post === false ? 1 : 0,
     );
     for (const [e, wrapped] of Object.entries(m.keys ?? {})) {
       this.sql.run("INSERT OR REPLACE INTO keys (pk, e, wrapped) VALUES (?, ?, ?)", m.pk, Number(e), wrapped);
@@ -680,6 +689,13 @@ export class RoomStore {
     return { epoch: this.meta().epoch, keys: Object.fromEntries(rows.map((r) => [String(r.e), r.wrapped])) };
   }
 
+  /** Whether a member may post (the owner's scope.set says what they may do; this is the bit the relay enforces). */
+  setCanPost(pk: string, post: boolean): void {
+    if (pk === this.meta().ownerPk) throw new HttpError(400, "the owner may always post");
+    if (!this.isMember(pk)) throw new HttpError(404, "not a member");
+    this.sql.run("UPDATE members SET read_only = ? WHERE pk = ?", post ? 0 : 1, pk);
+  }
+
   remove(pk: string): void {
     const { ownerPk } = this.meta();
     if (pk === ownerPk) throw new HttpError(400, "the owner can't leave; close the channel instead");
@@ -709,6 +725,8 @@ export interface MemberBody {
   rec: string;
   /** Channel keys by epoch, each sealed to this member's `xpk`. */
   keys?: Record<string, string>;
+  /** False for a member the owner lets only read: the relay refuses their messages. */
+  post?: boolean;
 }
 
 export interface CreateBody {
@@ -761,7 +779,7 @@ export function onClientFrame(store: RoomStore, raw: string, sender = ""): Effec
   if (f.t !== "send") return { reply: frame({ t: "err", error: "unknown frame" }) };
   if (!allow(`${store.roomId}:${sender}`, MESSAGES_PER_MINUTE)) return { reply: frame({ t: "err", error: "too many messages; wait a minute", id: f.id }) };
   try {
-    const e = store.append(f.iv, f.ct, Number(f.e ?? 0));
+    const e = store.append(f.iv, f.ct, Number(f.e ?? 0), sender);
     return { broadcast: [msgFrame(e)], reply: frame({ t: "ack", id: f.id, seq: e.seq }), expireAt: store.touch() ?? undefined };
   } catch (err) {
     return { reply: frame({ t: "err", error: err instanceof Error ? err.message : String(err), id: f.id }) };
@@ -782,6 +800,7 @@ export function onClientFrame(store: RoomStore, raw: string, sender = ""): Effec
  *   GET    /members                   member: the sealed member records
  *   DELETE /members/me                member: leave
  *   DELETE /members/<pk>              owner: remove
+ *   PUT    /members/<pk>/post         owner: whether they may post (the relay's bit of member scopes)
  *   GET    /keys                      member: my wrapped channel keys
  *   POST   /epochs                    owner: rotate the channel key
  *   DELETE /                          owner: close and delete everything
