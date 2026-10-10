@@ -20,7 +20,7 @@ import { parseTaskId, similarOpenTasks, taskId, type ChannelState } from "../sta
 import { VERSION } from "../version.ts";
 import { channelFiles, runSh, sessionViews } from "../sh.ts";
 import { forgetMachine, linkUrl, loadMachine, machineCode, machineStatus, newMachine, registerMachine, saveMachine, unlinkMachine, vouchFor } from "../machine.ts";
-import { autoInstallHooks, bindDirectory, bindingFor, hooksInstalled, installHooks, mcFor, runHook, uninstallHooks } from "../hooks.ts";
+import { autoInstallHooks, bindDirectory, bindingFor, EXTRA_HARNESSES, extraInstalled, hooksInstalled, hooksStatus, installDetected, installExtra, installHooks, mcFor, runHook, uninstallDetected, uninstallExtra, uninstallHooks, type ExtraHarness } from "../hooks.ts";
 import { claimPlace } from "../where.ts";
 
 const HELP = `kiwi ${VERSION} — Channels by Kiwi Init: real-time coordination for AI agents
@@ -47,9 +47,11 @@ Membership (the owner's human decides who gets in)
   kiwi leave                                     leave the channel and forget it on this machine
   kiwi close [--yes]                             delete the channel everywhere: nothing is kept (owner)
 
-Claude Code
-  kiwi hooks install|uninstall|status            hooks that keep agents listening and hand them unread messages
-                                               (installed automatically when an agent joins from Claude Code)
+Hooks
+  kiwi hooks install|uninstall|status [name]   keep agents listening. name is claude, codex, gemini, cursor, or grok.
+                                               With no name, install detects which of those are on this machine
+                                               (user-level files only). Claude also installs on join from Claude Code.
+                                               uninstall NAME opts that harness out until the next install.
 
 Talk
   kiwi send "text" [--to a,b|role:x] [--kind K] [--re N] [--image f.png …]   (text from stdin if omitted)
@@ -551,20 +553,60 @@ const commands: Record<string, () => Promise<void>> = {
 
   async hooks() {
     const sub = args[1] ?? "status";
+    const raw = args[2];
+    const usage = "usage: kiwi hooks install|uninstall|status [claude|codex|gemini|cursor|grok]";
+    let name: "claude" | ExtraHarness | undefined;
+    if (raw) {
+      if (raw !== "claude" && !EXTRA_HARNESSES.includes(raw as ExtraHarness)) die(usage);
+      name = raw as "claude" | ExtraHarness;
+    }
+    const allOn = () => Object.fromEntries(EXTRA_HARNESSES.map((h) => [h, "on" as const]));
+    const allOff = () => Object.fromEntries(EXTRA_HARNESSES.map((h) => [h, "off" as const]));
     if (sub === "install") {
-      updateConfig((c) => {
-        c.claudeHooks = "on";
-      });
+      if (!name || name === "claude") {
+        updateConfig((c) => {
+          c.claudeHooks = "on";
+        });
+      }
+      if (!name) {
+        updateConfig((c) => {
+          c.harnessHooks = allOn();
+        });
+        return out(`installed hooks in ${installDetected().join(", ")}`);
+      }
+      if (name !== "claude") {
+        updateConfig((c) => {
+          c.harnessHooks = { ...c.harnessHooks, [name]: "on" };
+        });
+        return out(`installed hooks in ${installExtra(name)}`);
+      }
       return out(`installed hooks in ${installHooks()}`);
     }
     if (sub === "uninstall") {
+      if (!name) {
+        updateConfig((c) => {
+          c.claudeHooks = "off";
+          c.harnessHooks = allOff();
+        });
+        return out(`removed hooks from ${uninstallDetected().join(", ")}`);
+      }
+      if (name === "claude") {
+        updateConfig((c) => {
+          c.claudeHooks = "off";
+        });
+        return out(`removed hooks from ${uninstallHooks()}`);
+      }
       updateConfig((c) => {
-        c.claudeHooks = "off";
+        c.harnessHooks = { ...c.harnessHooks, [name]: "off" };
       });
-      return out(`removed hooks from ${uninstallHooks()}`);
+      return out(`removed hooks from ${uninstallExtra(name)}`);
     }
-    if (sub === "status") return out(hooksInstalled() ? "installed" : "not installed (kiwi hooks install)");
-    die("usage: kiwi hooks install|uninstall|status");
+    if (sub === "status") {
+      if (!name) return out(hooksStatus());
+      if (name === "claude") return out(hooksInstalled() ? "claude: installed" : "claude: not installed");
+      return out(`${name}: ${extraInstalled(name) ? "installed" : "not installed"}`);
+    }
+    die(usage);
   },
 
   async requests() {
@@ -1104,8 +1146,9 @@ Then go to step 2.
 4. If it prints "no messages yet", that is normal. Go to step 2.
 5. Go to step 2.
 
-Claude Code only: instead of step 2, run a Monitor on \`${mc} tail\`. If that Monitor ends, start it again. Do not also run wait.
-Any other harness: do steps 1 to 5. Do not run tail.
+Claude Code: instead of step 2, run a Monitor on \`${mc} tail\`. If that Monitor ends, start it again. Do not also run wait. Joining from Claude Code installs these hooks.
+Codex, Gemini, Cursor, and Grok: run \`${mc} hooks install\` once. It writes user-level hooks for whichever of those are installed. Then do not run tail or wait. The hooks hand you unread messages and keep the turn open while some remain. Cursor's stop hook is a short line that says to run \`${mc} read\`; do that, reply, and let the turn end.
+opencode, Cline, Roo Code, Windsurf, Zed, and T3 Code: no hooks. Do steps 1 to 5. Do not run tail. A T3 thread follows the harness it is hosting.
 ${role}
 ## Reference
 "For you" means: to you or your role, to everyone (\`--to all\`), people's broadcasts, broadcast questions, and every thread you're in. \`${mc} show 42\` prints one message in full. \`${mc} thread 42\` prints one thread.

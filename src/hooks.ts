@@ -1,8 +1,11 @@
-// Claude Code hooks: make "how to join" the only instruction an agent needs.
+// Harness hooks: make "how to join" the only instruction an agent needs.
 //
 // `kiwi join` / `kiwi create` bind the agent's working directory to its channel
-// and install three user-level hooks. They do nothing in any session whose
-// directory isn't bound, so they're safe to keep installed globally:
+// and, inside Claude Code, install three user-level hooks. `kiwi hooks install`
+// does the same for Codex, Gemini, Cursor, and Grok (Stop only) when those
+// harnesses are on this machine. User-level files only, so nothing asks for a
+// project trust prompt. They do nothing in any session whose directory isn't
+// bound, so they're safe to keep installed globally:
 //
 //   SessionStart      tell the agent who it is on which channel, and to start listening
 //   UserPromptSubmit  hand the agent any unread messages along with the human's prompt
@@ -19,10 +22,8 @@ import { forgetMember, home, loadConfig, updateConfig, wipeChannel } from "./con
 import { ChannelGone } from "./client.ts";
 import { formatMessage } from "./format.ts";
 
-/** Marks our entries in settings.json so install/uninstall can find them. */
+/** Marks our entries so install/uninstall can find them. Current clients only. */
 const MARK = "# kiwi";
-/** What our hooks were tagged with before the rename; cleaned up on (un)install. */
-const OLD_MARKS = ["# channel-one", "# modelchannel"];
 const EVENTS = { SessionStart: "session-start", UserPromptSubmit: "prompt", Stop: "stop" } as const;
 
 // ---------- directory bindings ----------
@@ -140,17 +141,15 @@ function writeSettings(s: Settings): void {
 }
 
 /**
- * A command this program wrote: `<invocation> hook <event> # <mark>`.
+ * A command this program wrote: `<invocation> hook <event> # kiwi`.
  * Matching the mark alone would delete someone else's hook that merely
- * mentions "# kiwi". The invocation is whatever path installed it, so an
- * older install is still recognised and removed.
+ * mentions "# kiwi". Any invocation is recognised, so a reinstall replaces
+ * the entry instead of adding a second one.
  */
 function isOurHookCommand(command: string): boolean {
   for (const event of Object.values(EVENTS)) {
-    for (const mark of [MARK, ...OLD_MARKS]) {
-      const tail = ` hook ${event} ${mark}`;
-      if (command.endsWith(tail) && command.length > tail.length) return true;
-    }
+    const tail = ` hook ${event} ${MARK}`;
+    if (command.endsWith(tail) && command.length > tail.length) return true;
   }
   return false;
 }
@@ -161,6 +160,11 @@ function withoutOurs(entries: HookEntry[] | undefined): HookEntry[] {
     .filter((e) => e.hooks.length > 0);
 }
 
+/** The command string every harness runs. Grok's Stop entry must stay identical to Claude's, so Grok's Claude-compat load dedupes them. */
+function hookCommand(arg: string): string {
+  return `${selfCommand()} hook ${arg} ${MARK}`;
+}
+
 /** Install (or refresh) our hooks in the user's Claude Code settings. Returns the settings path. */
 export function installHooks(): string {
   const s = readSettings();
@@ -168,7 +172,7 @@ export function installHooks(): string {
   for (const [event, arg] of Object.entries(EVENTS)) {
     s.hooks[event] = [
       ...withoutOurs(s.hooks[event]),
-      { hooks: [{ type: "command", command: `${selfCommand()} hook ${arg} ${MARK}`, timeout: event === "UserPromptSubmit" ? 20 : 30 }] },
+      { hooks: [{ type: "command", command: hookCommand(arg), timeout: event === "UserPromptSubmit" ? 20 : 30 }] },
     ];
   }
   writeSettings(s);
@@ -190,20 +194,8 @@ export function uninstallHooks(): string {
 export function hooksInstalled(): boolean {
   const s = readSettings();
   return Object.entries(EVENTS).every(
-    ([event, arg]) => s.hooks?.[event]?.some((x) => x.hooks.some((h) => h.command === `${selfCommand()} hook ${arg} ${MARK}`)),
+    ([event, arg]) => s.hooks?.[event]?.some((x) => x.hooks.some((h) => h.command === hookCommand(arg))),
   );
-}
-
-/** One of our hooks still tagged with a pre-rename mark, so install should refresh it. */
-function staleHooks(s: Settings): boolean {
-  for (const entries of Object.values(s.hooks ?? {})) {
-    for (const e of entries) {
-      for (const h of e.hooks) {
-        if (isOurHookCommand(h.command) && OLD_MARKS.some((m) => h.command.endsWith(m))) return true;
-      }
-    }
-  }
-  return false;
 }
 
 /** Install automatically when an agent joins from inside Claude Code (opt out with KIWI_NO_HOOKS=1). */
@@ -211,11 +203,210 @@ export function autoInstallHooks(): string | null {
   // Never against the choice this computer's person made in `kiwi setup`.
   if (process.env.KIWI_NO_HOOKS || !process.env.CLAUDECODE || loadConfig().claudeHooks === "off") return null;
   try {
-    // Installed, but by an older version (different path or marker)? Refresh them.
-    return hooksInstalled() && !staleHooks(readSettings()) ? null : installHooks();
+    // A different invocation path still counts as installed only when the command string matches this binary.
+    return hooksInstalled() ? null : installHooks();
   } catch {
     return null;
   }
+}
+
+// ---------- Codex, Gemini, Cursor, Grok (user-level only) ----------
+
+export const EXTRA_HARNESSES = ["codex", "gemini", "cursor", "grok"] as const;
+export type ExtraHarness = (typeof EXTRA_HARNESSES)[number];
+
+/** Set in tests so install never writes the real home. Unset means the harness's own user dir. */
+const HARNESS_ENV: Record<ExtraHarness, string> = {
+  codex: "KIWI_CODEX_DIR",
+  gemini: "KIWI_GEMINI_DIR",
+  cursor: "KIWI_CURSOR_DIR",
+  grok: "KIWI_GROK_DIR",
+};
+
+function harnessRoot(h: ExtraHarness): string {
+  const over = process.env[HARNESS_ENV[h]];
+  if (over) return over;
+  if (h === "codex") return join(homedir(), ".codex");
+  if (h === "gemini") return join(homedir(), ".gemini");
+  if (h === "cursor") return join(homedir(), ".cursor");
+  return join(homedir(), ".grok");
+}
+
+function harnessPath(h: ExtraHarness): string {
+  if (h === "codex") return join(harnessRoot(h), "hooks.json");
+  if (h === "gemini") return join(harnessRoot(h), "settings.json");
+  if (h === "cursor") return join(harnessRoot(h), "hooks.json");
+  return join(harnessRoot(h), "hooks", "kiwi.json");
+}
+
+/**
+ * A harness counts as installed when its user dir exists, or its binary is on PATH.
+ * An explicit KIWI_*_DIR counts only when that directory exists, so tests can point
+ * these away from the real home without creating files there.
+ */
+export function harnessPresent(h: ExtraHarness): boolean {
+  if (process.env[HARNESS_ENV[h]] !== undefined) return existsSync(harnessRoot(h));
+  if (existsSync(harnessRoot(h))) return true;
+  const bins = h === "codex" ? ["codex"] : h === "gemini" ? ["gemini"] : h === "cursor" ? ["cursor"] : ["grok"];
+  return bins.some((b) => !!Bun.which(b));
+}
+
+function readJson(p: string): Record<string, any> {
+  if (!existsSync(p)) return {};
+  return JSON.parse(readFileSync(p, "utf8")) as Record<string, any>;
+}
+
+function writeJson(p: string, value: unknown): void {
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(value, null, 2) + "\n");
+}
+
+const GEMINI_EVENTS = { SessionStart: "session-start", BeforeAgent: "prompt", AfterAgent: "stop" } as const;
+
+function installClaudeShaped(path: string, events: Record<string, string>, timeoutFor: (event: string) => number, matcher?: string): void {
+  const s = readJson(path) as Settings;
+  s.hooks ??= {};
+  for (const [event, arg] of Object.entries(events)) {
+    s.hooks[event] = [
+      ...withoutOurs(s.hooks[event]),
+      { ...(matcher ? { matcher } : {}), hooks: [{ type: "command", command: hookCommand(arg), timeout: timeoutFor(event) }] },
+    ];
+  }
+  writeJson(path, s);
+}
+
+function stripClaudeShaped(path: string): void {
+  if (!existsSync(path)) return;
+  const s = readJson(path) as Settings;
+  for (const event of Object.keys(s.hooks ?? {})) {
+    const kept = withoutOurs(s.hooks![event]);
+    if (kept.length) s.hooks![event] = kept;
+    else delete s.hooks![event];
+  }
+  if (s.hooks && !Object.keys(s.hooks).length) delete s.hooks;
+  if (!Object.keys(s).length) {
+    rmSync(path, { force: true });
+    return;
+  }
+  writeJson(path, s);
+}
+
+function claudeShapedInstalled(path: string, events: Record<string, string>): boolean {
+  if (!existsSync(path)) return false;
+  const s = readJson(path) as Settings;
+  return Object.entries(events).every(([event, arg]) => s.hooks?.[event]?.some((x) => x.hooks.some((h) => h.command === hookCommand(arg))));
+}
+
+type CursorHook = { command?: string; timeout?: number; loop_limit?: number | null };
+type CursorFile = { version?: number; hooks?: Record<string, CursorHook[]> } & Record<string, unknown>;
+
+function cursorHooks(list: unknown): CursorHook[] {
+  if (!Array.isArray(list)) return [];
+  return list.filter((h) => !h || typeof h.command !== "string" || !isOurHookCommand(h.command));
+}
+
+function installCursorFile(path: string): void {
+  const s = readJson(path) as CursorFile;
+  if (s.version == null) s.version = 1;
+  s.hooks ??= {};
+  s.hooks.sessionStart = [...cursorHooks(s.hooks.sessionStart), { command: hookCommand("session-start"), timeout: 20 }];
+  s.hooks.stop = [...cursorHooks(s.hooks.stop), { command: hookCommand("stop"), timeout: 30, loop_limit: 5 }];
+  writeJson(path, s);
+}
+
+function stripCursorFile(path: string): void {
+  if (!existsSync(path)) return;
+  const s = readJson(path) as CursorFile;
+  if (s.hooks) {
+    for (const event of Object.keys(s.hooks)) {
+      const kept = cursorHooks(s.hooks[event]);
+      if (kept.length) s.hooks[event] = kept;
+      else delete s.hooks[event];
+    }
+    if (!Object.keys(s.hooks).length) delete s.hooks;
+  }
+  writeJson(path, s);
+}
+
+function cursorFileInstalled(path: string): boolean {
+  if (!existsSync(path)) return false;
+  const s = readJson(path) as CursorFile;
+  const has = (event: string, arg: string) => (s.hooks?.[event] ?? []).some((h) => h.command === hookCommand(arg));
+  return has("sessionStart", "session-start") && has("stop", "stop");
+}
+
+/** Install one harness's user-level file. Creates the file even when the harness isn't detected. */
+export function installExtra(h: ExtraHarness): string {
+  const path = harnessPath(h);
+  if (h === "codex") installClaudeShaped(path, EVENTS, (event) => (event === "UserPromptSubmit" ? 20 : 30));
+  else if (h === "gemini") installClaudeShaped(path, GEMINI_EVENTS, (event) => (event === "BeforeAgent" ? 20_000 : 30_000), "*");
+  else if (h === "cursor") installCursorFile(path);
+  else installClaudeShaped(path, { Stop: "stop" }, () => 30);
+  return path;
+}
+
+export function uninstallExtra(h: ExtraHarness): string {
+  const path = harnessPath(h);
+  if (h === "cursor") stripCursorFile(path);
+  else stripClaudeShaped(path);
+  return path;
+}
+
+export function extraInstalled(h: ExtraHarness): boolean {
+  if (h === "cursor") return cursorFileInstalled(harnessPath(h));
+  if (h === "gemini") return claudeShapedInstalled(harnessPath(h), GEMINI_EVENTS);
+  if (h === "grok") return claudeShapedInstalled(harnessPath(h), { Stop: "stop" });
+  return claudeShapedInstalled(harnessPath(h), EVENTS);
+}
+
+/** Claude, plus every detected harness that this computer has not opted out of. */
+export function installDetected(): string[] {
+  const paths = [installHooks()];
+  const choice = loadConfig().harnessHooks ?? {};
+  for (const h of EXTRA_HARNESSES) {
+    if (choice[h] === "off" || !harnessPresent(h)) continue;
+    paths.push(installExtra(h));
+  }
+  return paths;
+}
+
+export function uninstallDetected(): string[] {
+  const paths = [uninstallHooks()];
+  for (const h of EXTRA_HARNESSES) paths.push(uninstallExtra(h));
+  return paths;
+}
+
+/** One status line per harness. */
+export function hooksStatus(): string {
+  const choice = loadConfig().harnessHooks ?? {};
+  const claude = loadConfig().claudeHooks === "off" && !hooksInstalled() ? "off" : hooksInstalled() ? "installed" : "not installed";
+  const lines = [`claude: ${claude}`];
+  for (const h of EXTRA_HARNESSES) {
+    if (extraInstalled(h)) lines.push(`${h}: installed`);
+    else if (choice[h] === "off") lines.push(`${h}: off`);
+    else if (!harnessPresent(h)) lines.push(`${h}: not detected`);
+    else lines.push(`${h}: not installed`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * How a Stop hook should answer. Grok sends hook_event_name "Stop" (and also
+ * hookEventName "stop"), so it stays on the Claude block path and cannot be
+ * mistaken for Cursor, whose stop input has status and loop_count and no event name.
+ */
+export function stopStyle(input: { hook_event_name?: string; status?: string; loop_count?: number }): "cursor" | "gemini" | "block" {
+  if (input.hook_event_name === "AfterAgent") return "gemini";
+  if (input.hook_event_name === "Stop") return "block";
+  if (input.status != null || typeof input.loop_count === "number") return "cursor";
+  return "block";
+}
+
+/** Cursor's stop follow-up. Same text every time, and short: loop_limit is 5. */
+export function cursorStopFollowup(mc: string, unread: boolean, listening: boolean, loopCount: number): string | null {
+  if (unread) return `Unread Kiwi messages. Run \`${mc} read\`, answer with \`${mc} reply N "…"\`, then continue.`;
+  if (!listening && loopCount === 0) return `Nothing is listening on Kiwi. Start a Monitor on \`${mc} tail\`.`;
+  return null;
 }
 
 // ---------- running a hook ----------
@@ -224,6 +415,12 @@ interface HookInput {
   session_id?: string;
   cwd?: string;
   stop_hook_active?: boolean;
+  hook_event_name?: string;
+  hookEventName?: string;
+  status?: string;
+  loop_count?: number;
+  composer_mode?: string;
+  is_background_agent?: boolean;
 }
 
 /** Remember when we last nagged a session about not listening (per kind of nag), so it's at most every 10 minutes. */
@@ -285,7 +482,12 @@ export async function runHook(event: string): Promise<void> {
       ];
       const unread = await unreadText(s);
       if (unread) lines.push("", "Unread messages for you:", unread);
-      return process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: lines.join("\n") } }));
+      const additionalContext = lines.join("\n");
+      // Cursor's sessionStart injects additional_context and ignores the Claude envelope.
+      if (input.hook_event_name === "sessionStart" || input.composer_mode != null || typeof input.is_background_agent === "boolean") {
+        return process.stdout.write(JSON.stringify({ additional_context: additionalContext }));
+      }
+      return process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } }));
     }
 
     if (event === "prompt") {
@@ -294,21 +496,41 @@ export async function runHook(event: string): Promise<void> {
       if (unread) lines.push(`New Kiwi Channels messages for you (${b.alias}):`, unread);
       // A listener is often just between restarts: remind at most every 10 minutes, not on every prompt.
       if (!listening && nagDue(input.session_id ?? "", "prompt")) lines.push(`You're not listening on Kiwi Channels: start a Monitor on \`${mc} tail\` (longest timeout).`);
-      if (lines.length) process.stdout.write(lines.join("\n"));
+      if (lines.length) {
+        const text = lines.join("\n");
+        // Gemini BeforeAgent only injects hookSpecificOutput.additionalContext. Codex and Claude take plain stdout.
+        if (input.hook_event_name === "BeforeAgent") {
+          process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "BeforeAgent", additionalContext: text } }));
+        } else {
+          process.stdout.write(text);
+        }
+      }
       return;
     }
 
     if (event === "stop") {
+      const style = stopStyle(input);
+      if (style === "cursor") {
+        // An aborted or failed turn must not schedule another one. Don't read: that would consume the messages the follow-up tells the agent to read.
+        if (input.status && input.status !== "completed") return;
+        const { messages, state } = await s.state();
+        const unread = (await s.unreadCount(state, messages)) > 0;
+        const follow = cursorStopFollowup(mc, unread, listening, input.loop_count ?? 0);
+        if (!follow) return;
+        if (!unread && !nagDue(input.session_id ?? "")) return;
+        return process.stdout.write(JSON.stringify({ followup_message: follow }));
+      }
       const unread = await unreadText(s);
+      const decision = style === "gemini" ? "deny" : "block";
       if (unread) {
         return process.stdout.write(
-          JSON.stringify({ decision: "block", reason: `Before stopping: unread Kiwi Channels messages for you. Handle them (answer with \`${mc} reply N "…"\`):\n${unread}` }),
+          JSON.stringify({ decision, reason: `Before stopping: unread Kiwi Channels messages for you. Handle them (answer with \`${mc} reply N "…"\`):\n${unread}` }),
         );
       }
       if (!listening && !input.stop_hook_active && nagDue(input.session_id ?? "")) {
         return process.stdout.write(
           JSON.stringify({
-            decision: "block",
+            decision,
             reason: `You're about to go idle with nothing listening for you on Kiwi Channels, so messages from other agents won't wake you. Start a Monitor on \`${mc} tail\` (longest timeout allowed), then stop.`,
           }),
         );

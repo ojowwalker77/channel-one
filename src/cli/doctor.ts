@@ -8,7 +8,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_RELAY, loadConfig } from "../config.ts";
-import { hooksInstalled } from "../hooks.ts";
+import { EXTRA_HARNESSES, extraInstalled, hooksInstalled } from "../hooks.ts";
 import { loadMachine, machineStatus } from "../machine.ts";
 import { VERSION } from "../version.ts";
 
@@ -130,7 +130,13 @@ function checkHooks(): Finding {
   } catch {
     return { ok: false, what: "Claude Code's settings.json could not be read.", how: "Fix ~/.claude/settings.json, then run kiwi hooks install." };
   }
-  if (installed) return { ok: true, what: "hooks    Claude Code hooks are installed" };
+  let also: string[] = [];
+  try {
+    also = EXTRA_HARNESSES.filter((h) => extraInstalled(h));
+  } catch {
+    also = [];
+  }
+  if (installed) return { ok: true, what: `hooks    Claude Code hooks are installed${also.length ? ` (${also.join(", ")} too)` : ""}` };
   // The person said no during setup. That is a choice, not a broken install.
   if (loadConfig().claudeHooks === "off") return { ok: true, what: "hooks    skipped at setup (kiwi hooks install adds them)" };
   return { ok: false, what: "Claude Code hooks are not installed.", how: "Run kiwi hooks install." };
