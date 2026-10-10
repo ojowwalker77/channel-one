@@ -71,6 +71,7 @@ flags. It serves the dashboard only if you pass `--web` with a built `web/dist`.
 | `--workos-authkit-domain <url>` | `WORKOS_AUTHKIT_DOMAIN` | | Your AuthKit domain |
 | | `WORKOS_API_KEY` | | Secret, env only: lets the relay show people's real names |
 | `--dev-sign-in` | | | Testing only: the token `dev:<name>` signs in as `<name>`, no password. Refused unless `--hostname` is `127.0.0.1` or `localhost` ([below](#testing-a-relay)) |
+| `--trust-proxy` | `KIWI_TRUST_PROXY=1` | off | The peer is a reverse proxy on loopback. Computer registrations then count as the last address in `X-Forwarded-For` (the one the proxy added). Any other peer ignores the header. Without this flag, every registration through the proxy shares `127.0.0.1` |
 
 Beta and quota settings come from the environment (see [Limits](#limits-and-the-private-beta)).
 
@@ -124,7 +125,12 @@ example.com {
 
 Caddy fetches and renews the certificate itself once the domain points at the
 machine and ports 80 and 443 are open. It passes WebSockets through with no extra
-configuration.
+configuration. It also sets `X-Forwarded-For`. The systemd unit passes
+`--trust-proxy`, so a new computer counts against the client Caddy saw (the last
+address in that header) instead of everyone sharing `127.0.0.1`. The flag does
+nothing unless the peer is loopback, which is this setup. In Docker the peer is
+the bridge gateway, not loopback, so the header is ignored and that published
+port is one shared limit.
 
 ```bash
 caddy validate --config deploy/Caddyfile --adapter caddyfile
@@ -191,6 +197,11 @@ nothing.
    - set the limits you want ([table below](#limits-and-the-private-beta)).
    Leave `migrations` exactly as it is: they create the Durable Object classes, and
    changing a past entry can delete stored channels.
+   Leave `ratelimits` too: it caps new computer registrations at 20 per minute per
+   client address (`CF-Connecting-IP`). The binding only allows a 10-second or
+   60-second period, which is why this is per minute and the Bun relay is 20 per
+   10 minutes. `namespace_id` must be unique in your Cloudflare account; change it
+   if `870201` is already taken. Deleting the binding turns the cap off.
 2. Deploy:
    ```bash
    bunx wrangler login

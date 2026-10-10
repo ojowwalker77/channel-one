@@ -48,18 +48,30 @@ const USE_PRECISION_MS = 3600_000;
 
 const lastUsed = (rec: MachineRecord) => rec.used ?? rec.linked ?? rec.created;
 
+/** How many addresses the in-process limiter remembers. Past this, the oldest is dropped, not the whole table. */
+const MAX_BUCKETS = 10_000;
 const registrations = new Map<string, number[]>();
 
-/** False once this address has registered REGISTRATIONS_PER_WINDOW computers in the last 10 minutes. */
+/** Move this address to the newest end, then drop the oldest until the table fits. */
+function remember(ip: string, stamps: number[]): void {
+  registrations.delete(ip);
+  registrations.set(ip, stamps);
+  while (registrations.size > MAX_BUCKETS) {
+    const oldest = registrations.keys().next().value;
+    if (oldest === undefined || oldest === ip) break;
+    registrations.delete(oldest);
+  }
+}
+
+/** False once this address has registered REGISTRATIONS_PER_WINDOW computers in the last 10 minutes. The Worker does not use this: an in-memory map does not survive across isolates. */
 export function registrationAllowed(ip: string, now = Date.now()): boolean {
   const kept = (registrations.get(ip) ?? []).filter((t) => now - t < REGISTER_WINDOW_MS);
   if (kept.length >= REGISTRATIONS_PER_WINDOW) {
-    registrations.set(ip, kept);
+    remember(ip, kept);
     return false;
   }
-  if (registrations.size > 10_000) registrations.clear();
   kept.push(now);
-  registrations.set(ip, kept);
+  remember(ip, kept);
   return true;
 }
 
@@ -74,11 +86,44 @@ export async function sweepPending(list: () => Promise<MachineRecord[]>, remove:
   return n;
 }
 
-/** The address a registration counts against. Bun passes the peer; the Worker leaves it unset and Cloudflare's header is used. A missing address is not limited (local tests). */
-function callerIp(req: Request, peer?: string | null): string | null {
-  if (peer) return peer;
-  const cf = req.headers.get("cf-connecting-ip")?.trim();
-  return cf ? cf.slice(0, 80) : null;
+const LOOPBACK = new Set(["127.0.0.1", "::1", "[::1]", "::ffff:127.0.0.1"]);
+
+/** An address worth a bucket. Junk is refused so a header cannot mint unlimited keys. */
+function usableIp(raw: string): string | null {
+  let ip = raw.trim();
+  if (ip.startsWith("[") && ip.endsWith("]")) ip = ip.slice(1, -1);
+  if (!ip || ip.length > 64) return null;
+  if (!/^[0-9a-fA-F:.]+$/.test(ip)) return null;
+  if (!ip.includes(".") && !ip.includes(":")) return null;
+  return ip;
+}
+
+/**
+ * Who a Bun registration counts against. The peer, unless it is loopback and the
+ * operator set --trust-proxy: then the last address in X-Forwarded-For, which is
+ * the one the proxy added. A header from any other peer is ignored. No usable
+ * address means the caller does not limit.
+ */
+export function registrationAddress(peer: string | null | undefined, forwardedFor: string | null | undefined, trustProxy: boolean): string | null {
+  const peerIp = peer ? usableIp(peer) : null;
+  if (!(trustProxy && peerIp && LOOPBACK.has(peerIp))) return peerIp;
+  const parts = (forwardedFor ?? "").split(",");
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const client = usableIp(parts[i] ?? "");
+    if (client) return client;
+  }
+  return peerIp;
+}
+
+/** The client address Cloudflare puts on a Worker request. Absent in local tests, which are then not limited. */
+export function cloudflareClient(req: Request): string | null {
+  return usableIp(req.headers.get("cf-connecting-ip") ?? "");
+}
+
+/** How the route asks whether this address may register another computer. */
+export interface RegistrationGate {
+  ip: string;
+  allow: (ip: string) => boolean | Promise<boolean>;
 }
 
 /** The computer's record, or null if it has expired and been deleted. An unlinked one lasts the link window; a linked one lasts until it goes unused. */
@@ -110,7 +155,7 @@ export async function vouchedBy(store: MachineStore, roomId: string, agentPk: st
 }
 
 /** Routes under /v1/machines and /v1/me/machines; null when the path isn't one of them. */
-export async function onMachineHttp(req: Request, store: MachineStore, human: HumanAuth | null, peer?: string | null): Promise<Response | null> {
+export async function onMachineHttp(req: Request, store: MachineStore, human: HumanAuth | null, gate?: RegistrationGate | null): Promise<Response | null> {
   const url = new URL(req.url);
   const path = url.pathname;
   const method = req.method.toUpperCase();
@@ -139,8 +184,7 @@ export async function onMachineHttp(req: Request, store: MachineStore, human: Hu
     if (Math.abs(Date.now() - b.ts) > 5 * 60_000) throw new HttpError(400, "clock is off by more than 5 minutes");
     const prior = await current(store, b.pk);
     if (prior?.user) return Response.json({ status: "linked" });
-    const ip = callerIp(req, peer);
-    if (ip && !registrationAllowed(ip)) throw new HttpError(429, "too many computer registrations; try again in a few minutes");
+    if (gate && !(await gate.allow(gate.ip))) throw new HttpError(429, "too many computer registrations; try again in a few minutes");
     await store.put({ pk: b.pk, label: inlineText(b.label, 60) || "A computer", user: null, created: prior?.created ?? Date.now() });
     return Response.json({ status: "pending", code: await machineCode(b.pk) });
   }

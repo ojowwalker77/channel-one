@@ -2,7 +2,7 @@ import { afterAll, afterEach, describe, expect, setSystemTime, test } from "bun:
 import { machineStatus, newMachine, registerMachine, vouchFor, type MachineFile } from "../src/machine.ts";
 import type { HumanAuth } from "../src/relay/human.ts";
 import { sign } from "../src/identity.ts";
-import { LINK_TTL_MS, sweepPending, UNUSED_LINK_TTL_MS, onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "../src/relay/machines.ts";
+import { LINK_TTL_MS, registrationAddress, registrationAllowed, sweepPending, UNUSED_LINK_TTL_MS, onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "../src/relay/machines.ts";
 import { errorResponse } from "../src/relay/room.ts";
 
 // The machine routes on their own: an in-memory store, and a "WorkOS" that trusts any user_ token.
@@ -20,7 +20,9 @@ const server = Bun.serve({
   hostname: "127.0.0.1",
   fetch: async (req) => {
     try {
-      return (await onMachineHttp(req, store, human)) ?? new Response("not found", { status: 404 });
+      // The route does not read client-address headers. The test passes the address the way Bun does, after it has decided.
+      const ip = req.headers.get("x-client-address");
+      return (await onMachineHttp(req, store, human, ip ? { ip, allow: registrationAllowed } : null)) ?? new Response("not found", { status: 404 });
     } catch (err) {
       return errorResponse(err);
     }
@@ -143,10 +145,48 @@ describe("unlinked registrations don't live forever", () => {
     for (let i = 0; i < 21; i++) {
       const m = await newMachine(relay);
       const body = JSON.stringify(await sign(m.identity, { label: m.label, ts: Date.now() }));
-      const res = await fetch(`${relay}/v1/machines`, { method: "POST", headers: { "content-type": "application/json", "cf-connecting-ip": ip }, body });
+      const res = await fetch(`${relay}/v1/machines`, { method: "POST", headers: { "content-type": "application/json", "x-client-address": ip }, body });
       status = res.status;
       if (i < 20) expect(status).toBe(200);
     }
     expect(status).toBe(429);
+  });
+
+  test("a forwarded or Cloudflare header is not a limit by itself", async () => {
+    setSystemTime(Date.now());
+    for (let i = 0; i < 25; i++) {
+      const m = await newMachine(relay);
+      const body = JSON.stringify(await sign(m.identity, { label: m.label, ts: Date.now() }));
+      const res = await fetch(`${relay}/v1/machines`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": `203.0.113.${i}`, "cf-connecting-ip": "198.51.100.20" },
+        body,
+      });
+      expect(res.status).toBe(200);
+    }
+  });
+});
+
+describe("which address a registration counts against", () => {
+  test("the peer, unless it is loopback and the proxy is trusted", () => {
+    expect(registrationAddress("203.0.113.5", "1.2.3.4", true)).toBe("203.0.113.5");
+    expect(registrationAddress("203.0.113.5", "1.2.3.4", false)).toBe("203.0.113.5");
+    expect(registrationAddress("127.0.0.1", "1.2.3.4, 203.0.113.9", false)).toBe("127.0.0.1");
+    expect(registrationAddress("127.0.0.1", "1.2.3.4, 203.0.113.9", true)).toBe("203.0.113.9");
+    expect(registrationAddress("::ffff:127.0.0.1", "2001:db8::9", true)).toBe("2001:db8::9");
+    expect(registrationAddress("::1", "not an ip, [2001:db8::8]", true)).toBe("2001:db8::8");
+    expect(registrationAddress("127.0.0.1", "not an ip", true)).toBe("127.0.0.1");
+    expect(registrationAddress(null, "203.0.113.9", true)).toBeNull();
+  });
+
+  test("a full table drops the oldest address, not every address", () => {
+    const t0 = 1_700_000_000_000;
+    for (let i = 0; i < 20; i++) expect(registrationAllowed("honest-kept", t0)).toBe(true);
+    expect(registrationAllowed("honest-kept", t0)).toBe(false);
+    for (let i = 0; i < 10_000; i++) expect(registrationAllowed(`flood-${i}`, t0)).toBe(true);
+    // honest-kept was the oldest, so its window starts again. A key added at the end is still counted.
+    expect(registrationAllowed("honest-kept", t0)).toBe(true);
+    for (let i = 0; i < 19; i++) expect(registrationAllowed("flood-9999", t0)).toBe(true);
+    expect(registrationAllowed("flood-9999", t0)).toBe(false);
   });
 });

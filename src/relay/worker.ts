@@ -10,7 +10,7 @@ import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import { workosHumanAuth, workosProfiles, type HumanAuth } from "./human.ts";
 import { onDeviceHttp, type DeviceStore, type DeviceTransfer } from "./devices.ts";
 import { onVaultHttp, vaultSwap, type VaultRecord, type VaultStore } from "./vault.ts";
-import { LINK_TTL_MS, onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
+import { cloudflareClient, LINK_TTL_MS, onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
 import { policyFrom } from "./policy.ts";
 import {
   HttpError,
@@ -41,6 +41,8 @@ interface Env {
   WORKOS_AUTHKIT_DOMAIN?: string;
   /** Secret: lets the relay vouch for people's real names ("agent of @…"). */
   WORKOS_API_KEY?: string;
+  /** 20 computer registrations per minute per client address. See wrangler.jsonc ratelimits. */
+  MACHINE_REGISTRATIONS: RateLimit;
 }
 
 let humanAuth: HumanAuth | null | undefined;
@@ -311,7 +313,9 @@ export default {
     }
     if (url.pathname.startsWith("/v1/machines") || url.pathname.startsWith("/v1/me/machines")) {
       try {
-        return (await onMachineHttp(req, machineStore(env), human(env))) ?? errorResponse(new HttpError(404, "not found"));
+        const ip = cloudflareClient(req);
+        const gate = ip ? { ip, allow: (key: string) => env.MACHINE_REGISTRATIONS.limit({ key }).then((r) => r.success) } : null;
+        return (await onMachineHttp(req, machineStore(env), human(env), gate)) ?? errorResponse(new HttpError(404, "not found"));
       } catch (err) {
         return errorResponse(err);
       }
