@@ -8,7 +8,8 @@ import { TOO_MANY_REQUESTS } from "./sas.ts";
 import type { ChannelAccess } from "./crypto.ts";
 import type { JoinRequest } from "./membership.ts";
 import type { Identity } from "./identity.ts";
-import { TASK_STATES, type Color, type Event, type ImageAttachment, type Kind, type Message, type Presence, type TaskState } from "./protocol.ts";
+import { canPost, describeScopes, refusal, wireScopes, type Scope } from "./scopes.ts";
+import { ignored, TASK_STATES, type Color, type Event, type ImageAttachment, type Kind, type Message, type Presence, type TaskState } from "./protocol.ts";
 import { claimConflict, fold, overlaps, taskId, waitingOn, wouldCycle, type ChannelState, type Roster } from "./state.ts";
 
 /** How often a listening agent re-announces itself. Receivers treat 2.5x this as offline. */
@@ -67,6 +68,7 @@ export class AgentSession {
         display: m.display,
         sponsor: m.sponsor,
         color: m.color,
+        ...(m.scopes ? { scopes: m.scopes } : {}),
       }));
     }
     return this.roster;
@@ -290,7 +292,19 @@ export class AgentSession {
   }
 
   async send(body: string, opts: SendOptions = {}): Promise<number> {
+    await this.mayI({ kind: opts.kind ?? "msg", ev: opts.ev });
     return this.ch.send(body, { ...opts, to: await this.resolveTo(opts.to) });
+  }
+
+  /**
+   * Refuse here what the owner hasn't let this member send: every client would refuse it in fold
+   * anyway, so sending it would only leave a dead message in the log.
+   */
+  private async mayI(m: { kind: Kind; ev?: Event }): Promise<void> {
+    const { state } = await this.state();
+    const me = state.members.get(this.me);
+    const why = me && refusal(me.scopes, m);
+    if (why) throw new Rejected(`the owner hasn't let you do that: you ${why} here (you may ${me.scopes.length ? describeScopes(me.scopes) : "only read"})`);
   }
 
   /**
@@ -340,6 +354,7 @@ export class AgentSession {
     const orig = messages.find((m) => m.seq === seq);
     if (!orig) throw new Rejected(`no message #${seq}`);
     const to = orig.from === this.me ? orig.to : [orig.from];
+    await this.mayI({ kind });
     return this.ch.send(body, { to, kind, re: [seq], imgs });
   }
 
@@ -367,6 +382,24 @@ export class AgentSession {
   }
 
   /**
+   * Owner: what a member may do besides read (null: everything). Signed by the owner key, so every
+   * client checks it's the owner's word; it names the member's key, so it never carries over to
+   * whoever is admitted under that name next. The relay is told the one bit it enforces itself.
+   */
+  async setScopes(member: string, scopes: Scope[] | null): Promise<ChannelState> {
+    if (!this.ownerCh) throw new Rejected("only the channel owner's machine sets what members may do");
+    const { state } = await this.state();
+    const m = state.members.get(member);
+    if (!m?.active) throw new Rejected(`no member named ${member}`);
+    if (m.owner) throw new Rejected("the owner may do everything");
+    const wire = wireScopes(scopes);
+    const ev: Event = { op: "scope.set", member, pk: m.pk, scopes: wire };
+    const after = await this.confirm(await this.ownerCh.send(`set what ${member} may do: ${wire ? describeScopes(wire) : "full"}`, { kind: "event", ev }));
+    await this.ownerCh.setCanPost(m.pk, canPost(after.members.get(member)?.scopes ?? []));
+    return after;
+  }
+
+  /**
    * A person's colour (null clears it). Signed by the person themself when it's
    * this session's own name, else by the owner key on this machine. The fold
    * refuses a colour someone else has, and colours on agents.
@@ -375,12 +408,14 @@ export class AgentSession {
     const ch = member === this.me ? this.ch : this.ownerCh;
     if (!ch) throw new Rejected("only that person, or the channel owner's machine, sets their colour");
     const ev: Event = { op: "color.set", member, color };
+    if (ch === this.ch) await this.mayI({ kind: "event", ev });
     return this.confirm(await ch.send(color ? `${member}'s colour is ${color}` : `cleared ${member}'s colour`, { kind: "event", ev }));
   }
 
   // ---------- events ----------
 
-  private event(ev: Event, body: string, to?: string[]): Promise<number> {
+  private async event(ev: Event, body: string, to?: string[]): Promise<number> {
+    await this.mayI({ kind: "event", ev });
     return this.ch.send(body, { kind: "event", ev, to: to?.length ? [...new Set(to)].filter((n) => n !== this.me) : undefined });
   }
 
@@ -490,8 +525,9 @@ export type { Presence };
  */
 export function wants(me: string, m: Message, state: ChannelState | null, d: Delivery = {}): boolean {
   if (m.from === me) return false;
-  // Forged messages never reach an agent: they're noise at best, prompt injection at worst.
-  if (state?.trust.get(m.seq) === "forged") return false;
+  // Forged messages never reach an agent: they're noise at best, prompt injection at worst. Nor do
+  // ones the owner didn't let their sender send (outside its scopes).
+  if (ignored(state?.trust.get(m.seq))) return false;
   if (d.all) return true;
   // Any message of a thread names it: its root, or a reply in it.
   if (d.thread !== undefined) return m.kind !== "event" && (state?.threadOf.get(m.seq) ?? m.seq) === (state?.threadOf.get(d.thread) ?? d.thread);

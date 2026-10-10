@@ -267,7 +267,7 @@ const routes: RoomRoute[] = [
         const store = yield* Room;
         if (!allow(`${store.roomId}:${me}`, MESSAGES_PER_MINUTE)) return yield* refuse(429, "too many messages; wait a minute");
         const b = yield* json<{ iv?: string; ct?: string; e?: number }>();
-        const e = yield* attempt(() => store.append(b.iv as string, b.ct as string, Number(b.e ?? 0)));
+        const e = yield* attempt(() => store.append(b.iv as string, b.ct as string, Number(b.e ?? 0), me));
         return { data: { seq: e.seq, ts: e.ts }, fx: { broadcast: [msgFrame(e)], expireAt: store.touch() ?? undefined } };
       }),
   },
@@ -385,6 +385,19 @@ const routes: RoomRoute[] = [
         yield* attempt(() => store.remove(m[1]!));
         const directory = yield* attempt(() => store.directory());
         return { data: { removed: true }, fx: { disconnect: m[1]!, broadcast: [frame({ t: "roster" })], directory } };
+      }),
+  },
+  {
+    method: "PUT",
+    path: /^\/members\/([A-Za-z0-9_-]{20,})\/post$/,
+    guard: "owner",
+    run: (_, m) =>
+      Effect.gen(function* () {
+        const store = yield* Room;
+        const b = yield* json<{ post?: unknown }>();
+        if (typeof b.post !== "boolean") return yield* refuse(400, "say whether they may post");
+        yield* attempt(() => store.setCanPost(m[1]!, b.post as boolean));
+        return { data: { post: b.post } };
       }),
   },
   {

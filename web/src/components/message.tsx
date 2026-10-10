@@ -2,7 +2,7 @@ import { ArrowTurnBackwardIcon, Copy01Icon } from "@hugeicons/core-free-icons"
 import { memo, useState } from "react"
 
 import { describeEvent } from "@mc/format.ts"
-import type { Message, Trust } from "@mc/protocol.ts"
+import { ignored, type Message, type Trust } from "@mc/protocol.ts"
 import type { ChannelState, Member } from "@mc/state.ts"
 import { excerpt, formatDay, formatFull, formatTime, memberName } from "@/lib/format"
 import { cx } from "@/lib/utils"
@@ -29,7 +29,7 @@ export function DayMark({ ts }: { ts: number }) {
 /** Coordination (tasks, claims, facts): one centred, muted line. */
 export function EventRow({ m, state, onOpenTask }: { m: Message; state: ChannelState; onOpenTask: (id: number) => void }) {
   const taskRef = m.ev && "task" in m.ev ? m.ev.task : m.ev?.op === "task.add" ? m.seq : null
-  const forged = state.trust.get(m.seq) === "forged"
+  const forged = ignored(state.trust.get(m.seq))
   return (
     <div id={`m${m.seq}`} className={cx("my-0.5 flex justify-center px-6", forged && "line-through opacity-50")}>
       <p className="max-w-[36rem] text-center text-[12.5px] leading-[1.45] text-ink-3">
@@ -49,7 +49,7 @@ export function EventRow({ m, state, onOpenTask }: { m: Message; state: ChannelS
 
 /** Forged events, and events aimed at this member, stay on their own line. */
 export function standsAlone(m: Message, state: ChannelState, me: string): boolean {
-  if (state.trust.get(m.seq) === "forged") return true
+  if (ignored(state.trust.get(m.seq))) return true
   const ev = m.ev
   if (!ev) return false
   if ((ev.op === "role.set" || ev.op === "role.refuse") && ev.member === me) return true
@@ -140,7 +140,7 @@ export interface ThreadSummary {
 }
 
 export const MessageRow = memo(function MessageRow({ m, me, author, trust, online, head, adjacentReply, highlighted, quoted, nameOf, onReply, onJump, thread, onOpenThread, anchor = "m" }: RowProps) {
-  const forged = trust === "forged"
+  const forged = ignored(trust)
   const repliedTo = new Set((m.re ?? []).map((seq) => quoted(seq)?.from).filter((f): f is string => !!f))
   const said = phrase(m, me, nameOf, repliedTo)
   const sponsor = author?.sponsor && isAgent(author) ? `Agent for ${author.sponsor.name}` : isAgent(author) ? "Agent" : "Person"
@@ -213,7 +213,11 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
           </div>
         ) : null}
 
-        {forged && <p className="mt-0.5 text-[12px] text-alert">Not signed by {m.from}’s key, so agents ignore it.</p>}
+        {forged && (
+          <p className="mt-0.5 text-[12px] text-alert">
+            {trust === "refused" ? `The owner hasn’t let ${m.from} send this, so agents ignore it.` : `Not signed by ${m.from}’s key, so agents ignore it.`}
+          </p>
+        )}
 
         {thread && onOpenThread && (
           <button

@@ -1,7 +1,7 @@
 import { ArrowDown01Icon, ArrowLeft01Icon, Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
-import type { Message } from "@mc/protocol.ts"
+import { ignored, type Message } from "@mc/protocol.ts"
 import { useAuth } from "@/lib/auth"
 import { channelTitle, forgetChannel, loadMember, loadRecent, saveMember, saveRecent, useChannel, useClock, useKnownChannels, type StoredMember } from "@/lib/channel"
 import { refreshIcon, useIcons, useLiveIcon } from "@/lib/icons"
@@ -83,7 +83,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
 
   // Remember the latest message and who's here, for the channel list.
   useEffect(() => {
-    const last = [...messages].reverse().find((m) => m.kind !== "event" && state.trust.get(m.seq) !== "forged")
+    const last = [...messages].reverse().find((m) => m.kind !== "event" && !ignored(state.trust.get(m.seq)))
     const prior = loadRecent(member.code)
     if (!last && !others.length) return
     saveRecent(member.code, {
@@ -329,7 +329,8 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         await Promise.all([refreshRequests(), refreshRoster()])
       }}
       onReclaim={async (r, opts) => {
-        await ch.reclaim(r, opts)
+        // The seat keeps what it may do now, scope.set events included (they name the old key).
+        await ch.reclaim(r, { ...opts, scopes: r.reclaims ? state.members.get(r.reclaims.name)?.scopes : undefined })
         await Promise.all([refreshRequests(), refreshRoster()])
       }}
       onRole={async (ev) => {

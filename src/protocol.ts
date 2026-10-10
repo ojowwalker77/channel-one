@@ -129,7 +129,12 @@ export type Event =
   /** Owner only: a member's seat moved to a new key (fingerprints, for the record). */
   | { op: "seat.reclaim"; member: string; from: string; to: string }
   /** A person's colour (null clears it): set by that person, or by the owner for anyone. */
-  | { op: "color.set"; member: string; color: Color | null };
+  | { op: "color.set"; member: string; color: Color | null }
+  /**
+   * Owner only: what a member may do besides read (null: everything). Names the member's key
+   * too, so it never carries over to someone admitted under the same name later.
+   */
+  | { op: "scope.set"; member: string; pk: string; scopes: string[] | null };
 
 /** One image attached to a message, encrypted with everything else. */
 export interface ImageAttachment {
@@ -181,8 +186,14 @@ export interface Payload {
  * How far to trust who a message says it's from:
  *   verified   signed by the key the owner admitted under that name
  *   forged     anything else: another key, no signature, or not a member
+ *   refused    signed by that member, but outside what the owner lets them do (their scopes)
  */
-export type Trust = "verified" | "forged";
+export type Trust = "verified" | "forged" | "refused";
+
+/** Whether a message is one to leave out: forged, or outside its sender's scopes. */
+export function ignored(trust: Trust | undefined): boolean {
+  return trust === "forged" || trust === "refused";
+}
 
 export interface Message extends Payload {
   seq: number;
@@ -246,6 +257,8 @@ export function wellFormedEvent(ev: unknown): ev is Event {
       return str(e.member, 64) && str(e.from, 64) && str(e.to, 64);
     case "color.set":
       return str(e.member, 64) && (e.color === null || isColor(e.color));
+    case "scope.set":
+      return str(e.member, 64) && str(e.pk, 64) && (e.scopes === null || strs(e.scopes, 32));
     default:
       return false;
   }
