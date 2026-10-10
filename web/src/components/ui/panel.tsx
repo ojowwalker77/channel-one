@@ -39,7 +39,7 @@ export function ResizablePanel({ children, className }: { children: ReactNode; c
         aria-valuemax={MAX}
         aria-valuenow={shown}
         className={cx(
-          "absolute inset-y-0 -left-1 z-10 m-0 hidden w-2 cursor-col-resize touch-none border-0 bg-transparent transition-colors outline-none md:block",
+          "absolute inset-y-0 -left-1 z-10 m-0 hidden w-2 cursor-col-resize touch-none border-0 bg-transparent transition-colors md:block",
           "after:absolute after:inset-y-0 after:left-1 after:w-px after:bg-transparent hover:after:bg-line focus-visible:after:bg-ring",
           dragging && "after:bg-ring"
         )}
@@ -58,8 +58,13 @@ export function ResizablePanel({ children, className }: { children: ReactNode; c
           if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
             e.preventDefault()
             setWidth(clamp(shown + (e.key === "ArrowLeft" ? 32 : -32)))
-          } else if (e.key === "Home") setWidth(MIN)
-          else if (e.key === "End") setWidth(clamp(MAX))
+          } else if (e.key === "Home") {
+            e.preventDefault()
+            setWidth(MIN)
+          } else if (e.key === "End") {
+            e.preventDefault()
+            setWidth(clamp(MAX))
+          }
         }}
       />
       {children}

@@ -32,17 +32,17 @@ export function EventRow({ m, state, onOpenTask }: { m: Message; state: ChannelS
   const forged = state.trust.get(m.seq) === "forged"
   return (
     <div id={`m${m.seq}`} className={cx("my-0.5 flex justify-center px-6", forged && "line-through opacity-50")}>
-      <p className="max-w-[36rem] text-center text-[12.5px] leading-[1.45] text-ink-3">
-        <span className="text-ink-2">{memberName(state.members.get(m.from), m.from)}</span> {describeEvent(m, state)}
+      <div className="max-w-[36rem] text-center text-[12.5px] leading-[1.45] text-ink-2">
+        <span className="text-ink">{memberName(state.members.get(m.from), m.from)}</span> {describeEvent(m, state)}
         <time className="ml-1.5 text-[11.5px] tabular-nums" title={formatFull(m.ts)}>
           {formatTime(m.ts)}
         </time>
         {taskRef !== null && (
-          <button type="button" onClick={() => onOpenTask(taskRef)} className="ml-1.5 font-medium text-ink-2 hover:text-ink">
+          <button type="button" onClick={() => onOpenTask(taskRef)} className="ml-1.5 font-medium text-ink hover:underline">
             Open task
           </button>
         )}
-      </p>
+      </div>
     </div>
   )
 }
@@ -78,7 +78,7 @@ export function EventGroup({ messages, state, onOpenTask, highlight }: { message
   return (
     <div className="my-1">
       {shown ? messages.map(row) : row(last)}
-      <button type="button" aria-expanded={shown} onClick={() => setOpen(!shown)} className="mx-auto mt-0.5 block text-[12.5px] text-ink-3 hover:text-ink-2">
+      <button type="button" aria-expanded={shown} onClick={() => setOpen(!shown)} className="mx-auto mt-0.5 block rounded-[6px] px-2 text-[12.5px] text-ink-2 hover:text-ink">
         {shown ? "Hide earlier updates" : `${names}: ${n} earlier update${n === 1 ? "" : "s"}`}
       </button>
     </div>
@@ -230,7 +230,7 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
             </span>
             <span className={cx("shrink-0 font-medium", thread.forYou ? "text-ink" : "text-ink-2")}>{thread.count === 1 ? "1 reply" : `${thread.count} replies`}</span>
             {thread.forYou && <span className="shrink-0 rounded-full bg-ink px-1.5 text-[11px] font-semibold text-canvas">for you</span>}
-            <span className="truncate text-ink-3">last {formatTime(thread.last)}</span>
+            <span className="truncate text-ink-2">last {formatTime(thread.last)}</span>
           </button>
         )}
       </div>

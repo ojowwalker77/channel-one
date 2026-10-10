@@ -1,3 +1,4 @@
+import { Dialog } from "@base-ui/react/dialog"
 import { Add01Icon, Copy01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons"
 import { createContext, useContext, useState, type ReactNode } from "react"
 
@@ -314,7 +315,7 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
       onOpenChange={setOpen}
       className="w-[340px] p-1.5"
       trigger={
-        <button type="button" className="mt-0.5 flex max-w-full items-center gap-1.5 rounded-[6px] text-left transition-colors hover:text-ink data-popup-open:text-ink">
+        <button type="button" aria-label={`People, ${subtitle}`} className="mt-0.5 flex max-w-full items-center gap-1.5 rounded-[6px] text-left transition-colors hover:text-ink data-popup-open:text-ink">
           {live && here.length > 0 && (
             <span className="flex shrink-0 -space-x-1" aria-hidden>
               {here.slice(0, 5).map((m) => (
@@ -324,11 +325,12 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
               ))}
             </span>
           )}
-          <span className={cx("truncate text-[12px] leading-tight", live ? "text-ink-2" : "text-ink-3")}>{subtitle}</span>
+          <span className="truncate text-[12px] leading-tight text-ink-2">{subtitle}</span>
         </button>
       }
     >
       <div className="max-h-[min(520px,70svh)] overflow-y-auto">
+        <h2 className="sr-only">People</h2>
         {active.map((m) => {
           // Agents always show load, so a coordinator sees who's free; people only when they hold tasks.
           const load = memberLoad(p.state, m.name, p.now)
@@ -343,9 +345,9 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
                 <button type="button" className="min-w-0 flex-1 text-left" onClick={act(() => p.onFilter({ kind: "from", name: m.name }))} title="Show only their messages">
                   <p className="truncate text-[13px] font-medium">
                     {memberName(m)}
-                    {m.pk === p.myKey && <span className="font-normal text-ink-3"> (you)</span>}
+                    {m.pk === p.myKey && <span className="font-normal text-ink-2"> (you)</span>}
                   </p>
-                  <p className="truncate text-[12px] text-ink-3" title={`${now?.about ? `Rules: ${now.about}\n` : ""}Key ${m.pk.slice(0, 16)}`}>
+                  <p className="truncate text-[12px] text-ink-2" title={`${now?.about ? `Rules: ${now.about}\n` : ""}Key ${m.pk.slice(0, 16)}`}>
                     {showLoad && load.level !== "free" ? loadLine(load) : memberLine(now ?? m)}
                   </p>
                 </button>
@@ -378,7 +380,7 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
                 <div className="mt-1 ml-[36px] flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
                   <span className="min-w-0 text-ink-2">
                     Asks to be <span className="font-medium text-ink">{asked.role ?? "unassigned"}</span>
-                    {asked.about && <span className="text-ink-3"> · {asked.about}</span>}
+                    {asked.about && <span> · {asked.about}</span>}
                   </span>
                   {p.isOwner ? (
                     <span className="flex gap-1">
@@ -396,16 +398,16 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
                       </Button>
                     </span>
                   ) : (
-                    <span className="text-ink-3">The owner decides.</span>
+                    <span className="text-ink-2">The owner decides.</span>
                   )}
                 </div>
               )}
             </div>
           )
         })}
-        {former.length > 0 && <p className="px-2 pt-1.5 pb-1 text-[12px] text-ink-3">Left: {former.map((m) => m.name).join(", ")}</p>}
+        {former.length > 0 && <p className="px-2 pt-1.5 pb-1 text-[12px] text-ink-2">Left: {former.map((m) => m.name).join(", ")}</p>}
       </div>
-      <div className="mt-1 border-t border-line px-2 pt-2 pb-1 text-[12px] text-ink-3">Click a name to see only their messages.</div>
+      <div className="mt-1 border-t border-line px-2 pt-2 pb-1 text-[12px] text-ink-2">Choose a name to see only their messages.</div>
     </Popover>
   )
 }
@@ -427,7 +429,7 @@ export function InviteButton() {
   const { p, openInvite } = useControls()
   if (!p.isOwner) return null
   return (
-    <Button size="sm" variant="secondary" className="h-8 gap-1 pr-3 pl-2.5" onClick={openInvite}>
+    <Button size="sm" variant="secondary" className="h-8 gap-1 pr-3 pl-2.5" aria-label="Invite" onClick={openInvite}>
       <Icon icon={Add01Icon} size={15} />
       <span className="hidden sm:inline">Invite</span>
     </Button>
@@ -456,11 +458,12 @@ function Invite({ onDone }: { onDone: () => void }) {
 
   return (
     <div className="p-5">
-      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">Invite to this channel</h2>
-      <p className="mt-1 text-[13px] leading-normal text-ink-2">Everyone who joins waits for you to approve them with a 6-digit code.</p>
+      <Dialog.Title className="text-[15px] font-semibold tracking-[-0.01em]">Invite to this channel</Dialog.Title>
+      <Dialog.Description className="mt-1 text-[13px] leading-normal text-ink-2">Everyone who joins waits for you to approve them with a 6-digit code.</Dialog.Description>
       <div className="mt-4">
         <Tabs
           stretch
+          label="Who you're inviting"
           value={who}
           onChange={setWho}
           options={[
@@ -470,20 +473,24 @@ function Invite({ onDone }: { onDone: () => void }) {
         />
       </div>
       {who === "person" ? (
-        <div className="mt-4 grid gap-2">
+        <div role="tabpanel" aria-label="A person" className="mt-4 grid gap-2">
           <p className="text-[13px] leading-normal text-ink-2">Send them this link. They open it, sign in, and ask to join.</p>
           <CopyBox text={inviteLink(p.code)} label="Copy link" done="Invite link copied" />
         </div>
       ) : (
-        <div className="mt-4 grid gap-2">
+        <div role="tabpanel" aria-label="An agent" className="mt-4 grid gap-2">
           <div className="grid grid-cols-2 gap-2">
-            <TextField value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" maxLength={32} aria-invalid={badName} aria-label="Agent name" />
+            <TextField value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" maxLength={32} aria-invalid={badName} aria-label="Agent name" aria-describedby={badName ? "invite-name-error" : undefined} />
             <TextField value={role} onChange={(e) => setRole(e.target.value)} placeholder="Role" maxLength={60} list="kiwi-roles" aria-label="Role" />
           </div>
           <TextField value={rules} onChange={(e) => setRules(e.target.value)} placeholder="Rules, e.g. only web/; ask before changing APIs" maxLength={200} aria-label="Rules" />
-          {badName && <p className="text-[12px] text-ink-2">Names are letters, digits, dot, dash or underscore, up to 32.</p>}
+          {badName && (
+            <p id="invite-name-error" role="alert" className="text-[12px] text-ink-2">
+              Names are letters, digits, dot, dash or underscore, up to 32.
+            </p>
+          )}
           <CopyBox text={command} label="Copy command" done={n && !badName ? "Join command copied" : "Copied. Replace <name> with the agent’s name."} />
-          <p className="text-[12px] leading-snug text-ink-3">
+          <p className="text-[12px] leading-snug text-ink-2">
             Run it on a computer you set up with <span className="font-mono text-[11.5px]">kiwi setup</span>. The agent is told its role and rules when it joins.
           </p>
         </div>
@@ -676,10 +683,14 @@ function RenameDialog({ title, onClose, onSave }: { title: string; onClose: () =
           if (next && next !== title) void save()
         }}
       >
-        <h2 className="text-[15px] font-semibold tracking-[-0.01em]">Rename channel</h2>
-        <p className="mt-1 text-[13px] leading-normal text-ink-2">Everyone in the channel sees the new name. It’s encrypted, so the relay can’t read it.</p>
-        <TextField className="mt-4" autoFocus value={name} maxLength={80} onChange={(e) => setName(e.target.value)} aria-label="Channel name" onFocus={(e) => e.currentTarget.select()} />
-        {error && <p className="mt-2 text-[12.5px] text-alert">{error}</p>}
+        <Dialog.Title className="text-[15px] font-semibold tracking-[-0.01em]">Rename channel</Dialog.Title>
+        <Dialog.Description className="mt-1 text-[13px] leading-normal text-ink-2">Everyone in the channel sees the new name. It’s encrypted, so the relay can’t read it.</Dialog.Description>
+        <TextField className="mt-4" autoFocus value={name} maxLength={80} onChange={(e) => setName(e.target.value)} aria-label="Channel name" aria-invalid={!!error} aria-describedby={error ? "rename-error" : undefined} onFocus={(e) => e.currentTarget.select()} />
+        {error && (
+          <p id="rename-error" role="alert" className="mt-2 text-[12.5px] text-alert">
+            {error}
+          </p>
+        )}
         <div className="mt-5 flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Cancel
