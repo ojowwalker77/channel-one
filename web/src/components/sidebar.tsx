@@ -12,7 +12,7 @@ import { cx } from "@/lib/utils"
 import { ChannelIconTile } from "./channel-icon"
 import { Icon } from "./icon"
 import { Button, IconButton, Monogram, Wordmark } from "./kit"
-import { Menu, MenuItem, MenuLabel, MenuNote, MenuRadioGroup, MenuRadioItem, MenuSeparator } from "./ui/menu"
+import { Menu, MenuGroup, MenuItem, MenuLabel, MenuNote, MenuRadioGroup, MenuRadioItem, MenuSeparator } from "./ui/menu"
 import { usageLine } from "./usage"
 import { VaultCard } from "./vault"
 
@@ -82,12 +82,14 @@ export function Sidebar({
             <MenuItem onClick={onAddDevice}>Add a device</MenuItem>
             {usage && <MenuItem onClick={onUsage}>Usage</MenuItem>}
             <MenuSeparator />
-            <MenuLabel>Appearance</MenuLabel>
-            <MenuRadioGroup<Appearance> value={appearance} onChange={setAppearance}>
-              <MenuRadioItem value="system">Match system</MenuRadioItem>
-              <MenuRadioItem value="light">Light</MenuRadioItem>
-              <MenuRadioItem value="dark">Dark</MenuRadioItem>
-            </MenuRadioGroup>
+            <MenuGroup>
+              <MenuLabel>Appearance</MenuLabel>
+              <MenuRadioGroup<Appearance> value={appearance} onChange={setAppearance}>
+                <MenuRadioItem value="system">Match system</MenuRadioItem>
+                <MenuRadioItem value="light">Light</MenuRadioItem>
+                <MenuRadioItem value="dark">Dark</MenuRadioItem>
+              </MenuRadioGroup>
+            </MenuGroup>
             <MenuSeparator />
             <MenuItem onClick={() => void lockVault().finally(auth.signOut)}>Sign out</MenuItem>
           </Menu>
