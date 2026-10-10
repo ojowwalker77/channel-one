@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, updateConfig } from "../src/config.ts";
-import { cursorStopFollowup, extraInstalled, installDetected, installExtra, installHooks, stopStyle, uninstallExtra } from "../src/hooks.ts";
+import { autoInstallExtraHooks, autoInstallHooks, cursorStopFollowup, extraInstalled, installDetected, installExtra, installHooks, stopStyle, uninstallExtra } from "../src/hooks.ts";
 
 const made: string[] = [];
 const prev = new Map<string, string | undefined>();
@@ -21,6 +21,15 @@ function setEnv(vars: Record<string, string>): void {
     process.env[k] = v;
   }
 }
+
+function hideEnv(keys: string[]): void {
+  for (const k of keys) {
+    if (!prev.has(k)) prev.set(k, process.env[k]);
+    delete process.env[k];
+  }
+}
+
+const SESSION_ENVS = ["CODEX_THREAD_ID", "GEMINI_CLI", "CURSOR_AGENT", "GROK_SESSION_ID", "GROK_AGENT", "KIWI_NO_HOOKS", "CLAUDECODE"];
 
 afterEach(() => {
   for (const [k, v] of prev) {
@@ -188,4 +197,81 @@ test("stop style keeps Grok on the Claude block path and Cursor on followup", ()
   expect(cursorStopFollowup(mc, false, true, 0)).toBeNull();
   expect(cursorStopFollowup(mc, false, false, 0)).toContain("Monitor");
   expect(cursorStopFollowup(mc, false, false, 1)).toBeNull();
+});
+
+function harnessHomes(): { home: string; codex: string; gemini: string; cursor: string; grok: string } {
+  const home = scratch("hk-auto-home-");
+  const codex = scratch("hk-auto-codex-");
+  const gemini = scratch("hk-auto-gemini-");
+  const cursor = scratch("hk-auto-cursor-");
+  const grok = scratch("hk-auto-grok-");
+  setEnv({
+    KIWI_HOME: home,
+    CLAUDE_CONFIG_DIR: scratch("hk-auto-claude-"),
+    KIWI_CODEX_DIR: codex,
+    KIWI_GEMINI_DIR: gemini,
+    KIWI_CURSOR_DIR: cursor,
+    KIWI_GROK_DIR: grok,
+  });
+  hideEnv(SESSION_ENVS);
+  return { home, codex, gemini, cursor, grok };
+}
+
+test("joining from inside a harness installs that harness only", () => {
+  const dirs = harnessHomes();
+  const cases = [
+    ["codex", "CODEX_THREAD_ID", "thr_1", join(dirs.codex, "hooks.json"), "Codex"],
+    ["gemini", "GEMINI_CLI", "1", join(dirs.gemini, "settings.json"), "Gemini"],
+    ["cursor", "CURSOR_AGENT", "1", join(dirs.cursor, "hooks.json"), "Cursor"],
+    ["grok", "GROK_SESSION_ID", "sess-1", join(dirs.grok, "hooks", "kiwi.json"), "Grok"],
+  ] as const;
+  for (const [name, env, value, path, label] of cases) {
+    hideEnv(SESSION_ENVS);
+    setEnv({ [env]: value });
+    const wrote = autoInstallExtraHooks();
+    expect(wrote).toContain(`${label} hooks (${path})`);
+    expect(autoInstallExtraHooks()).toBeNull();
+    expect(extraInstalled(name)).toBe(true);
+  }
+  expect(existsSync(join(dirs.codex, "hooks.json"))).toBe(true);
+  expect(existsSync(join(dirs.gemini, "settings.json"))).toBe(true);
+  expect(existsSync(join(dirs.cursor, "hooks.json"))).toBe(true);
+  expect(existsSync(join(dirs.grok, "hooks", "kiwi.json"))).toBe(true);
+  const grokStop = read(join(dirs.grok, "hooks", "kiwi.json")).hooks.Stop.flatMap((e: { hooks: { command: string }[] }) => e.hooks.map((h) => h.command));
+  expect(grokStop.filter((c: string) => c.endsWith(" hook stop # kiwi"))).toHaveLength(1);
+  expect(read(join(dirs.grok, "hooks", "kiwi.json")).hooks.UserPromptSubmit).toBeUndefined();
+});
+
+test("join skips a harness that is off, opted out by KIWI_NO_HOOKS, or not the current session", () => {
+  const dirs = harnessHomes();
+  updateConfig((c) => {
+    c.harnessHooks = { codex: "off" };
+  });
+  setEnv({ CODEX_THREAD_ID: "thr_1" });
+  expect(autoInstallExtraHooks()).toBeNull();
+  expect(existsSync(join(dirs.codex, "hooks.json"))).toBe(false);
+  expect(loadConfig().harnessHooks?.codex).toBe("off");
+
+  updateConfig((c) => {
+    c.harnessHooks = {};
+  });
+  setEnv({ KIWI_NO_HOOKS: "1", GEMINI_CLI: "1" });
+  expect(autoInstallExtraHooks()).toBeNull();
+  expect(existsSync(join(dirs.gemini, "settings.json"))).toBe(false);
+
+  hideEnv(SESSION_ENVS);
+  setEnv({ GROK_AGENT: "1", CURSOR_AGENT: "" });
+  expect(autoInstallExtraHooks()).toBeNull();
+  expect(existsSync(join(dirs.cursor, "hooks.json"))).toBe(false);
+  expect(existsSync(join(dirs.grok, "hooks", "kiwi.json"))).toBe(false);
+  expect(autoInstallHooks()).toBeNull();
+});
+
+test("a corrupt harness file does not fail join", () => {
+  const dirs = harnessHomes();
+  writeFileSync(join(dirs.codex, "hooks.json"), "{");
+  setEnv({ CODEX_THREAD_ID: "thr_1", GEMINI_CLI: "1" });
+  expect(autoInstallExtraHooks()).toContain("Gemini hooks");
+  expect(existsSync(join(dirs.gemini, "settings.json"))).toBe(true);
+  expect(readFileSync(join(dirs.codex, "hooks.json"), "utf8")).toBe("{");
 });
