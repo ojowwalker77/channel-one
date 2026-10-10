@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, RelayError } from "../src/client.ts";
@@ -536,6 +536,21 @@ describe("Claude Code hooks", () => {
   });
 });
 
+/** Highest cursor this home has stored, so a test can see listen mark a message read. */
+function storedCursor(dir: string): number {
+  const root = join(dir, "cursors");
+  if (!existsSync(root)) return 0;
+  let max = 0;
+  for (const channel of readdirSync(root)) {
+    for (const name of readdirSync(join(root, channel))) {
+      if (name.endsWith(".seen")) continue;
+      const n = Number(readFileSync(join(root, channel, name), "utf8").trim());
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+  }
+  return max;
+}
+
 /** One MCP session: initialize, then run `fn`. The process dies when `fn` returns. */
 async function withMcp(
   h: string,
@@ -715,6 +730,81 @@ describe("MCP server", () => {
       });
     } finally {
       await tail.stop();
+    }
+  });
+
+  test("a client that aborts a wait still gets the message on the next call", async () => {
+    const h = home("mcp-cancel");
+    const other = home("mcp-cancel-other");
+    const code = /join code: (\S+)/.exec(await ok(h, "create", "c", "--as", "listener"))![1]!;
+    await joinVia(h, other, code, "c", "sender");
+
+    const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, KIWI_HOME: h, KIWI_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    try {
+      const reader = p.stdout.getReader();
+      let buf = "";
+      let id = 0;
+      const rpc = async (method: string, params: object = {}) => {
+        const myId = ++id;
+        p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: myId, method, params }) + "\n");
+        p.stdin.flush();
+        for (;;) {
+          const nl = buf.indexOf("\n");
+          if (nl >= 0) {
+            const line = buf.slice(0, nl);
+            buf = buf.slice(nl + 1);
+            const msg = JSON.parse(line);
+            if (msg.id === myId) return msg.result ?? msg.error;
+            continue;
+          }
+          const { value, done } = await reader.read();
+          if (done) throw new Error("mcp exited");
+          buf += new TextDecoder().decode(value);
+        }
+      };
+      const call = async (name: string, args: object = {}) => ((await rpc("tools/call", { name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
+
+      await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } });
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+      const listed = (await rpc("tools/list")) as { tools: { name: string; description?: string }[] };
+      const described = listed.tools.find((t) => t.name === "wait_for_messages")?.description ?? "";
+      expect(described).toContain("50");
+      expect(described).toContain("short wait is normal");
+
+      // The join is unread. Mark it read so the cancelled call is blocked, waiting for a new message.
+      await call("read");
+      const parked = storedCursor(h);
+
+      const waitId = ++id;
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: waitId, method: "tools/call", params: { name: "wait_for_messages", arguments: { timeout_seconds: 30 } } }) + "\n");
+      p.stdin.flush();
+      let seen = false;
+      for (let i = 0; i < 8 && !seen; i++) seen = (await ok(other, "who")).includes("listener");
+      expect(seen).toBe(true);
+      await ok(other, "send", "--to", "listener", "still here");
+
+      let advanced = false;
+      for (let i = 0; i < 80 && !advanced; i++) {
+        advanced = storedCursor(h) > parked;
+        if (!advanced) await Bun.sleep(10);
+      }
+      expect(advanced).toBe(true);
+      // Cancel in the linger window, after the cursor moved and before the result is sent.
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: waitId, reason: "client timeout" } }) + "\n");
+      p.stdin.flush();
+
+      let rewound = false;
+      for (let i = 0; i < 80 && !rewound; i++) {
+        rewound = storedCursor(h) <= parked;
+        if (!rewound) await Bun.sleep(10);
+      }
+      expect(rewound).toBe(true);
+
+      const again = await call("wait_for_messages", { timeout_seconds: 20 });
+      expect(again).toContain("still here");
+      expect(again).toContain("Next: handle these. If one needs an answer, call reply. Then call wait_for_messages.");
+    } finally {
+      p.kill();
     }
   });
 

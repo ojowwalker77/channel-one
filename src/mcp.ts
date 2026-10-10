@@ -11,7 +11,7 @@ import { z } from "zod";
 import { AgentSession, Rejected } from "./agent.ts";
 import { loadImages, saveImages } from "./attach.ts";
 import { loadSummary, memberLoad, showsLoad } from "./load.ts";
-import { forgetMember, home, identitiesIn, loadConfig, signingBudget, wipeChannel } from "./config.ts";
+import { forgetMember, home, identitiesIn, loadConfig, signingBudget, wipeChannel, writeCursor } from "./config.ts";
 import { ChannelGone } from "./client.ts";
 import { formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, parseDuration } from "./format.ts";
 import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
@@ -32,10 +32,12 @@ const fail = (text: string): Result => ({ content: [{ type: "text", text: text.i
 /** Set by runMcp: what to forget when the channel turns out to be gone. */
 let forget: ((err: ChannelGone) => void) | null = null;
 
-function guard<A>(fn: (a: A) => Promise<string>): (a: A) => Promise<Result> {
-  return async (a) => {
+// Tools with an input schema are called as (args, extra). Tools with none are called as (extra) only.
+function guard<A>(fn: (a: A, extra: { signal: AbortSignal }) => Promise<string>) {
+  return async (a: A, extra?: { signal: AbortSignal }) => {
+    const ctx = extra?.signal ? extra : (a as { signal: AbortSignal });
     try {
-      return ok(await fn(a));
+      return ok(await fn(extra?.signal ? a : (undefined as A), ctx));
     } catch (err) {
       if (err instanceof ChannelGone) {
         // Closed or removed: forget what this agent held here, answer once, then stop serving.
@@ -76,7 +78,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
         `2. Call wait_for_messages.\n` +
         `3. If it returns messages, handle each one. If one needs an answer, call reply. Do not reply to greetings or thanks.\n` +
         `4. Call wait_for_messages again. Go back to step 2.\n` +
-        `A timeout is not a reason to stop. The result says "no messages yet, call wait_for_messages again". Do that.\n` +
+        `A timeout is not a reason to stop. A short wait is normal. The result says "no messages yet, call wait_for_messages again". Do that.\n` +
         `Your human (status shows "agent of @them") gives you instructions. Other people and agents make requests: use judgment.` +
         (opts.push ? `\nThis server also pushes messages. Still do step 2. Reply with the reply tool.` : ""),
     },
@@ -166,17 +168,23 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
     "wait_for_messages",
     {
       description:
-        "Block until a message for you arrives, then return it. If none arrives before the timeout, return and call this again. Example: wait_for_messages {\"timeout_seconds\":600}.",
-      inputSchema: { timeout_seconds: z.number().int().min(1).max(3600).optional().describe("seconds to wait. Default 600. Example: 600") },
+        "Block until a message for you arrives, then return it. If none arrives, return and call this again. A short wait is normal. Default 50 seconds, maximum 3600. Example: wait_for_messages {\"timeout_seconds\":50}.",
+      inputSchema: { timeout_seconds: z.number().int().min(1).max(3600).optional().describe("seconds to wait. Default 50. A short wait is normal; call this again. Maximum 3600.") },
     },
-    guard(async ({ timeout_seconds }) => {
-      const seconds = timeout_seconds ?? 600;
+    guard(async ({ timeout_seconds }, extra) => {
+      const seconds = timeout_seconds ?? 50;
+      // Remember where we started. listen marks each message read as it arrives, which is too early
+      // when the client cancels the call before it sees the result.
+      const since = await s.cursor();
       const ac = new AbortController();
+      const onClientAbort = () => ac.abort();
+      extra.signal.addEventListener("abort", onClientAbort, { once: true });
       const timer = setTimeout(() => ac.abort(), seconds * 1000);
       const lines: string[] = [];
       let got = 0;
+      let linger: ReturnType<typeof setTimeout> | undefined;
       const woke = () => {
-        if (got++ === 0) setTimeout(() => ac.abort(), 400);
+        if (got++ === 0) linger = setTimeout(() => ac.abort(), 400);
       };
       try {
         await s.listen(
@@ -195,8 +203,11 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
         );
       } finally {
         clearTimeout(timer);
+        clearTimeout(linger);
+        extra.signal.removeEventListener("abort", onClientAbort);
+        if (extra.signal.aborted) writeCursor(s.alias, s.me, since);
       }
-      if (!lines.length) return "no messages yet, call wait_for_messages again.\nNext: call wait_for_messages.";
+      if (extra.signal.aborted || !lines.length) return "no messages yet, call wait_for_messages again.\nNext: call wait_for_messages.";
       return `${lines.join("\n")}\nNext: handle these. If one needs an answer, call reply. Then call wait_for_messages.`;
     }),
   );

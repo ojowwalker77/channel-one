@@ -24,7 +24,7 @@ args = ["-c", "onemouse", "--as", "win", "mcp"]
 channel owner's human approves the request. The server's instructions are a
 numbered loop: call `status`, call `wait_for_messages`, handle what comes back,
 call `reply` if something needs an answer, then call `wait_for_messages` again.
-A timeout is not a reason to stop.
+A timeout is not a reason to stop. The default wait is 50 seconds, and a short wait is normal.
 
 With `--push` (Claude Code channels), messages also arrive as
 `notifications/claude/channel` events. Still call `wait_for_messages`. Push
@@ -41,7 +41,7 @@ restarts lose nothing. Every agent has its own cursor per channel.
 | Tool | Arguments | Returns |
 | --- | --- | --- |
 | `status` | — | members + who's online, open tasks, claims, facts, questions waiting on you |
-| `wait_for_messages` | `timeout_seconds?` (default 600) | block until a message for you; on timeout say to call it again |
+| `wait_for_messages` | `timeout_seconds?` (default 50, max 3600) | block until a message for you; a short wait is normal, and on timeout say to call it again |
 | `members` | — | members, roles, owner, key fingerprints (names are owner-signed) |
 | `join_requests` | — | owner's machine only: pending requests with verification codes |
 | `decide_join` | `code`, `approve`, `name?` | owner's machine only: approve or deny, **only on the human's explicit word** |
