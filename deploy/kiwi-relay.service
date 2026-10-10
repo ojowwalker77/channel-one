@@ -15,8 +15,8 @@ Group=kiwi
 WorkingDirectory=/opt/kiwi
 # Loopback only. deploy/Caddyfile is the public TLS listener.
 # `kiwi relay` takes these same flags when the machine has the binary instead of a checkout.
-# --trust-proxy: Caddy is the only public path, and it is on loopback, so a
-# registration counts as the client Caddy saw (the last X-Forwarded-For address).
+# --trust-proxy: Caddy is on loopback, so a registration counts as the client
+# Caddy saw. For a proxy that is not loopback, name it: --trust-proxy 172.17.0.1
 ExecStart=/usr/local/bin/bun src/relay/bun.ts --hostname 127.0.0.1 --port 8787 --data /var/lib/kiwi --trust-proxy
 Restart=on-failure
 RestartSec=2

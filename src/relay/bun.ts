@@ -11,7 +11,7 @@ import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import { devHostOk, devHumanAuth, devRequestOk, HUMAN_HEADER, workosFromSettings, type HumanAuth } from "./human.ts";
 import { onDeviceHttp, type DeviceStore, type DeviceTransfer } from "./devices.ts";
 import { onVaultHttp, vaultSwap, type VaultRecord, type VaultStore } from "./vault.ts";
-import { onMachineHttp, registrationAddress, registrationAllowed, sweepPending, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
+import { onMachineHttp, parseTrustProxy, registrationAddress, registrationAllowed, sweepPending, trustProxyFromArgs, vouchedBy, type MachineRecord, type MachineStore, type TrustProxy } from "./machines.ts";
 import { policyFrom, type RelayPolicy } from "./policy.ts";
 import {
   HttpError,
@@ -43,11 +43,12 @@ export interface WebApp {
 }
 
 export function startRelay(
-  opts: { port?: number; hostname?: string; dataDir?: string; human?: HumanAuth | null; policy?: RelayPolicy; web?: WebApp | null; now?: () => number; trustProxy?: boolean } = {},
+  opts: { port?: number; hostname?: string; dataDir?: string; human?: HumanAuth | null; policy?: RelayPolicy; web?: WebApp | null; now?: () => number; trustProxy?: TrustProxy } = {},
 ) {
   const human = opts.human ?? null;
   // Settings come from the caller, or else from the environment, the same keys the Worker reads.
   const policy = opts.policy ?? policyFrom(process.env);
+  const trustProxy: TrustProxy = Array.isArray(opts.trustProxy) ? parseTrustProxy(opts.trustProxy) : opts.trustProxy === true;
   const web = opts.web ? webApp(opts.web) : null;
   const dataDir = opts.dataDir ?? ".relay-data";
   // Rooms hold ciphertext, member keys and join codes: only the relay's own user reads them.
@@ -187,7 +188,7 @@ export function startRelay(
         if (device) return device;
         const vault = await onVaultHttp(req, vaults, human);
         if (vault) return vault;
-        const ip = registrationAddress(server.requestIP(req)?.address ?? null, req.headers.get("x-forwarded-for"), opts.trustProxy === true);
+        const ip = registrationAddress(server.requestIP(req)?.address ?? null, req.headers.get("x-forwarded-for"), trustProxy);
         const machine = await onMachineHttp(req, machines, human, ip ? { ip, allow: registrationAllowed } : null);
         if (machine) return machine;
         if (url.pathname === "/v1/me/usage" && req.method === "GET") {
@@ -321,10 +322,12 @@ Usage: ${cmd} [options]
   --workos-authkit-domain <url> your AuthKit domain, https://….authkit.app (env WORKOS_AUTHKIT_DOMAIN)
   --dev-sign-in                 testing only: the token "dev:<name>" signs in as <name>, no password.
                                 Needs --hostname 127.0.0.1 (or localhost); refused on any other address.
-  --trust-proxy                 the peer is a reverse proxy on loopback (env KIWI_TRUST_PROXY=1).
-                                Count computer registrations by the last X-Forwarded-For address.
-                                Without it, a proxy's peer (127.0.0.1) is one shared limit. Ignored
-                                unless the peer is loopback, so a client cannot supply the header.
+  --trust-proxy [addr,cidr]     a reverse proxy sits in front (env KIWI_TRUST_PROXY=1, or a list).
+                                Bare, or =1: trust a loopback peer. An address or CIDR (repeat
+                                the flag, or comma-separate) trusts that peer too, for example
+                                --trust-proxy 172.17.0.1 for Docker's bridge. A trusted peer's
+                                last X-Forwarded-For address is the client. Any other peer
+                                ignores the header. A prefix of /0 is refused.
 
   WORKOS_API_KEY (env only, it's a secret) lets the relay show people's real names.
   Without a WorkOS client id the relay has no sign-in: anyone can create channels.
@@ -349,6 +352,13 @@ export function runRelay(argv: string[], cmd = "bun src/relay/bun.ts"): void {
     process.stderr.write("--dev-sign-in lets anyone sign in as anyone: it needs --hostname 127.0.0.1 (or localhost).\n");
     process.exit(2);
   }
+  let trustProxy: TrustProxy;
+  try {
+    trustProxy = trustProxyFromArgs(argv, process.env.KIWI_TRUST_PROXY);
+  } catch (err) {
+    process.stderr.write(`${err instanceof Error ? err.message : "bad --trust-proxy"}\n`);
+    process.exit(2);
+  }
   const human = dev ? devHumanAuth() : workosFromSettings({ clientId: arg("--workos-client-id", "WORKOS_CLIENT_ID"), authkitDomain, apiKey: process.env.WORKOS_API_KEY || undefined });
   const builtWeb = resolve(import.meta.dir, "../../web/dist");
   const webDir = argv.includes("--no-web") ? undefined : (arg("--web", "KIWI_WEB") ?? (existsSync(join(builtWeb, "index.html")) ? builtWeb : undefined));
@@ -359,7 +369,7 @@ export function runRelay(argv: string[], cmd = "bun src/relay/bun.ts"): void {
     dataDir: arg("--data", "KIWI_DATA"),
     human,
     web: webDir ? { dir: webDir, connect } : null,
-    trustProxy: argv.includes("--trust-proxy") || process.env.KIWI_TRUST_PROXY === "1",
+    trustProxy,
   });
   console.log(`Kiwi Channels relay listening on ${server.url}`);
   console.log(`  sign-in: ${human?.dev ? 'DEV: the token "dev:<name>" is <name>, no password (this machine only)' : human ? `WorkOS ${human.clientId}${human.profile ? " (with names)" : ""}` : "off"}`);

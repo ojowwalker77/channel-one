@@ -86,8 +86,6 @@ export async function sweepPending(list: () => Promise<MachineRecord[]>, remove:
   return n;
 }
 
-const LOOPBACK = new Set(["127.0.0.1", "::1", "[::1]", "::ffff:127.0.0.1"]);
-
 /** An address worth a bucket. Junk is refused so a header cannot mint unlimited keys. */
 function usableIp(raw: string): string | null {
   let ip = raw.trim();
@@ -98,21 +96,167 @@ function usableIp(raw: string): string | null {
   return ip;
 }
 
-/**
- * Who a Bun registration counts against. The peer, unless it is loopback and the
- * operator set --trust-proxy: then the last address in X-Forwarded-For, which is
- * the one the proxy added. A header from any other peer is ignored. No usable
- * address means the caller does not limit.
- */
-export function registrationAddress(peer: string | null | undefined, forwardedFor: string | null | undefined, trustProxy: boolean): string | null {
-  const peerIp = peer ? usableIp(peer) : null;
-  if (!(trustProxy && peerIp && LOOPBACK.has(peerIp))) return peerIp;
-  const parts = (forwardedFor ?? "").split(",");
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const client = usableIp(parts[i] ?? "");
-    if (client) return client;
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const octet = Number(part);
+    if (octet > 255) return null;
+    n = ((n << 8) | octet) >>> 0;
   }
-  return peerIp;
+  return n;
+}
+
+function v4text(n: number): string {
+  return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
+}
+
+/** IPv4-mapped IPv6 becomes the IPv4 address, so a Docker peer reported either way matches one spec. */
+function normalizeIp(ip: string): string {
+  const lower = ip.trim().toLowerCase();
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(lower);
+  if (mapped?.[1]) {
+    const n = ipv4ToInt(mapped[1]);
+    if (n !== null) return v4text(n);
+  }
+  if (!lower.includes(":")) {
+    const n = ipv4ToInt(lower);
+    if (n !== null) return v4text(n);
+  }
+  return lower;
+}
+
+function ipv6Bytes(ip: string): Uint8Array | null {
+  const s = ip.toLowerCase();
+  if (s.includes(".")) return null;
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const expand = (part: string) => (part ? part.split(":") : []);
+  const left = expand(halves[0] ?? "");
+  const right = halves.length === 2 ? expand(halves[1] ?? "") : [];
+  if (halves.length === 1 && left.length !== 8) return null;
+  const missing = 8 - left.length - right.length;
+  if (missing < 0) return null;
+  const groups = halves.length === 2 ? [...left, ...Array(missing).fill("0"), ...right] : left;
+  if (groups.length !== 8) return null;
+  const out = new Uint8Array(16);
+  for (let i = 0; i < 8; i++) {
+    const group = groups[i] ?? "";
+    if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
+    const n = Number.parseInt(group, 16);
+    out[i * 2] = n >> 8;
+    out[i * 2 + 1] = n & 0xff;
+  }
+  return out;
+}
+
+function v6prefix(ip: Uint8Array, network: Uint8Array, bits: number): boolean {
+  let left = bits;
+  for (let i = 0; i < 16 && left > 0; i++) {
+    const take = Math.min(8, left);
+    const mask = take === 8 ? 0xff : (0xff << (8 - take)) & 0xff;
+    if ((ip[i]! & mask) !== (network[i]! & mask)) return false;
+    left -= take;
+  }
+  return true;
+}
+
+function specMatches(ip: string, spec: string): boolean {
+  const slash = spec.lastIndexOf("/");
+  const base = slash < 0 ? spec : spec.slice(0, slash);
+  const bits = slash < 0 ? null : Number(spec.slice(slash + 1));
+  const ip4 = ipv4ToInt(normalizeIp(ip));
+  const base4 = ipv4ToInt(normalizeIp(base));
+  if (ip4 !== null && base4 !== null && !base.includes(":")) {
+    const n = bits ?? 32;
+    if (!Number.isInteger(n) || n < 1 || n > 32) return false;
+    const mask = n === 32 ? 0xffffffff : (0xffffffff << (32 - n)) >>> 0;
+    return (ip4 & mask) === (base4 & mask);
+  }
+  const ip6 = ipv6Bytes(normalizeIp(ip));
+  const net6 = ipv6Bytes(base.toLowerCase());
+  if (!ip6 || !net6) return false;
+  const n = bits ?? 128;
+  if (!Number.isInteger(n) || n < 1 || n > 128) return false;
+  return v6prefix(ip6, net6, n);
+}
+
+/** `true` trusts loopback only. A list trusts loopback and those addresses or CIDRs. `false` trusts no proxy. */
+export type TrustProxy = boolean | readonly string[];
+
+/** Check a --trust-proxy list. A prefix of /0 is refused: that would trust every peer. */
+export function parseTrustProxy(specs: readonly string[]): string[] {
+  return specs.map((raw) => {
+    const spec = raw.trim();
+    const slash = spec.lastIndexOf("/");
+    const baseRaw = slash < 0 ? spec : spec.slice(0, slash);
+    const bitsRaw = slash < 0 ? null : spec.slice(slash + 1);
+    const base = usableIp(baseRaw);
+    if (!base) throw new Error(`--trust-proxy: "${spec}" is not an address or CIDR`);
+    const asV4 = ipv4ToInt(normalizeIp(base));
+    const mapped = base.toLowerCase().startsWith("::ffff:") && asV4 !== null;
+    if (asV4 !== null && (!base.includes(":") || mapped)) {
+      if (mapped && bitsRaw !== null) throw new Error(`--trust-proxy: write ${v4text(asV4)} as an IPv4 CIDR, not ${spec}`);
+      const n = bitsRaw === null ? 32 : Number(bitsRaw);
+      if (!/^\d+$/.test(bitsRaw ?? "32") || n < 1 || n > 32) throw new Error(`--trust-proxy: "${spec}" is not an IPv4 CIDR`);
+      const text = v4text(asV4);
+      return n === 32 ? text : `${text}/${n}`;
+    }
+    if (!ipv6Bytes(base)) throw new Error(`--trust-proxy: "${spec}" is not an address or CIDR`);
+    const n = bitsRaw === null ? 128 : Number(bitsRaw);
+    if ((bitsRaw !== null && !/^\d+$/.test(bitsRaw)) || n < 1 || n > 128) throw new Error(`--trust-proxy: "${spec}" is not an IPv6 CIDR`);
+    const text = base.toLowerCase();
+    return n === 128 ? text : `${text}/${n}`;
+  });
+}
+
+/** Bare `--trust-proxy` and `KIWI_TRUST_PROXY=1` trust loopback. A value is an address or CIDR list. The flag wins over the env. */
+export function trustProxyFromArgs(argv: readonly string[], envValue: string | undefined): TrustProxy {
+  const specs: string[] = [];
+  let flagged = false;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== "--trust-proxy") continue;
+    flagged = true;
+    const next = argv[i + 1];
+    if (next && !next.startsWith("-")) {
+      for (const part of next.split(",")) {
+        const spec = part.trim();
+        if (spec) specs.push(spec);
+      }
+      i++;
+    }
+  }
+  if (flagged) return specs.length ? parseTrustProxy(specs) : true;
+  const env = envValue?.trim();
+  if (!env || env === "0") return false;
+  if (env === "1") return true;
+  return parseTrustProxy(env.split(",").map((part) => part.trim()).filter(Boolean));
+}
+
+function proxyPeer(peerIp: string, trust: TrustProxy): boolean {
+  if (!trust) return false;
+  const ip = normalizeIp(peerIp);
+  if (ip === "127.0.0.1" || ip === "::1") return true;
+  if (trust === true) return false;
+  return trust.some((spec) => specMatches(ip, spec));
+}
+
+/**
+ * Who a Bun registration counts against. The peer, unless that peer is a trusted
+ * proxy: then only the very last X-Forwarded-For entry, which is the one the proxy
+ * added. Everything before it was supplied by the client. If that last entry is not
+ * an address, count the peer instead of scanning backward. Loopback is trusted when
+ * trust is on. A list also trusts those addresses and CIDRs (Docker's bridge is not
+ * loopback). Any other peer ignores the header.
+ */
+export function registrationAddress(peer: string | null | undefined, forwardedFor: string | null | undefined, trustProxy: TrustProxy = false): string | null {
+  const peerIp = peer ? usableIp(peer) : null;
+  if (!peerIp || !proxyPeer(peerIp, trustProxy)) return peerIp;
+  const parts = (forwardedFor ?? "").split(",");
+  const last = usableIp(parts[parts.length - 1] ?? "");
+  return last ?? peerIp;
 }
 
 /** The client address Cloudflare puts on a Worker request. Absent in local tests, which are then not limited. */

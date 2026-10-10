@@ -71,7 +71,7 @@ flags. It serves the dashboard only if you pass `--web` with a built `web/dist`.
 | `--workos-authkit-domain <url>` | `WORKOS_AUTHKIT_DOMAIN` | | Your AuthKit domain |
 | | `WORKOS_API_KEY` | | Secret, env only: lets the relay show people's real names |
 | `--dev-sign-in` | | | Testing only: the token `dev:<name>` signs in as `<name>`, no password. Refused unless `--hostname` is `127.0.0.1` or `localhost` ([below](#testing-a-relay)) |
-| `--trust-proxy` | `KIWI_TRUST_PROXY=1` | off | The peer is a reverse proxy on loopback. Computer registrations then count as the last address in `X-Forwarded-For` (the one the proxy added). Any other peer ignores the header. Without this flag, every registration through the proxy shares `127.0.0.1` |
+| `--trust-proxy [addr,cidr]` | `KIWI_TRUST_PROXY` | off | Trust a reverse proxy. Bare or `1` trusts a loopback peer. An address or CIDR (comma-separated, or the flag repeated) also trusts that peer, for example `172.17.0.1` or `172.16.0.0/12`. A trusted peer's last `X-Forwarded-For` entry is the client. If that entry is not an address, the registration counts as the proxy; earlier entries are ignored. Any other peer ignores the header. A prefix of `/0` is refused |
 
 Beta and quota settings come from the environment (see [Limits](#limits-and-the-private-beta)).
 
@@ -127,10 +127,9 @@ Caddy fetches and renews the certificate itself once the domain points at the
 machine and ports 80 and 443 are open. It passes WebSockets through with no extra
 configuration. It also sets `X-Forwarded-For`. The systemd unit passes
 `--trust-proxy`, so a new computer counts against the client Caddy saw (the last
-address in that header) instead of everyone sharing `127.0.0.1`. The flag does
-nothing unless the peer is loopback, which is this setup. In Docker the peer is
-the bridge gateway, not loopback, so the header is ignored and that published
-port is one shared limit.
+address in that header) instead of everyone sharing `127.0.0.1`. A peer that is
+not trusted ignores the header. Docker's peer is the bridge gateway, not
+loopback, so name it: `--trust-proxy 172.17.0.1` (or `KIWI_TRUST_PROXY`).
 
 ```bash
 caddy validate --config deploy/Caddyfile --adapter caddyfile
@@ -164,11 +163,15 @@ as an unprivileged user, with channels on a volume:
 ```bash
 docker build -f deploy/Dockerfile -t kiwi-relay .
 docker run -d --name kiwi-relay --restart unless-stopped \
-  -p 127.0.0.1:8787:8787 -v kiwi-data:/data kiwi-relay
+  -p 127.0.0.1:8787:8787 -v kiwi-data:/data \
+  -e KIWI_TRUST_PROXY=172.17.0.1 kiwi-relay
 ```
 
-Publish the port on loopback as shown and keep Caddy in front. Pass settings with
-`-e`, for example `-e WORKOS_CLIENT_ID=client_… -e KIWI_QUOTA_CHANNELS_PER_OWNER=5`,
+Publish the port on loopback as shown and keep Caddy in front. Inside the
+container the peer is the bridge gateway, usually `172.17.0.1` (`docker network
+inspect bridge` shows `Gateway`). Naming it makes a registration count as the
+client Caddy added, not as that one gateway address. Pass other settings with
+`-e` too, for example `-e WORKOS_CLIENT_ID=client_… -e KIWI_QUOTA_CHANNELS_PER_OWNER=5`,
 or `--env-file` for secrets.
 
 ## The dashboard on your relay
