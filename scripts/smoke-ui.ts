@@ -3,23 +3,49 @@
 // label outside its group, say) only when that part renders, so typecheck can't
 // see it: b085ae8 was one, and it blanked the page in prod.
 //
+// Beyond menus, it walks the flows only real state reaches: a passkey set up and
+// unlocked on Chromium's virtual authenticator, a computer linked through its
+// #link page by `kiwi setup`, that computer's agent asking to join and approved,
+// and the task it adds opened from the board.
+//
 //   bun run web:build && bun scripts/smoke-ui.ts
 //
 // Needs Playwright's Chromium: bunx playwright-core install --only-shell chromium
 // (or set SMOKE_CHROMIUM to a Chrome binary).
 
 import { spawn } from "node:child_process"
-import { mkdtempSync, rmSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { chromium, type Locator, type Page } from "playwright-core"
 
 const ROOT = resolve(import.meta.dir, "..")
 const PORT = 20000 + Math.floor(Math.random() * 20000)
-const URL = `http://127.0.0.1:${PORT}/`
+// localhost, not 127.0.0.1: WebAuthn refuses an IP address as the passkey's site.
+const BASE = `http://localhost:${PORT}/`
 const data = mkdtempSync(join(tmpdir(), "kiwi-smoke-"))
 
-const relay = spawn("bun", ["src/relay/bun.ts", "--hostname", "127.0.0.1", "--port", String(PORT), "--data", data, "--dev-sign-in"], { cwd: ROOT, stdio: ["ignore", "pipe", "inherit"] })
+// A computer of the smoke person's, for an agent to join from: its own kiwi home, no Claude Code
+// settings to touch, and no browser to open (kiwi setup opens the link page; the test visits it).
+const cli = join(data, "cli")
+mkdirSync(join(cli, "bin"), { recursive: true })
+mkdirSync(join(data, "relay"))
+for (const opener of ["open", "xdg-open"]) {
+  writeFileSync(join(cli, "bin", opener), "#!/bin/sh\nexit 0\n")
+  chmodSync(join(cli, "bin", opener), 0o755)
+}
+const cliEnv = { ...process.env, KIWI_HOME: join(cli, "home"), CLAUDE_CONFIG_DIR: join(cli, "no-claude"), PATH: `${join(cli, "bin")}:${process.env.PATH}` }
+/** Run kiwi as that computer; resolves with its output once it exits, and lets you watch it meanwhile. */
+function kiwi(args: string[], watch?: (out: string) => void): Promise<string> {
+  const p = spawn("bun", ["src/cli/main.ts", ...args], { cwd: ROOT, env: cliEnv })
+  let out = ""
+  const on = (d: Buffer) => ((out += d), watch?.(out))
+  p.stdout.on("data", on)
+  p.stderr.on("data", on)
+  return new Promise((ok, fail) => p.on("exit", (code) => (code === 0 ? ok(out) : fail(new Error(`kiwi ${args[0]} exited ${code}: ${out.trim().split("\n").pop()}`)))))
+}
+
+const relay = spawn("bun", ["src/relay/bun.ts", "--hostname", "127.0.0.1", "--port", String(PORT), "--data", join(data, "relay"), "--dev-sign-in"], { cwd: ROOT, stdio: ["ignore", "pipe", "inherit"] })
 await new Promise<void>((ok, fail) => {
   let out = ""
   relay.stdout!.on("data", (d) => {
@@ -73,7 +99,7 @@ async function eachItem(name: string, trigger: Locator, only: (label: string) =>
 }
 
 try {
-  await page.goto(URL)
+  await page.goto(BASE)
   await opens("Join with a code (signed out)", () => page.getByRole("main").getByRole("button", { name: "Join with a code" }).click())
 
   at = "dev sign-in"
@@ -83,8 +109,36 @@ try {
   const account = page.getByRole("complementary").getByRole("button", { name: /smoke/ })
   await account.waitFor()
 
+  // Passkeys on Chromium's virtual authenticator, PRF on: set one up and save the recovery code.
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send("WebAuthn.enable")
+  await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true, hasPrf: true },
+  } as never)
+  at = "Set up passkey"
+  await page.getByRole("button", { name: "Set up passkey" }).click()
+  const saving = page.getByRole("dialog").filter({ hasText: "Save your recovery code" })
+  await saving.waitFor()
+  await saving.getByRole("checkbox").check()
+  await saving.getByRole("button", { name: "Done" }).click()
+  await saving.waitFor({ state: "hidden" })
+  console.log(`ok  ${at}`)
+
   await opens("Account menu", () => account.click())
   await eachItem("Account menu", account, (l) => l !== "Sign out")
+
+  // Sign out and back in: the vault is locked, and opens with the passkey.
+  at = "sign out and back in"
+  await account.click()
+  await page.getByRole("menuitem", { name: "Sign out" }).click()
+  await page.getByRole("button", { name: "Sign in" }).first().click()
+  await page.getByRole("textbox", { name: "Name" }).fill("smoke")
+  await page.getByRole("dialog").getByRole("button", { name: "Sign in" }).click()
+  await opens("Use recovery code", () => page.getByRole("button", { name: "Use recovery code" }).click())
+  at = "Use passkey"
+  await page.getByRole("button", { name: "Use passkey" }).click()
+  await page.getByRole("button", { name: "Use passkey" }).waitFor({ state: "hidden" })
+  console.log(`ok  ${at}`)
   at = "Appearance → Dark"
   await account.click()
   await page.getByRole("menuitemradio", { name: "Dark" }).click()
@@ -122,6 +176,45 @@ try {
   await page.getByRole("button", { name: "Close thread" }).waitFor()
   await page.getByRole("button", { name: "Close thread" }).click()
   console.log("ok  Thread panel")
+
+  // An agent joins from a computer linked to this account: the link page, the request, approval.
+  at = "link a computer"
+  const channel = page.url()
+  const code = new URL(channel).hash.slice(1)
+  let opened = false
+  const setup = kiwi(["setup", "--relay", BASE], (out) => {
+    const link = /(http\S+#link=\S+)/.exec(out)?.[1]
+    if (link && !opened) (opened = true), void page.goto(link)
+  })
+  await page.getByRole("button", { name: "Yes, link it" }).click({ timeout: 20000 })
+  await setup
+  console.log(`ok  ${at}`)
+  await page.goto(channel)
+  const joining = kiwi(["join", code, "smoke", "--relay", BASE, "--as", "bot", "--role", "tester"])
+  const review = page.getByRole("button", { name: "Review", exact: true })
+  await review.waitFor({ timeout: 30000 })
+  await opens("Join requests", () => review.click())
+  at = "approve"
+  await review.click()
+  await page.getByRole("button", { name: "Review and approve" }).click()
+  await page.getByRole("button", { name: "Approve", exact: true }).click()
+  await joining
+  // The requests sheet closes on its own once it's empty (T281); before that, close it.
+  await page.waitForTimeout(500)
+  if (await page.getByRole("dialog").count()) await page.keyboard.press("Escape")
+  console.log(`ok  ${at}`)
+
+  await kiwi(["-c", "smoke", "--as", "bot", "task", "add", "Smoke task", "--owner", "bot"])
+  await page.getByRole("tab", { name: /^Tasks/ }).click()
+  await opens("Task details", () => page.getByRole("button", { name: /Smoke task/ }).first().click({ timeout: 15000 }))
+  await page.getByRole("tab", { name: "Chat" }).click()
+  // What the owner can do to a member: each item behind their ⋯ in People.
+  for (const item of ["Set role…", "Remove from channel…"])
+    await opens(`People → bot → ${item}`, async () => {
+      await page.getByRole("button", { name: /\d+ members?$/ }).click()
+      await page.getByRole("button", { name: "More for bot" }).click()
+      await page.getByRole("menuitem", { name: item }).click()
+    })
 
   at = "Tasks"
   await page.getByRole("tab", { name: /^Tasks/ }).click()
