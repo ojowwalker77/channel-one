@@ -2,7 +2,7 @@ import { afterAll, afterEach, describe, expect, setSystemTime, test } from "bun:
 import { machineStatus, newMachine, registerMachine, vouchFor, type MachineFile } from "../src/machine.ts";
 import type { HumanAuth } from "../src/relay/human.ts";
 import { sign } from "../src/identity.ts";
-import { LINK_TTL_MS, registrationAddress, registrationAllowed, sweepPending, UNUSED_LINK_TTL_MS, onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "../src/relay/machines.ts";
+import { LINK_TTL_MS, parseTrustProxy, registrationAddress, registrationAllowed, sweepPending, trustProxyFromArgs, UNUSED_LINK_TTL_MS, onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "../src/relay/machines.ts";
 import { errorResponse } from "../src/relay/room.ts";
 
 // The machine routes on their own: an in-memory store, and a "WorkOS" that trusts any user_ token.
@@ -177,6 +177,34 @@ describe("which address a registration counts against", () => {
     expect(registrationAddress("::1", "not an ip, [2001:db8::8]", true)).toBe("2001:db8::8");
     expect(registrationAddress("127.0.0.1", "not an ip", true)).toBe("127.0.0.1");
     expect(registrationAddress(null, "203.0.113.9", true)).toBeNull();
+    // Docker's bridge is not loopback, so a bare flag still counts everyone as that one peer.
+    expect(registrationAddress("172.17.0.1", "203.0.113.9", true)).toBe("172.17.0.1");
+  });
+
+  test("a named address or CIDR is a trusted proxy too", () => {
+    expect(registrationAddress("172.17.0.1", "198.51.100.4, 203.0.113.9", ["172.17.0.1"])).toBe("203.0.113.9");
+    expect(registrationAddress("::ffff:172.17.0.1", "203.0.113.9", ["172.17.0.1"])).toBe("203.0.113.9");
+    expect(registrationAddress("172.17.5.9", "203.0.113.9", ["172.17.0.0/16"])).toBe("203.0.113.9");
+    expect(registrationAddress("172.18.0.1", "203.0.113.9", ["172.17.0.0/16"])).toBe("172.18.0.1");
+    expect(registrationAddress("10.1.2.3", "203.0.113.9", ["10.0.0.0/8"])).toBe("203.0.113.9");
+    expect(registrationAddress("11.0.0.1", "203.0.113.9", ["10.0.0.0/8"])).toBe("11.0.0.1");
+    expect(registrationAddress("127.0.0.1", "203.0.113.9", ["172.17.0.1"])).toBe("203.0.113.9");
+    expect(registrationAddress("fd00::1", "2001:db8::5", ["fd00::/8"])).toBe("2001:db8::5");
+    expect(registrationAddress("fe80::1", "2001:db8::5", ["fd00::/8"])).toBe("fe80::1");
+    expect(() => parseTrustProxy(["0.0.0.0/0"])).toThrow(/not an IPv4 CIDR/);
+    expect(() => parseTrustProxy(["not-an-ip"])).toThrow(/not an address/);
+    expect(() => parseTrustProxy(["172.17.0.1/33"])).toThrow(/not an IPv4 CIDR/);
+  });
+
+  test("the flag and KIWI_TRUST_PROXY name who is trusted", () => {
+    expect(trustProxyFromArgs([], undefined)).toBe(false);
+    expect(trustProxyFromArgs(["--trust-proxy"], undefined)).toBe(true);
+    expect(trustProxyFromArgs(["--trust-proxy", "--port"], undefined)).toBe(true);
+    expect(trustProxyFromArgs([], "1")).toBe(true);
+    expect(trustProxyFromArgs([], "0")).toBe(false);
+    expect(trustProxyFromArgs(["--trust-proxy", "172.17.0.1,10.0.0.0/8"], undefined)).toEqual(["172.17.0.1", "10.0.0.0/8"]);
+    expect(trustProxyFromArgs(["--trust-proxy", "172.17.0.1", "--trust-proxy", "10.1.0.0/16"], "1")).toEqual(["172.17.0.1", "10.1.0.0/16"]);
+    expect(trustProxyFromArgs([], "172.17.0.1")).toEqual(["172.17.0.1"]);
   });
 
   test("a full table drops the oldest address, not every address", () => {
