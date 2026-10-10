@@ -13,7 +13,8 @@ import { loadImages, saveImages } from "./attach.ts";
 import { loadSummary, memberLoad, showsLoad } from "./load.ts";
 import { forgetMember, home, identitiesIn, loadConfig, signingBudget, wipeChannel, writeCursor } from "./config.ts";
 import { ChannelGone } from "./client.ts";
-import { formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, parseDuration } from "./format.ts";
+import { formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, mayDo, parseDuration } from "./format.ts";
+import { parseScopes, SCOPES } from "./scopes.ts";
 import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
 import { inlineText } from "./membership.ts";
 import { TOO_MANY_REQUESTS } from "./sas.ts";
@@ -88,7 +89,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
     "members",
     {
       description:
-        "Who's in the channel: names, roles, owner, key fingerprints, and each member's load (free, busy or overloaded, with their current task, queue and claims). " +
+        "Who's in the channel: names, roles, owner, key fingerprints, what each may do (when the owner limited it), and each member's load (free, busy or overloaded, with their current task, queue and claims). " +
         "Names are bound to keys by the owner, so they can't be faked. Example: call members.",
     },
     guard(async () => {
@@ -106,7 +107,10 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
           const askedRole = inlineText(asked?.role, 80);
           const head = `${m.name}${m.name === s.me ? " (you)" : ""}${m.owner ? " — owner" : role ? ` — ${role}` : ""}${about ? ` (${about})` : ""}${sponsorName ? ` · agent of @${sponsorName}` : ""}${asked ? ` (asked to be ${askedRole || "unassigned"})` : ""}  key ${m.pk.slice(0, 8)}${m.active ? "" : "  (left)"}`;
           const load = memberLoad(state, m.name);
-          return m.active && showsLoad(m, load) ? `${head}\n    ${loadSummary(load)}` : head;
+          // What they may do, when it's less than everything (what the owner set, as every client enforces it).
+          const scopes = m.active && !m.owner ? state.members.get(m.name)?.scopes : undefined;
+          const may = scopes && scopes.length < SCOPES.length ? `\n    may: ${mayDo(scopes)}` : "";
+          return (m.active && showsLoad(m, load) ? `${head}\n    ${loadSummary(load)}` : head) + may;
         })
         .join("\n");
     }),
@@ -135,9 +139,16 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
       {
         description:
           "Approve or deny a join request. Only call this after your human explicitly told you to, for this exact verification code (they compare it with what the joining agent shows). Example: decide_join {\"code\":\"482-913\",\"approve\":true}.",
-        inputSchema: { code: z.string().describe("the 6-digit verification code, like 482-913"), approve: z.boolean(), name: z.string().optional().describe("admit under a different name") },
+        inputSchema: {
+          code: z.string().describe("the 6-digit verification code, like 482-913"),
+          approve: z.boolean(),
+          name: z.string().optional().describe("admit under a different name"),
+          scopes: z.string().optional().describe(`what they may do besides read, if your human said: read-only, contributor, full (the default), or a list of ${SCOPES.join(",")}`),
+        },
       },
-      guard(async ({ code, approve, name }) => {
+      guard(async ({ code, approve, name, scopes: given }) => {
+        const scopes = given === undefined ? undefined : (parseScopes(given) ?? undefined);
+        if (given !== undefined && !scopes) throw new Rejected(`"${given}" isn't scopes: say read-only, contributor, full, or a list of ${SCOPES.join(",")}`);
         const digits = code.replace(/\D/g, "");
         const r = (await owner.requests({ budget: signingBudget })).find((x) => x.code?.replace("-", "") === digits);
         if (!r) throw new Rejected(`no pending request with code ${code}`);
@@ -148,8 +159,25 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
         }
         const finalName = name ?? r.name;
         if ((await s.members(true)).some((m) => m.name === finalName && m.active)) throw new Rejected(`"${finalName}" is taken; pass name`);
-        await owner.approve(r, { name: finalName, role: r.role, about: r.about });
-        return `approved ${finalName} (${r.code})`;
+        await owner.approve(r, { name: finalName, role: r.role, about: r.about, ...(scopes ? { scopes } : {}) });
+        return `approved ${finalName} (${r.code})${scopes ? `; they may ${mayDo(scopes)}` : ""}`;
+      }),
+    );
+    server.registerTool(
+      "set_scopes",
+      {
+        description:
+          "Change what a member may do besides read. Only call this after your human explicitly told you to, for this member. Every member's client holds them to it from here on; what they sent before stands.",
+        inputSchema: {
+          name: z.string().describe("the member's name"),
+          scopes: z.string().describe(`read-only, contributor, full, or a list of ${SCOPES.join(",")}`),
+        },
+      },
+      guard(async ({ name, scopes: given }) => {
+        const scopes = parseScopes(given) ?? null;
+        if (!scopes) throw new Rejected(`"${given}" isn't scopes: say read-only, contributor, full, or a list of ${SCOPES.join(",")}`);
+        await s.setScopes(name, scopes);
+        return `${name} may now ${mayDo(scopes)}`;
       }),
     );
   }

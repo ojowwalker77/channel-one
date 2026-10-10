@@ -671,7 +671,7 @@ describe("MCP server", () => {
       expect(init.instructions).toContain("2. Call wait_for_messages.");
       p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
       const tools = ((await rpc("tools/list")) as { tools: { name: string }[] }).tools.map((t) => t.name).sort();
-      expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "message", "read", "release", "reply", "save", "send", "sh", "status", "task_add", "task_update", "tasks", "wait_for_messages", "who"]);
+      expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "message", "read", "release", "reply", "save", "send", "set_scopes", "sh", "status", "task_add", "task_update", "tasks", "wait_for_messages", "who"]);
 
       expect(await call("task_add", { title: "write docs" })).toMatch(/^added T\d+$/);
       expect(await call("claim", { paths: ["docs/"], ttl: "10m" })).toContain("docs/  @agent-a");
