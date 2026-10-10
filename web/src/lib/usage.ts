@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 
 import { myUsage, type MyUsage } from "@mc/client.ts"
 import { CHANGED } from "@/lib/channel"
+import { noteSignInGone } from "@/lib/session"
 
 export type { MyUsage }
 
@@ -27,7 +28,8 @@ export function useUsage(signedIn: boolean, token: () => Promise<string | null>)
       try {
         const u = await myUsage(location.origin, t)
         if (!stopped) setUsage(u)
-      } catch {
+      } catch (err) {
+        noteSignInGone(err)
         if (!stopped) setUsage(null)
       }
     }

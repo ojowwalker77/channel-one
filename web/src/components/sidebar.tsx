@@ -178,6 +178,7 @@ export function Sidebar({
       )}
       {auth.status === "signed-out" && (
         <div className="shrink-0 p-3">
+          {auth.expired && <p className="mb-2 px-1 text-[12.5px] leading-normal text-ink-2">Your sign-in expired. Sign in again to sync your channels and approve requests.</p>}
           <Button className="w-full" onClick={auth.signIn}>
             Sign in
           </Button>

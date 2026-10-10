@@ -2,6 +2,7 @@ import { Dialog } from "@base-ui/react/dialog"
 import { Component, useSyncExternalStore, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type Ref } from "react"
 
 import { initials } from "@/lib/format"
+import { noteSignInGone } from "@/lib/session"
 import { cx } from "@/lib/utils"
 import { Tooltip } from "./ui/tooltip"
 
@@ -253,12 +254,14 @@ export function Wordmark({ className, byline = true }: { className?: string; byl
   )
 }
 
+/** What to tell someone about a failure. A gone sign-in is also reported, so the page can sign out. */
 export function errorText(err: unknown): string {
+  if (noteSignInGone(err)) return "Your sign-in expired. Sign in again to keep going."
   return err instanceof Error ? err.message : String(err)
 }
 
-/** If a view crashes, keep the app alive: say so, and offer a way back. */
-export class Boundary extends Component<{ children: ReactNode; resetKey?: string }, { failed: boolean }> {
+/** If a view crashes, keep the app alive: say so, and offer a way back. `whole`: the last net, around everything. */
+export class Boundary extends Component<{ children: ReactNode; resetKey?: string; whole?: boolean }, { failed: boolean }> {
   state = { failed: false }
   static getDerivedStateFromError() {
     return { failed: true }
@@ -271,8 +274,8 @@ export class Boundary extends Component<{ children: ReactNode; resetKey?: string
     return (
       <div className="flex h-full flex-1 items-center justify-center p-8">
         <div className="max-w-xs">
-          <p className="text-[14px] font-semibold">This view hit a problem</p>
-          <p className="mt-1 text-[13px] leading-normal text-ink-2">Nothing was lost. Reload to try again; your other channels still work.</p>
+          <p className="text-[14px] font-semibold">{this.props.whole ? "Channels hit a problem" : "This view hit a problem"}</p>
+          <p className="mt-1 text-[13px] leading-normal text-ink-2">{this.props.whole ? "Nothing was lost: your channels and keys are still in this browser. Reload to carry on." : "Nothing was lost. Reload to try again; your other channels still work."}</p>
           <Button className="mt-4" onClick={() => location.reload()}>
             Reload
           </Button>

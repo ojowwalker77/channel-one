@@ -1,9 +1,10 @@
-import { createClient, type User } from "@workos-inc/authkit-js"
+import { LoginRequiredError, NoSessionError, createClient, type User } from "@workos-inc/authkit-js"
 import { createContext, createElement, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
 
 import { relayConfig } from "@mc/client.ts"
 
 import { DevSignIn } from "@/components/dev-sign-in"
+import { SIGN_IN_GONE } from "@/lib/session"
 
 /**
  * Human sign-in with WorkOS AuthKit (authorization code + PKCE, all in the
@@ -16,6 +17,8 @@ type AuthClient = Awaited<ReturnType<typeof createClient>>
 export interface Auth {
   /** "off": the relay doesn't use sign-in. */
   status: "loading" | "off" | "signed-out" | "signed-in"
+  /** Signed out because the session ended on its own (not by choice): say so. */
+  expired: boolean
   user: User | null
   signIn: () => void
   signOut: () => void
@@ -25,6 +28,7 @@ export interface Auth {
 
 const AuthContext = createContext<Auth>({
   status: "loading",
+  expired: false,
   user: null,
   signIn: () => {},
   signOut: () => {},
@@ -56,6 +60,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Auth["status"]>("loading")
   const [user, setUser] = useState<User | null>(null)
   const [dev, setDev] = useState<{ name: string | null; asking: boolean } | null>(null)
+  const [expired, setExpired] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -102,11 +107,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // The session ended (a refresh failed, or the relay refused it): sign this browser out and say so.
+  // Local channels and keys stay; signing in again brings back the synced list.
+  useEffect(() => {
+    if (status !== "signed-in") return
+    const ended = (e: unknown) => e instanceof LoginRequiredError || e instanceof NoSessionError
+    const expire = () => {
+      setExpired(true)
+      setUser(null)
+      setStatus("signed-out")
+    }
+    const onGone = () => {
+      // Dev sign-in has no session to check. With WorkOS, a token that comes back means it was a blip.
+      if (dev) return expire()
+      client?.getAccessToken().then(
+        () => {},
+        (e: unknown) => ended(e) && expire()
+      )
+    }
+    window.addEventListener(SIGN_IN_GONE, onGone)
+    return () => window.removeEventListener(SIGN_IN_GONE, onGone)
+  }, [status, client, dev])
+
   const value = useMemo<Auth>(
     () =>
       dev
         ? {
             status,
+            expired,
             user,
             signIn: () => setDev((d) => d && { ...d, asking: true }),
             signOut: () => {
@@ -119,6 +147,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
         : {
             status,
+            expired,
             user,
             signIn: () => void client?.signIn({ state: { returnTo: location.pathname + location.hash } }),
             signOut: () => client?.signOut({ returnTo: location.origin + "/" }),
@@ -126,18 +155,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               if (!client || !client.getUser()) return null
               try {
                 return await client.getAccessToken()
-              } catch {
+              } catch (e) {
+                // The refresh token is spent: the session is over, not just slow.
+                if (e instanceof LoginRequiredError || e instanceof NoSessionError) window.dispatchEvent(new Event(SIGN_IN_GONE))
                 return null
               }
             },
           },
-    [client, status, user, dev]
+    [client, status, expired, user, dev]
   )
 
   const signInDev = (name: string) => {
     localStorage.setItem(DEV_KEY, name)
     setDev({ name, asking: false })
     setUser(devUser(name))
+    setExpired(false)
     setStatus("signed-in")
   }
   return createElement(
