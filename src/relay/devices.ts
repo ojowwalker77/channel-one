@@ -11,8 +11,10 @@
 // send, so the relay can't open the box or swap in one of its own; and only the
 // same signed-in person can fetch it.
 
-import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
-import { HttpError } from "./room.ts";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import { attempt, describeRoutes, json, refuse, Request_, servePerson, SignIn, signedInPerson, type Refused, type Route } from "./http.ts";
+import type { HumanAuth } from "./human.ts";
 import { fits, Present } from "./schema.ts";
 
 export interface DeviceTransfer {
@@ -33,53 +35,98 @@ export const TRANSFER_TTL_MS = 10 * 60_000;
 /** Identities and keys, not messages: a few KB per channel. */
 const MAX_BOX = 1024 * 1024;
 
+// ---------- the routes ----------
+
+class Handovers extends Context.Service<Handovers, DeviceStore>()("kiwi/relay/Handovers") {}
+
+type DeviceGuard = "person";
+type DeviceRoute = Route<DeviceGuard, string, never, Handovers | SignIn | Request_>;
+
+/** This person's transfers still waiting; expired ones go as soon as anyone looks. */
+const live = (user: string) =>
+  Effect.gen(function* () {
+    const store = yield* Handovers;
+    const { now } = yield* SignIn;
+    return yield* attempt(async () => {
+      const out: DeviceTransfer[] = [];
+      for (const t of await store.list(user)) {
+        if (now - t.created > TRANSFER_TTL_MS) await store.remove(user, t.id);
+        else out.push(t);
+      }
+      return out;
+    });
+  });
+
+const ONE = /^\/v1\/me\/devices\/transfers\/([0-9a-f-]{36})$/;
+
+/** The transfer `m` names, if it's still waiting. */
+const waiting = (user: string, m: RegExpExecArray) => Effect.map(live(user), (all) => all.find((x) => x.id === m[1]));
+
+const routes: DeviceRoute[] = [
+  {
+    method: "POST",
+    path: "/v1/me/devices/transfers",
+    guard: "person",
+    run: (user) =>
+      Effect.gen(function* () {
+        const store = yield* Handovers;
+        const { now } = yield* SignIn;
+        const { box } = yield* json<{ box?: unknown }>();
+        if (!fits(Present, box)) return yield* refuse(400, "missing box");
+        if (box.length > MAX_BOX) return yield* refuse(413, "too much to hand over at once");
+        // One code at a time: showing a new one retires the last.
+        const t: DeviceTransfer = { id: crypto.randomUUID(), box, created: now };
+        yield* attempt(async () => {
+          for (const old of await store.list(user)) await store.remove(user, old.id);
+          await store.put(user, t);
+        });
+        return { data: { id: t.id, expires: now + TRANSFER_TTL_MS } };
+      }),
+  },
+  {
+    // The showing device asks whether its code is still waiting, without taking it.
+    method: "HEAD",
+    path: ONE,
+    guard: "person",
+    run: (user, m) => Effect.map(waiting(user, m), (t) => ({ res: new Response(null, { status: t ? 200 : 404 }) })),
+  },
+  {
+    // The new device takes the box, once.
+    method: "GET",
+    path: ONE,
+    guard: "person",
+    run: (user, m) =>
+      Effect.gen(function* () {
+        const store = yield* Handovers;
+        const t = yield* waiting(user, m);
+        if (!t) return yield* refuse(404, "this code was already used or has expired: show a new one on your other device");
+        yield* attempt(() => store.remove(user, t.id));
+        return { data: { box: t.box } };
+      }),
+  },
+  {
+    method: "DELETE",
+    path: ONE,
+    guard: "person",
+    run: (user, m) =>
+      Effect.gen(function* () {
+        const store = yield* Handovers;
+        const t = yield* waiting(user, m);
+        if (!t) return yield* refuse(404, "this code was already used or has expired: show a new one on your other device");
+        yield* attempt(() => store.remove(user, t.id));
+        return { data: { removed: true } };
+      }),
+  },
+];
+
+const guards: Record<DeviceGuard, Effect.Effect<string, Refused, SignIn | Request_>> = { person: signedInPerson("this relay has no sign-in") };
+
+/** The handover rows, for the route-table test. */
+export const deviceRouteTable = describeRoutes(routes);
+
 /** Routes under /v1/me/devices; null when the path isn't one of them. */
 export async function onDeviceHttp(req: Request, store: DeviceStore, human: HumanAuth | null, now = Date.now()): Promise<Response | null> {
-  const path = new URL(req.url).pathname;
-  if (!path.startsWith("/v1/me/devices")) return null;
-  if (!human) throw new HttpError(404, "this relay has no sign-in");
-  const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
-  if (!user) throw new HttpError(401, "sign in first", "SignInRequired");
-  const method = req.method.toUpperCase();
-  // Expired codes go as soon as anyone looks.
-  const live = async () => {
-    const out: DeviceTransfer[] = [];
-    for (const t of await store.list(user)) {
-      if (now - t.created > TRANSFER_TTL_MS) await store.remove(user, t.id);
-      else out.push(t);
-    }
-    return out;
-  };
-
-  if (path === "/v1/me/devices/transfers" && method === "POST") {
-    let box: unknown;
-    try {
-      box = ((await req.json()) as { box?: unknown }).box;
-    } catch {
-      throw new HttpError(400, "bad json");
-    }
-    if (!fits(Present, box)) throw new HttpError(400, "missing box");
-    if (box.length > MAX_BOX) throw new HttpError(413, "too much to hand over at once");
-    // One code at a time: showing a new one retires the last.
-    for (const t of await store.list(user)) await store.remove(user, t.id);
-    const t: DeviceTransfer = { id: crypto.randomUUID(), box, created: now };
-    await store.put(user, t);
-    return Response.json({ id: t.id, expires: now + TRANSFER_TTL_MS });
-  }
-  const one = /^\/v1\/me\/devices\/transfers\/([0-9a-f-]{36})$/.exec(path);
-  if (!one) throw new HttpError(404, "not found");
-  const t = (await live()).find((x) => x.id === one[1]);
-  // The showing device asks whether its code is still waiting, without taking it.
-  if (method === "HEAD") return new Response(null, { status: t ? 200 : 404 });
-  if (!t) throw new HttpError(404, "this code was already used or has expired: show a new one on your other device");
-  // The new device takes the box, once.
-  if (method === "GET") {
-    await store.remove(user, t.id);
-    return Response.json({ box: t.box });
-  }
-  if (method === "DELETE") {
-    await store.remove(user, t.id);
-    return Response.json({ removed: true });
-  }
-  throw new HttpError(404, "not found");
+  if (!new URL(req.url).pathname.startsWith("/v1/me/devices")) return null;
+  const otherwise = Effect.flatMap(guards.person, () => refuse(404, "not found"));
+  return servePerson(req, routes, guards, otherwise, (e) => Effect.provideService(e, Handovers, store), { human, now });
 }

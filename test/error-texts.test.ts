@@ -18,9 +18,16 @@ function errorTexts(): string[] {
   for (const f of readdirSync(dir).filter((f) => f.endsWith(".ts")).sort()) {
     const src = readFileSync(join(dir, f), "utf8");
     for (const m of src.matchAll(/(?:new HttpError|refuse)\(\s*(\d{3}),\s*([`"'])((?:\\.|(?!\2).)*)\2/g)) out.add(`${m[1]} ${m[3]}`);
-    for (const m of src.matchAll(/(?:new HttpError|refuse)\(\s*(\d{3}),\s*([A-Za-z_][\w.]*(?:\([^)]*\))?)\s*\)/g)) out.add(`${m[1]} <${m[2]}>`);
+    // A text kept in a string constant counts as that text.
+    const consts = new Map([...src.matchAll(/const\s+(\w+)\s*=\s*"((?:\\.|[^"])*)"/g)].map((m) => [m[1]!, m[2]!]));
+    for (const m of src.matchAll(/(?:new HttpError|refuse)\(\s*(\d{3}),\s*([A-Za-z_][\w.]*(?:\([^)]*\))?)\s*\)/g)) out.add(`${m[1]} ${consts.get(m[2]!) ?? `<${m[2]}>`}`);
+    for (const m of src.matchAll(/signedInPerson\(\s*([A-Za-z_]\w*)\s*\)/g)) if (consts.has(m[1]!)) out.add(`404 ${consts.get(m[1]!)}`);
     for (const m of src.matchAll(/error:\s*([`"'])((?:\\.|(?!\1).)*)\1/g)) out.add(`body ${m[2]}`);
+    // A person route's 404 on a relay without sign-in is passed to signedInPerson as its text.
+    for (const m of src.matchAll(/signedInPerson\(\s*([`"'])((?:\\.|(?!\1).)*)\1/g)) out.add(`404 ${m[2]}`);
   }
+  // The helper's own parameter isn't a text.
+  out.delete("404 <noSignIn>");
   return [...out].sort();
 }
 
