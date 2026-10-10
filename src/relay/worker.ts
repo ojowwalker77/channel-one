@@ -44,6 +44,8 @@ interface Env {
   WORKOS_API_KEY?: string;
   /** 20 computer registrations per minute per client address. See wrangler.jsonc ratelimits. */
   MACHINE_REGISTRATIONS: RateLimit;
+  /** "off": don't retry a room request the platform refused (to count refusals, e.g. on a canary). */
+  KIWI_ROOM_RETRY?: string;
 }
 
 let humanAuth: HumanAuth | null | undefined;
@@ -375,7 +377,8 @@ async function toRoom(env: Env, roomId: string, req: Request): Promise<Response>
     const e = err as Error & { retryable?: boolean; overloaded?: boolean };
     // No room id or path in the log: only what went wrong.
     console.error(JSON.stringify({ at: "room-stub", method: req.method, retryable: !!e.retryable, overloaded: !!e.overloaded, error: e.message }));
-    if (read && e.retryable && !e.overloaded) {
+    // KIWI_ROOM_RETRY=off turns the retry off (to count refusals as they happen, e.g. on a canary).
+    if (read && e.retryable && !e.overloaded && env.KIWI_ROOM_RETRY !== "off") {
       try {
         return await stub().fetch(req);
       } catch (again) {
