@@ -78,6 +78,12 @@ export interface StreamOptions {
   /** Connection trouble worth a line: only once the relay has been out of reach for `quietMs` (default QUIET_DROP_MS). */
   onStatus?: (s: string) => void;
   quietMs?: number;
+  /**
+   * Clock for the quiet window and the wait before a retry. A test moves it
+   * forward so a long outage does not take wall-clock time. Unset, both follow
+   * wall time.
+   */
+  now?: () => number;
   /** Called on every (re)connect with a way to send ephemeral presence. */
   onOpen?: (live: { presence: (p: Omit<Presence, "v" | "type" | "from" | "ts">) => Promise<void> }) => void;
   onPresence?: (p: Presence & { sigOk: boolean }) => void;
@@ -848,6 +854,17 @@ export class Channel {
     // Drops are routine (relay deploys, sleep, networks): say nothing unless the relay stays out of reach.
     let downSince: number | null = null;
     let reported = false;
+    const now = (): number => opts.now?.() ?? Date.now();
+    // Poll an injected clock so a test can skip the wait. The short sleep keeps
+    // a clock that is Date.now from spinning. Unset, this is one real sleep.
+    const waitBackoff = async (ms: number): Promise<void> => {
+      if (opts.now === undefined) {
+        await sleep(ms);
+        return;
+      }
+      const start = opts.now();
+      while (!opts.signal?.aborted && opts.now() - start < ms) await sleep(10);
+    };
     while (!opts.signal?.aborted) {
       const auth = await signRequest(this.identity, this.roomId, "GET", "/ws");
       const closed = await new Promise<{ code: number; reason: string }>((resolve) => {
@@ -861,7 +878,7 @@ export class Channel {
         opts.signal?.addEventListener("abort", abort, { once: true });
         ws.onopen = () => {
           backoff = 500;
-          if (reported) opts.onStatus?.(`reconnected after ${Math.round((Date.now() - downSince!) / 1000)}s; nothing was missed`);
+          if (reported) opts.onStatus?.(`reconnected after ${Math.round((now() - downSince!) / 1000)}s; nothing was missed`);
           downSince = null;
           reported = false;
           ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(PING), 25_000);
@@ -933,10 +950,10 @@ export class Channel {
       if (closed.code === 4000) continue;
       if (closed.code === CLOSE_REMOVED) throw new ChannelGone("removed");
       if (closed.code === CLOSE_CLOSED) throw new ChannelGone("closed");
-      downSince ??= Date.now();
-      if (!reported && Date.now() - downSince >= (opts.quietMs ?? QUIET_DROP_MS)) {
+      downSince ??= now();
+      if (!reported && now() - downSince >= (opts.quietMs ?? QUIET_DROP_MS)) {
         reported = true;
-        opts.onStatus?.(`can't reach the relay for ${Math.round((Date.now() - downSince) / 1000)}s (${closed.code}${closed.reason ? ` ${closed.reason}` : ""}); still retrying`);
+        opts.onStatus?.(`can't reach the relay for ${Math.round((now() - downSince) / 1000)}s (${closed.code}${closed.reason ? ` ${closed.reason}` : ""}); still retrying`);
       }
       // Upgrade failures (removed, closed) look like plain drops; check before retrying.
       try {
@@ -944,7 +961,7 @@ export class Channel {
       } catch (err) {
         if (err instanceof ChannelGone) throw err;
       }
-      await sleep(backoff);
+      await waitBackoff(backoff);
       backoff = Math.min(backoff * 2, 30_000);
     }
   }

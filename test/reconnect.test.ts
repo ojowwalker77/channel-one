@@ -35,7 +35,10 @@ test("drops are silent, a long outage is one line, and nothing is missed", async
   const ac = new AbortController();
   let ready!: () => void;
   const opened = new Promise<void>((r) => (ready = r));
-  const listening = ch.stream(0, (m) => void got.push(m.body), { signal: ac.signal, quietMs: 1_500, onStatus: (s) => status.push(s), onReady: () => ready() });
+  // Wall time until the outage. Then this jumps, and the stream follows it.
+  let ahead = 0;
+  const now = () => Date.now() + ahead;
+  const listening = ch.stream(0, (m) => void got.push(m.body), { signal: ac.signal, quietMs: 1_500, now, onStatus: (s) => status.push(s), onReady: () => ready() });
   await opened;
 
   // A quick restart (like a deploy): no line at all.
@@ -47,16 +50,25 @@ test("drops are silent, a long outage is one line, and nothing is missed", async
   expect(status).toEqual([]);
 
   // Down for longer than the quiet window: one line while down, one when back.
-  // quietMs is 1.5s of wall clock (the stream has no injected clock while client.ts is claimed).
+  // The clock jumps a second at a time, so this does not wait out quietMs.
   server.stop(true);
-  await until(() => status.length >= 1, "outage status");
+  const outageAt = Date.now();
+  const jump = setInterval(() => {
+    ahead += 1_000;
+  }, 20);
+  try {
+    await until(() => status.length >= 1, "outage status");
+  } finally {
+    clearInterval(jump);
+  }
+  expect(Date.now() - outageAt).toBeLessThan(1_200);
   server = startRelay({ port, hostname: "127.0.0.1", dataDir });
   await ch.send("after an outage");
   await until(() => got.includes("after an outage"), "message after an outage");
   expect(got).toEqual(["after a blip", "after an outage"]);
   expect(status.length).toBe(2);
-  expect(status[0]).toMatch(/can't reach the relay for \ds/);
-  expect(status[1]).toMatch(/reconnected after \ds; nothing was missed/);
+  expect(status[0]).toMatch(/can't reach the relay for \d+s/);
+  expect(status[1]).toMatch(/reconnected after \d+s; nothing was missed/);
 
   ac.abort();
   await listening;
