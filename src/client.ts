@@ -24,6 +24,8 @@ import {
   CLOSE_REMOVED,
   MAX_ICON_BYTES,
   MAX_IMAGES,
+  isRasterMime,
+  rasterAttachment,
   wellFormedIcon,
   type ChannelIcon,
   PING,
@@ -688,6 +690,9 @@ export class Channel {
   }
 
   async send(body: string, opts: SendOptions = {}): Promise<number> {
+    const imgs = opts.imgs?.slice(0, MAX_IMAGES);
+    // The same raster list as icons. A caller that skips the file picker still cannot attach SVG.
+    if (imgs?.some((i) => !isRasterMime(i.mime))) throw new Error("an image must be png, jpg, gif or webp");
     const payload: Payload = {
       v: PROTOCOL_VERSION,
       id: crypto.randomUUID(),
@@ -697,7 +702,7 @@ export class Channel {
       body,
       ...(opts.re?.length ? { re: opts.re } : {}),
       ...(opts.ev ? { ev: opts.ev } : {}),
-      ...(opts.imgs?.length ? { imgs: opts.imgs.slice(0, MAX_IMAGES) } : {}),
+      ...(imgs?.length ? { imgs } : {}),
       ts: Date.now(),
     };
     const signed = await sign(this.identity, payload);
@@ -731,13 +736,8 @@ export class Channel {
     const p = (await open(key, this.roomId, env.iv, env.ct).catch(() => null)) as unknown;
     // Anything that isn't a well-formed message is dropped here, before any client folds it.
     if (!wellFormed(p)) return null;
-    // Drop malformed attachments rather than the whole message.
-    const imgs = Array.isArray(p.imgs)
-      ? p.imgs.filter(
-          (i): i is ImageAttachment =>
-            !!i && typeof i.name === "string" && typeof i.mime === "string" && i.mime.startsWith("image/") && typeof i.data === "string",
-        )
-      : undefined;
+    // Drop anything that isn't a named raster image, including SVG, rather than the whole message.
+    const imgs = Array.isArray(p.imgs) ? p.imgs.filter(rasterAttachment) : undefined;
     return { ...p, ...(imgs?.length ? { imgs } : { imgs: undefined }), seq: env.seq, rts: env.ts, sigOk: await verify(p) };
   }
 

@@ -2,7 +2,7 @@ import { Add01Icon, ArrowDown01Icon, ArrowUp02Icon, Cancel01Icon } from "@hugeic
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import type { SendOptions } from "@mc/client.ts"
-import { MAX_IMAGE_BYTES, type Kind, type Message } from "@mc/protocol.ts"
+import { MAX_IMAGE_BYTES, RASTER_MIMES, type Kind, type Message } from "@mc/protocol.ts"
 import { excerpt } from "@/lib/format"
 import { cx } from "@/lib/utils"
 import { Icon } from "./icon"
@@ -19,7 +19,7 @@ const KINDS: { kind: Kind; label: string; hint: string }[] = [
 ]
 const MENTION = /(^|\s)@([\p{L}\p{N}_.-]*)$/u
 const LEADING = /^(?:\s*@([\p{L}\p{N}_.-]+)[\s,]*)+/u
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
+const IMAGE_TYPES = new Set<string>(RASTER_MIMES)
 
 function imageName(file: File): string {
   if (file.name) return file.name

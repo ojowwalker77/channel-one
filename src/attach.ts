@@ -3,11 +3,11 @@
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import { MAX_IMAGE_BYTES, MAX_IMAGES, type ImageAttachment } from "./protocol.ts";
+import { MAX_IMAGE_BYTES, MAX_IMAGES, type ImageAttachment, type RasterMime } from "./protocol.ts";
 
 export type { ImageAttachment };
 
-const MIME: Record<string, string> = {
+const MIME: Record<string, RasterMime> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",

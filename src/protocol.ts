@@ -12,17 +12,25 @@ export const MAX_CT_LENGTH = 512 * 1024;
 /** Largest raw image (per file) a client will attach: must survive two base64 trips inside this budget. */
 export const MAX_IMAGE_BYTES = 256 * 1024;
 
+/** Raster images a message or an icon may carry. SVG is never one: it can carry script. */
+export const RASTER_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
+export type RasterMime = (typeof RASTER_MIMES)[number];
+
+/** Whether `mime` is one of the raster types. */
+export function isRasterMime(mime: string): mime is RasterMime {
+  return (RASTER_MIMES as readonly string[]).includes(mime);
+}
+
 /** A channel's icon: an emoji, or a small image (never SVG, which can carry script). Sealed like the title. */
-export type ChannelIcon = { kind: "emoji"; emoji: string } | { kind: "image"; mime: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: string };
+export type ChannelIcon = { kind: "emoji"; emoji: string } | { kind: "image"; mime: RasterMime; data: string };
 export const MAX_ICON_BYTES = 32 * 1024;
-const ICON_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /** Whether a decrypted icon is one of the two shapes, within limits. */
 export function wellFormedIcon(x: unknown): x is ChannelIcon {
   if (!x || typeof x !== "object") return false;
   const i = x as Record<string, unknown>;
   if (i.kind === "emoji") return typeof i.emoji === "string" && i.emoji.length > 0 && [...new Intl.Segmenter().segment(i.emoji)].length === 1 && i.emoji.length <= 16;
-  return i.kind === "image" && typeof i.mime === "string" && ICON_MIMES.includes(i.mime) && typeof i.data === "string" && Math.ceil((i.data.length * 3) / 4) <= MAX_ICON_BYTES;
+  return i.kind === "image" && typeof i.mime === "string" && isRasterMime(i.mime) && typeof i.data === "string" && Math.ceil((i.data.length * 3) / 4) <= MAX_ICON_BYTES;
 }
 
 /** Most images on one message. */
@@ -126,10 +134,17 @@ export type Event =
 /** One image attached to a message, encrypted with everything else. */
 export interface ImageAttachment {
   name: string;
-  /** e.g. "image/png". */
+  /** A raster type from `RASTER_MIMES`. Never SVG. */
   mime: string;
   /** Raw bytes, base64. */
   data: string;
+}
+
+/** An attachment worth keeping: a named raster image. Anything else (including SVG) is dropped. */
+export function rasterAttachment(x: unknown): x is ImageAttachment {
+  if (!x || typeof x !== "object") return false;
+  const i = x as Record<string, unknown>;
+  return typeof i.name === "string" && typeof i.mime === "string" && isRasterMime(i.mime) && typeof i.data === "string";
 }
 
 function kb(n: number): string {
