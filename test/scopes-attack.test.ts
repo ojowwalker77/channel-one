@@ -138,7 +138,7 @@ describe("a member cannot do more than the owner signed", () => {
     const key = newChannelKey();
     const room = "ab".repeat(16);
     const bad = await sign(owner, { room, member: mac.pk, mxpk: mac.xpk!, name: "mac", scopes: { all: true }, at: 1 });
-    const opened = await openRecord(key, await sealRecord(key, bad), room, owner.pk, mac.pk);
+    const opened = await openRecord(key, await sealRecord(key, bad as unknown as Parameters<typeof sealRecord>[1]), room, owner.pk, mac.pk);
     expect(opened?.scopes).toEqual([]);
     const ownerRec = await makeRecord(owner, room, { name: "human", pk: owner.pk, xpk: owner.xpk!, owner: true, scopes: [] });
     expect(ownerRec).not.toHaveProperty("scopes");
