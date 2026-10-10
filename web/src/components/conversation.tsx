@@ -52,7 +52,10 @@ const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Dat
 export function Conversation({ member, onBack, onGone }: { member: StoredMember; onBack: () => void; onGone: () => void }) {
   const me = member.identity.name
   const auth = useAuth()
-  const { ch, connection, gone, messages, roster, state, online, isOwner, requests, send, refreshRequests, refreshRoster } = useChannel(member, auth.token)
+  const { ch, connection, gone, messages, roster, state, online, isOwner, requests, send, refreshRequests, refreshRoster } = useChannel(
+    member,
+    auth.status === "loading" ? null : auth.token,
+  )
   useLiveIcon(member)
   const icon = useIcons().get(member.access.roomId) ?? null
   const now = useNow()

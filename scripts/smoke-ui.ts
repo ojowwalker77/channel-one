@@ -5,9 +5,10 @@
 //
 // Beyond menus, it walks the flows only real state reaches: a passkey set up and
 // unlocked on Chromium's virtual authenticator, the invite preview a join link
-// shows someone who isn't in yet, a computer linked through its #link page by
-// `kiwi setup`, that computer's agent asking to join and approved, and the task
-// it adds opened from the board.
+// shows someone who isn't in yet, a reload that paints the sent message from
+// the sealed cache and asks the relay only for newer ones, a computer linked
+// through its #link page by `kiwi setup`, that computer's agent asking to join
+// and approved, and the task it adds opened from the board.
 //
 //   bun run web:build && bun scripts/smoke-ui.ts
 //
@@ -191,6 +192,53 @@ try {
   await page.getByRole("button", { name: "Close thread" }).waitFor()
   await page.getByRole("button", { name: "Close thread" }).click()
   console.log("ok  Thread panel")
+
+  // The sent message is sealed in this browser. A reload paints it and the
+  // socket asks only for seqs after that row. "smoke test" contains a space,
+  // which ciphertext (base64url) cannot, so a stored body fails this check.
+  at = "history cache"
+  await page.waitForFunction(async () => {
+    const rows = await new Promise<unknown[]>((resolve) => {
+      const req = indexedDB.open("mc.history")
+      req.onsuccess = () => {
+        const db = req.result
+        if (!db.objectStoreNames.contains("rows")) {
+          db.close()
+          resolve([])
+          return
+        }
+        const all = db.transaction("rows", "readonly").objectStore("rows").getAll()
+        all.onsuccess = () => {
+          db.close()
+          resolve(all.result as unknown[])
+        }
+        all.onerror = () => {
+          db.close()
+          resolve([])
+        }
+      }
+      req.onerror = () => resolve([])
+    })
+    return rows.length > 0 && !JSON.stringify(rows).includes("smoke test")
+  }, undefined, { timeout: 5000 })
+  console.log("ok  history cache sealed")
+
+  at = "reload fetches only what is new"
+  const sinceOnReload = new Promise<string>((resolve) => {
+    const onWs = (ws: { url: () => string }) => {
+      const since = new URL(ws.url()).searchParams.get("since")
+      if (since == null) return
+      page.off("websocket", onWs)
+      resolve(since)
+    }
+    page.on("websocket", onWs)
+  })
+  await page.reload()
+  await page.getByText("smoke test", { exact: true }).first().waitFor()
+  const since = await sinceOnReload
+  if (!(Number(since) > 0)) throw new Error(`reload streamed since ${since}; expected only newer seqs`)
+  await page.getByRole("complementary").getByRole("button", { name: /smoke \(dev\)/ }).waitFor()
+  console.log(`ok  reload fetches only what is new (since ${since})`)
 
   // An agent joins from a computer linked to this account: the link page, the request, approval.
   at = "link a computer"

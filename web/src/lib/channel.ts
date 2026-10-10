@@ -7,6 +7,8 @@ import { handleFor, type JoinRequest, type Member } from "@mc/membership.ts"
 import type { Message, Presence } from "@mc/protocol.ts"
 import type { Signed, SigningBudget } from "@mc/sas.ts"
 import { fold, type ChannelState, type Roster } from "@mc/state.ts"
+import { forgetHistory, readCached, rememberMessage } from "./history"
+import { wholeLog } from "./history-plan"
 import { ICON_LIVE } from "./icon-event"
 import { noteSignInGone } from "./session"
 
@@ -180,8 +182,10 @@ export function allMembers(): StoredMember[] {
   return out
 }
 
-/** Forget a channel in this browser: identity, keys, pending request, registry entry. */
+/** Forget a channel in this browser: identity, keys, pending request, registry entry, cached history. */
 export function forgetChannel(code: string): void {
+  const member = loadMember(code)
+  if (member) void forgetHistory(member.access.roomId, member.identity.pk).catch(() => {})
   localStorage.removeItem(MEMBER_KEY(code))
   localStorage.removeItem(PENDING_KEY(code))
   localStorage.removeItem(RECENT_KEY(code))
@@ -525,9 +529,14 @@ export interface ChannelHandle {
   refreshRoster: () => Promise<void>
 }
 
-/** Stream a channel as a member: messages, presence, member list, and (for the owner) join requests. */
-export function useChannel(member: StoredMember, human?: HumanSession): ChannelHandle {
+/**
+ * Stream a channel as a member: messages, presence, member list, and (for the owner) join requests.
+ * Pass `null` while sign-in is still loading. Opening before that sends the owner's request list
+ * with no session, the relay answers 401, and this browser signs itself out.
+ */
+export function useChannel(member: StoredMember, human?: HumanSession | null): ChannelHandle {
   useEffect(() => {
+    if (human === null) return
     humanSessions.set(member.code, human)
     return () => {
       if (humanSessions.get(member.code) === human) humanSessions.delete(member.code)
@@ -601,6 +610,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
   }, [ch, onGone])
 
   useEffect(() => {
+    if (human === null) return
     let cancelled = false
     const ac = new AbortController()
     // Batch incoming messages so a history replay renders once, not thousands of times.
@@ -616,6 +626,11 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
           const seen = new Set(prev.map((p) => p.seq))
           return [...prev, ...batch.filter((b) => !seen.has(b.seq))].sort((a, b) => a.seq - b.seq)
         })
+        // Seal after paint. A cache failure must not stop the stream.
+        const key = ch.access.keys[String(ch.access.epoch)]
+        if (key) {
+          for (const m of batch) void rememberMessage(ch.roomId, ch.identity.pk, ch.access.epoch, key, m, HISTORY).catch(() => {})
+        }
       }, 30)
     }
     const onPresence = (p: Presence & { sigOk: boolean }) => {
@@ -626,8 +641,27 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
     ;(async () => {
       await Promise.all([refreshRoster(), refreshRequests()])
       const head = await ch.head()
-      setStart({ head, whole: head <= HISTORY })
-      await ch.stream(Math.max(0, head - HISTORY), enqueue, {
+      // Paint the sealed cache, then ask the relay only for seqs after it.
+      // Anything unusable falls back to the usual window.
+      let since = Math.max(0, head - HISTORY)
+      let firstSeq: number | undefined
+      try {
+        const cached = await readCached(ch.roomId, ch.identity.pk, ch.access.keys, head, HISTORY)
+        if (cancelled) return
+        since = cached.since
+        if (cached.messages.length) {
+          firstSeq = cached.messages[0]!.seq
+          setMessages((prev) => {
+            const seen = new Set(prev.map((p) => p.seq))
+            return [...prev, ...cached.messages.filter((m) => !seen.has(m.seq))].sort((a, b) => a.seq - b.seq)
+          })
+        }
+      } catch {
+        // Private mode and a broken cache both load from the relay.
+      }
+      if (cancelled) return
+      setStart({ head, whole: wholeLog(head, HISTORY, firstSeq) })
+      await ch.stream(since, enqueue, {
         signal: ac.signal,
         onOpen: ({ presence }) => {
           setConnection("live")
@@ -652,7 +686,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
       ac.abort()
       clearTimeout(flush)
     }
-  }, [ch, refreshRoster, refreshRequests, onGone])
+  }, [ch, refreshRoster, refreshRequests, onGone, human])
 
   // Presence can only be trusted when it's signed by the key the owner admitted under that name.
   const keyOf = useMemo(() => new Map(roster.filter((r) => r.active).map((r) => [r.name, r.pk])), [roster])
