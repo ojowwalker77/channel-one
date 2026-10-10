@@ -134,7 +134,12 @@ export type Event =
    * Owner only: what a member may do besides read (null: everything). Names the member's key
    * too, so it never carries over to someone admitted under the same name later.
    */
-  | { op: "scope.set"; member: string; pk: string; scopes: string[] | null };
+  | { op: "scope.set"; member: string; pk: string; scopes: string[] | null }
+  /**
+   * Owner only. Coordinator-only: people talk only with the member whose role is "coordinator", and
+   * other agents don't message people (strict: every client refuses it; otherwise it's flagged).
+   */
+  | { op: "mode.set"; coordinatorOnly: boolean; strict: boolean };
 
 /** One image attached to a message, encrypted with everything else. */
 export interface ImageAttachment {
@@ -186,11 +191,12 @@ export interface Payload {
  * How far to trust who a message says it's from:
  *   verified   signed by the key the owner admitted under that name
  *   forged     anything else: another key, no signature, or not a member
- *   refused    signed by that member, but outside what the owner lets them do (their scopes)
+ *   refused    signed by that member, but against what the owner allows: outside its scopes, or an
+ *              agent messaging a person in strict coordinator-only mode
  */
 export type Trust = "verified" | "forged" | "refused";
 
-/** Whether a message is one to leave out: forged, or outside its sender's scopes. */
+/** Whether a message is one to leave out: forged, or against what the owner allows. */
 export function ignored(trust: Trust | undefined): boolean {
   return trust === "forged" || trust === "refused";
 }
@@ -259,6 +265,8 @@ export function wellFormedEvent(ev: unknown): ev is Event {
       return str(e.member, 64) && (e.color === null || isColor(e.color));
     case "scope.set":
       return str(e.member, 64) && str(e.pk, 64) && (e.scopes === null || strs(e.scopes, 32));
+    case "mode.set":
+      return typeof e.coordinatorOnly === "boolean" && typeof e.strict === "boolean";
     default:
       return false;
   }

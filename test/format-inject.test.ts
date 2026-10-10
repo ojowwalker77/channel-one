@@ -19,6 +19,9 @@ function blank(): ChannelState {
     threadOf: new Map(),
     threadPeople: new Map(),
     scopeSets: new Map(),
+    mode: { coordinatorOnly: false, strict: false },
+    coordinator: null,
+    direct: new Set(),
     head: 1,
   };
 }

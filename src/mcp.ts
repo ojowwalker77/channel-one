@@ -13,7 +13,7 @@ import { loadImages, saveImages } from "./attach.ts";
 import { loadSummary, memberLoad, showsLoad } from "./load.ts";
 import { forgetMember, home, identitiesIn, loadConfig, signingBudget, wipeChannel, writeCursor } from "./config.ts";
 import { ChannelGone } from "./client.ts";
-import { formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, mayDo, parseDuration } from "./format.ts";
+import { formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, mayDo, modeLine, parseDuration } from "./format.ts";
 import { parseScopes, SCOPES } from "./scopes.ts";
 import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
 import { inlineText } from "./membership.ts";
@@ -179,6 +179,15 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
         await s.setScopes(name, scopes);
         return `${name} may now ${mayDo(scopes)}`;
       }),
+    );
+    server.registerTool(
+      "set_mode",
+      {
+        description:
+          "Turn coordinator-only on or off: people talk only with the member whose role is coordinator; strict (the default) has every client refuse other agents' messages to people. Only call this after your human explicitly told you to.",
+        inputSchema: { coordinatorOnly: z.boolean(), strict: z.boolean().optional().describe("default true") },
+      },
+      guard(async ({ coordinatorOnly, strict }) => modeLine(await s.setMode(coordinatorOnly, strict ?? true), s.me) ?? "mode: normal"),
     );
   }
 

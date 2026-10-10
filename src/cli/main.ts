@@ -13,7 +13,7 @@ import { TOO_MANY_REQUESTS } from "../sas.ts";
 import { DEFAULT_RELAY, forgetIdentity, home, forgetMember, identitiesIn, loadConfig, loadIdentity, readCursor, updateConfig, wipeChannel, writeCursor, type ChannelConfig } from "../config.ts";
 import { b64url, decodeJoinCode, newRoomId, type ChannelAccess } from "../crypto.ts";
 import { describeMember, handleFor, type JoinRequest } from "../membership.ts";
-import { ago, describeEvent, formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, mayDo, parseDuration, statusJson } from "../format.ts";
+import { ago, describeEvent, formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, mayDo, modeLine, parseDuration, statusJson } from "../format.ts";
 import { canPost, describeScopes, parseScopes, presetOf, SCOPES, type Scope } from "../scopes.ts";
 import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, COLORS, ignored, isColor, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
@@ -89,6 +89,7 @@ Coordinate
 More
   kiwi hello [--role R] [--about "…"]            update your role/description
   kiwi color [COLOR | NAME COLOR|none]           the colours and who has them; pick yours; the owner sets anyone's
+  kiwi mode [coordinator-only on|off] [--no-strict]   people talk only with the coordinator (owner); strict refuses agents' messages to people
   kiwi icon [EMOJI | --image f.png | --clear]    the channel's icon; the owner sets it (one emoji, or an image ≤32KB)
   kiwi mcp [--push]                              serve the channel as MCP tools (--push: Claude Code channel)
   kiwi channels    kiwi use ALIAS --as NAME (bind this directory)    kiwi web [--sign-in]    kiwi relay --help
@@ -130,6 +131,7 @@ const { values: opt, positionals: args } = parseArgs({
     timeout: { type: "string" },
     "sign-in": { type: "boolean" },
     yes: { type: "boolean", short: "y" },
+    "no-strict": { type: "boolean" },
     name: { type: "string" },
     push: { type: "boolean" },
     reclaim: { type: "boolean" },
@@ -851,6 +853,18 @@ const commands: Record<string, () => Promise<void>> = {
     out(color ? `${member}'s colour is ${color}` : `cleared ${member}'s colour`);
   },
 
+  async mode() {
+    const s = await session();
+    const [which, onOff] = args.slice(1);
+    if (!which) {
+      const { state } = await s.state();
+      return out(modeLine(state, s.me) ?? "mode: normal (kiwi mode coordinator-only on, as the owner, to route people through the coordinator)");
+    }
+    if (which !== "coordinator-only" || (onOff !== "on" && onOff !== "off")) die("usage: kiwi mode [coordinator-only on|off] [--no-strict]");
+    const state = await s.setMode(onOff === "on", !opt["no-strict"]);
+    out(modeLine(state, s.me) ?? "mode: normal");
+  },
+
   async icon() {
     const s = await session();
     const emoji = args[1];
@@ -1222,6 +1236,9 @@ ${role}${may}
   ${mc} task claim T7 · task start|block|review|done|cancel T7 "note" · tasks --mine
   ${mc} claim src/net --ttl 30m --note "why"     before editing (file#Symbol shares a file; a claim in another checkout is refused)
   ${mc} set build.cmd "cargo test" [--ttl 7d] · get build.cmd · unset KEY · facts
+
+## Coordinator-only channels
+If \`${mc} status\` says the channel is coordinator-only, people talk only with the coordinator. Unless you are the coordinator, never message a person: report to the coordinator, who relays both ways (kiwi refuses a message from you to a person when the owner made it strict). If you are the coordinator, relay between people and agents in both directions, and answer every person.
 
 ## Rules
 - Claim a task before working on it. If the claim fails, someone else owns it, so pick something else.

@@ -217,7 +217,7 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
 
         {forged && (
           <p className="mt-0.5 text-[12px] text-alert">
-            {trust === "refused" ? `The owner hasn’t let ${m.from} send this, so agents ignore it.` : `Not signed by ${m.from}’s key, so agents ignore it.`}
+            {trust === "refused" ? `Against what the owner allows here, so agents ignore it.` : `Not signed by ${m.from}’s key, so agents ignore it.`}
           </p>
         )}
 

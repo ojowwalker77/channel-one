@@ -112,8 +112,18 @@ export interface ChannelState {
   threadOf: Map<number, number>;
   /** Who's in each thread (by its root): everyone who wrote in it or was named in it. */
   threadPeople: Map<number, Set<string>>;
+  /** Coordinator-only, as the owner last set it (off unless they turned it on). */
+  mode: { coordinatorOnly: boolean; strict: boolean };
+  /** The member whose role is "coordinator" (at most one), or null. */
+  coordinator: string | null;
+  /** Agents' messages to people in coordinator-only mode, sent directly instead of through the coordinator. */
+  direct: Set<number>;
   head: number;
 }
+
+/** The role that makes a member the channel's coordinator. */
+export const COORDINATOR = "coordinator";
+const isCoordinatorRole = (role: string | undefined) => role?.trim().toLowerCase() === COORDINATOR;
 
 export function taskId(id: number): string {
   return `T${id}`;
@@ -189,6 +199,14 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
     if (m.color && worn.has(m.color)) m.color = undefined;
     else if (m.color) worn.add(m.color);
   }
+  // One coordinator: if records give two members the role, who joined first keeps it.
+  let coordinator: string | null = null;
+  for (const m of [...members.values()].filter((x) => x.active && isCoordinatorRole(x.role)).sort((a, b) => a.joined - b.joined)) {
+    if (coordinator) m.role = undefined;
+    else coordinator = m.name;
+  }
+  let mode = { coordinatorOnly: false, strict: false };
+  const direct = new Set<number>();
   const keysByName = new Map<string, Set<string>>();
   for (const r of roster) {
     let set = keysByName.get(r.name);
@@ -246,6 +264,19 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
         rejected.set(m.seq, `${m.from} ${refused}`);
         continue;
       }
+      // Coordinator-only: an agent other than the coordinator messaging a person. Strict refuses it
+      // (as if never sent); otherwise it stands, flagged as sent directly. No coordinator: normal.
+      if (mode.coordinatorOnly && coordinator && m.kind !== "event" && !isPerson(member) && m.from !== coordinator) {
+        const people = (m.to ?? []).filter((n) => { const p = members.get(n); return !!p && isPerson(p); });
+        if (people.length) {
+          if (mode.strict) {
+            trust.set(m.seq, "refused");
+            rejected.set(m.seq, `only the coordinator (${coordinator}) messages people here`);
+            continue;
+          }
+          direct.add(m.seq);
+        }
+      }
       member.lastSeen = Math.max(member.lastSeen, at);
       member.messages++;
 
@@ -285,6 +316,15 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
           break;
         }
 
+        case "mode.set": {
+          if (!member.owner) {
+            reject("only the owner sets the channel's mode");
+            break;
+          }
+          mode = { coordinatorOnly: ev.coordinatorOnly, strict: ev.coordinatorOnly && ev.strict };
+          break;
+        }
+
         case "role.set":
         case "role.refuse": {
           if (!member.owner) {
@@ -297,6 +337,12 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
             break;
           }
           if (ev.op === "role.set") {
+            // The coordinator role has one holder: giving it to someone moves it.
+            if (isCoordinatorRole(ev.role ?? undefined)) {
+              const was = coordinator && members.get(coordinator);
+              if (was && was !== target) was.role = undefined;
+              coordinator = target.name;
+            } else if (coordinator === target.name) coordinator = null;
             target.role = ev.role || undefined;
             if (ev.about !== undefined) target.about = ev.about || undefined;
           }
@@ -458,6 +504,9 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
     openAsks,
     threadOf,
     threadPeople,
+    mode,
+    coordinator: coordinator && members.get(coordinator)?.active ? coordinator : null,
+    direct,
     head,
   };
 }

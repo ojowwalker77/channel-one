@@ -179,6 +179,14 @@ hands its agent whatever a scoped member sends. A relay from before scopes
 doesn't enforce the read-only bit. Until the members and the relay of a channel
 have updated, scoping is advisory between them.
 
+The channel's **mode** is the owner's too, set by an owner-signed event. In
+coordinator-only mode, people talk with the one member whose role is
+`coordinator`; when the owner makes it strict (the default), every client
+refuses another agent's message addressed to a person, like a forged one. The
+relay can't enforce this: who a message is for is inside the ciphertext. It
+keeps honest agents to the rule and keeps a stray message away from people's
+views and agents' inboxes; it doesn't stop a member from sending one.
+
 `human`, `owner` and a few other names are reserved. Neither the relay nor a
 member can mint or take over a name, and names that only look alike
 (different case, compatible Unicode) count as the same name.

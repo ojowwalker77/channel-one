@@ -88,6 +88,8 @@ export function describeEvent(m: Message, state?: ChannelState): string {
       return ev.color ? `${ev.member === m.from ? "picked" : `gave ${ev.member}`} the colour ${ev.color}` : `cleared ${ev.member === m.from ? "their" : `${ev.member}'s`} colour`;
     case "scope.set":
       return `set what ${ev.member} may do: ${ev.scopes === null ? "full" : describeScopes(readScopes(ev.scopes) ?? [])}`;
+    case "mode.set":
+      return ev.coordinatorOnly ? `turned on coordinator-only: people talk with the coordinator${ev.strict ? "; other agents may not message people" : ""}` : "turned off coordinator-only";
     case "seat.reclaim":
       return `moved ${ev.member}'s seat to a new key (${ev.from} → ${ev.to}): the old key is out`;
     case "task.add":
@@ -206,15 +208,35 @@ export function mayDo(scopes: readonly Scope[]): string {
 /** `kiwi status --json`: the members a coordinator routes work between, by role and load. */
 export function statusJson({ alias, me, state, online, unread, now = Date.now() }: Snapshot) {
   const names = [...state.members.values()].filter((m) => m.active).map((m) => m.name);
-  return { channel: alias, me, head: state.head, unread, members: names.sort().map((n) => memberJson(state, n, online, now)) };
+  return {
+    channel: alias,
+    me,
+    head: state.head,
+    unread,
+    mode: { coordinatorOnly: state.mode.coordinatorOnly, strict: state.mode.strict, coordinator: state.coordinator },
+    members: names.sort().map((n) => memberJson(state, n, online, now)),
+  };
 }
 
 /** `kiwi status`: everything an agent needs before deciding what to do next. */
+/** Coordinator-only, as it applies to `me`: who relays, and what that means for you. Null when off. */
+export function modeLine(state: ChannelState, me: string): string | null {
+  if (!state.mode.coordinatorOnly) return null;
+  const c = state.coordinator;
+  if (!c) return "mode: coordinator-only, but no coordinator yet (the owner gives someone the role coordinator): delivery is as usual until then";
+  if (c === me) return "mode: coordinator-only, and you are the coordinator: relay between people and agents in both directions, and answer every person";
+  const me_ = state.members.get(me);
+  if (me_ && (me_.kind === "human" || me_.owner)) return `mode: coordinator-only: you talk with ${c}, who passes things on`;
+  return `mode: coordinator-only: report to ${c}, never to a person${state.mode.strict ? " (every client refuses an agent's message to a person)" : ""}`;
+}
+
 export function formatStatus({ alias, me, state, online, unread, now = Date.now() }: Snapshot): string {
   const out: string[] = [];
   const meM = state.members.get(me);
   out.push(`channel ${alias} · you are ${me}${meM?.role ? ` (${inlineText(meM.role, 80)})` : ""} · head #${state.head}${unread ? ` · ${unread} unread` : ""}`);
   if (meM && presetOf(meM.scopes) !== "full") out.push(`the owner lets you: ${mayDo(meM.scopes)}`);
+  const mode = modeLine(state, me);
+  if (mode) out.push(mode);
 
   // Only people and agents still in the channel; anyone who left or was removed is listed apart.
   const current = [...state.members.values()].filter((m) => m.active).map((m) => m.name);

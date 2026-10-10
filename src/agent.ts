@@ -307,7 +307,23 @@ export class AgentSession {
 
   async send(body: string, opts: SendOptions = {}): Promise<number> {
     await this.mayI({ kind: opts.kind ?? "msg", ev: opts.ev });
-    return this.ch.send(body, { ...opts, to: await this.resolveTo(opts.to) });
+    const to = await this.resolveTo(opts.to);
+    if (opts.kind !== "event") await this.mayTalkTo(to);
+    return this.ch.send(body, { ...opts, to });
+  }
+
+  /**
+   * Strict coordinator-only: refuse here a message from an agent (not the coordinator) to a person.
+   * Every client would refuse it anyway, so sending it would only leave a dead message in the log.
+   */
+  private async mayTalkTo(to: string[] | undefined): Promise<void> {
+    if (!to?.length) return;
+    const { state } = await this.state();
+    const me = state.members.get(this.me);
+    const { coordinatorOnly, strict } = state.mode;
+    if (!coordinatorOnly || !strict || !state.coordinator || !me || me.kind === "human" || me.owner || this.me === state.coordinator) return;
+    const people = to.filter((n) => { const p = state.members.get(n); return !!p && (p.kind === "human" || p.owner); });
+    if (people.length) throw new Rejected(`this channel is coordinator-only: only ${state.coordinator} messages people. Send it to ${state.coordinator}, who passes it on.`);
   }
 
   /**
@@ -369,6 +385,7 @@ export class AgentSession {
     if (!orig) throw new Rejected(`no message #${seq}`);
     const to = orig.from === this.me ? orig.to : [orig.from];
     await this.mayI({ kind });
+    await this.mayTalkTo(to);
     return this.ch.send(body, { to, kind, re: [seq], imgs });
   }
 
@@ -417,6 +434,17 @@ export class AgentSession {
       this.postingChecked = false;
     });
     return after;
+  }
+
+  /**
+   * Owner: coordinator-only on or off. On, people talk only with the member whose role is
+   * coordinator; strict (the default) has every client refuse other agents' messages to people.
+   */
+  async setMode(coordinatorOnly: boolean, strict = true): Promise<ChannelState> {
+    if (!this.ownerCh) throw new Rejected("only the channel owner's machine sets the channel's mode");
+    const ev: Event = { op: "mode.set", coordinatorOnly, strict: coordinatorOnly && strict };
+    const body = coordinatorOnly ? `coordinator-only on${ev.strict ? " (strict)" : ""}` : "coordinator-only off";
+    return this.confirm(await this.ownerCh.send(body, { kind: "event", ev }));
   }
 
   /**
@@ -553,11 +581,17 @@ export function wants(me: string, m: Message, state: ChannelState | null, d: Del
   if (d.thread !== undefined) return m.kind !== "event" && (state?.threadOf.get(m.seq) ?? m.seq) === (state?.threadOf.get(d.thread) ?? d.thread);
   const role = state?.members.get(me)?.role;
   const addressed = isDirectedAt(m, me) || !!m.to?.includes("*") || (!!role && !!m.to?.includes(`role:${role}`));
-  if (m.kind === "event") return addressed || m.ev?.op === "hello";
+  // Everyone hears when the channel's mode changes: it changes who they may talk to.
+  if (m.kind === "event") return addressed || m.ev?.op === "hello" || m.ev?.op === "mode.set";
   if (d.chat) return true;
+  // Coordinator-only (with a coordinator in place): what people say goes to the coordinator, who
+  // relays it. Another agent gets a person's message only if it's addressed to that agent by name.
+  const sender = state?.members.get(m.from);
+  if (state?.mode.coordinatorOnly && state.coordinator && sender && (sender.kind === "human" || sender.owner)) {
+    return me === state.coordinator || isDirectedAt(m, me);
+  }
   const asking = isForAgent(m, me) && (m.kind === "ask" || m.kind === "blocking");
   if (d.forMe) return addressed || asking;
-  const sender = state?.members.get(m.from);
   const fromPerson = !m.to?.length && (sender?.kind === "human" || !!sender?.owner);
   const inMyThread = !!state?.threadPeople.get(state.threadOf.get(m.seq) ?? m.seq)?.has(me);
   return addressed || asking || fromPerson || inMyThread;
