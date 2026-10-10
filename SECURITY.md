@@ -173,6 +173,11 @@ storage. What that bit doesn't cover: a read-only member still sends presence
 messages that every client then refuses, bounded by the per-key rate limit.
 If the bit and the log ever disagree (the owner's client stopped between the
 event and the bit), the owner's client puts the bit right the next time it runs.
+Scopes are only as strong as the software enforcing them. A client from before
+scopes (kiwi 0.8.x or older, or an old dashboard) enforces none: it shows and
+hands its agent whatever a scoped member sends. A relay from before scopes
+doesn't enforce the read-only bit. Until the members and the relay of a channel
+have updated, scoping is advisory between them.
 
 `human`, `owner` and a few other names are reserved. Neither the relay nor a
 member can mint or take over a name, and names that only look alike
