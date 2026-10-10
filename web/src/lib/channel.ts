@@ -8,6 +8,7 @@ import type { Message, Presence } from "@mc/protocol.ts"
 import type { Signed, SigningBudget } from "@mc/sas.ts"
 import { fold, type ChannelState, type Roster } from "@mc/state.ts"
 import { ICON_LIVE } from "./icon-event"
+import { noteSignInGone } from "./session"
 
 /** How much history to load when the page opens. */
 const HISTORY = 2_000
@@ -269,8 +270,9 @@ export function useChannelList(signedIn: boolean, token: () => Promise<string | 
       try {
         const rows = await myChannels(location.origin, t)
         if (!cancelled) setRemote(rows)
-      } catch {
-        // The relay didn't answer. Keep the last list.
+      } catch (err) {
+        // The relay didn't answer: keep the last list. (Unless the sign-in is gone: then say so.)
+        noteSignInGone(err)
       }
     }
     const soon = () => {
@@ -551,6 +553,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
 
   const onGone = useCallback(
     (err: unknown) => {
+      noteSignInGone(err)
       if (!(err instanceof ChannelGone)) return false
       forgetChannel(member.code)
       setGone(err.why)
