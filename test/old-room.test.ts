@@ -39,3 +39,32 @@ test("a room from before read_only: members and sends work, and the column is ad
   db.close();
   expect(cols).toContain("read_only");
 });
+
+test("a room from before the usage row: its stored bytes are counted once, and a send keeps them right", async () => {
+  let server = startRelay({ port: 0, hostname: "127.0.0.1", dataDir });
+  const owner = await generateIdentity("human");
+  const { access } = await Channel.create(server.url.origin, owner, { name: "human" });
+  await new Channel(access, server.url.origin, owner).send("before");
+  server.stop(true);
+
+  // The previous layout: three counter rows, no usage row.
+  const file = join(dataDir, `${access.roomId}.sqlite`);
+  let db = new Database(file);
+  const before = (db.query("SELECT COALESCE(SUM(LENGTH(ct)), 0) AS n FROM msgs").get() as { n: number }).n;
+  db.run("DELETE FROM meta WHERE k = 'usage'");
+  db.run("INSERT INTO meta (k, v) VALUES ('bytes', ?), ('day', '2026-01-01'), ('day_count', '7')", [String(before)]);
+  db.close();
+
+  server = startRelay({ port: 0, hostname: "127.0.0.1", dataDir });
+  try {
+    expect(await new Channel(access, server.url.origin, owner).send("after")).toBeGreaterThan(0);
+  } finally {
+    server.stop(true);
+  }
+  db = new Database(file);
+  const stored = (db.query("SELECT COALESCE(SUM(LENGTH(ct)), 0) AS n FROM msgs").get() as { n: number }).n;
+  const usage = JSON.parse((db.query("SELECT v FROM meta WHERE k = 'usage'").get() as { v: string }).v) as { bytes: number; n: number };
+  db.close();
+  expect(usage.bytes).toBe(stored);
+  expect(usage.n).toBe(1);
+});

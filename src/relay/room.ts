@@ -139,6 +139,30 @@ const MAX_PENDING = 20;
 const REQUEST_TTL_MS = 60 * 60_000;
 /** What a member the owner lets only read is told when they post anyway. */
 const READ_ONLY = "the owner lets you only read in this channel";
+
+/**
+ * Request columns added after the first rooms existed. Requests know whether they come from an
+ * agent or a human, and which signed-in human vouches for an agent (its sponsor: the person whose
+ * linked computer it joined from).
+ */
+const REQUEST_COLUMNS = [
+  ["kind", "TEXT NOT NULL DEFAULT 'agent'"],
+  ["sponsor_user", "TEXT"],
+  ["sponsor_name", "TEXT"],
+  ["received", "INTEGER"],
+  ["sponsor_req", "TEXT"],
+  // The join check (see sas.ts): the joiner's commit, the owner's signed nonce, the joiner's reveal.
+  ["commit_to", "TEXT"],
+  ["owner_nonce", "TEXT"],
+  ["reveal", "TEXT"],
+] as const;
+
+/** A channel's stored bytes, and how many messages it stored on `day` (UTC). */
+interface Counters {
+  bytes: number;
+  day: string;
+  n: number;
+}
 /** What a client that speaks an old path is told. */
 export const UPDATE_KIWI = "update kiwi to join or approve here: curl -fsSL https://channels.kiwiinit.com/install | sh (Windows: irm https://channels.kiwiinit.com/install.ps1 | iex)";
 
@@ -213,37 +237,23 @@ export class RoomStore {
     this.sql.run("CREATE TABLE msgs (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, iv TEXT NOT NULL, ct TEXT NOT NULL, e INTEGER NOT NULL)");
     // Former members keep their sealed record (so their history still verifies) but lose every key.
     this.sql.run(
-      "CREATE TABLE members (pk TEXT PRIMARY KEY, xpk TEXT NOT NULL, rec TEXT NOT NULL, rec_e INTEGER NOT NULL, since INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1)",
+      "CREATE TABLE members (pk TEXT PRIMARY KEY, xpk TEXT NOT NULL, rec TEXT NOT NULL, rec_e INTEGER NOT NULL, since INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, read_only INTEGER NOT NULL DEFAULT 0)",
     );
     this.sql.run("CREATE TABLE keys (pk TEXT NOT NULL, e INTEGER NOT NULL, wrapped TEXT NOT NULL, PRIMARY KEY (pk, e))");
+    // Every column at once: each ALTER TABLE is a row written, and a new room paid eight of them.
     this.sql.run(
-      "CREATE TABLE requests (id TEXT PRIMARY KEY, pk TEXT NOT NULL UNIQUE, xpk TEXT NOT NULL, box TEXT NOT NULL, sig TEXT NOT NULL, ts INTEGER NOT NULL, status TEXT NOT NULL)",
+      `CREATE TABLE requests (id TEXT PRIMARY KEY, pk TEXT NOT NULL UNIQUE, xpk TEXT NOT NULL, box TEXT NOT NULL, sig TEXT NOT NULL, ts INTEGER NOT NULL, status TEXT NOT NULL, ${REQUEST_COLUMNS.map(([col, def]) => `${col} ${def}`).join(", ")})`,
     );
-    this.migrate();
   }
 
-  /**
-   * Columns added after rooms already existed. Requests know whether they come
-   * from an agent or a human, and which signed-in human vouches for an agent
-   * (its sponsor: the person whose linked computer it joined from).
-   */
+  /** A room from before a column existed gets it added (a new room is created with all of them). */
   private migrate(): void {
     // A key the owner lets only read (member scopes): the one bit of them the relay knows.
     if (!this.sql.all<{ name: string }>("PRAGMA table_info(members)").some((c) => c.name === "read_only")) {
       this.sql.run("ALTER TABLE members ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0");
     }
     const cols = new Set(this.sql.all<{ name: string }>("PRAGMA table_info(requests)").map((c) => c.name));
-    for (const [col, def] of [
-      ["kind", "TEXT NOT NULL DEFAULT 'agent'"],
-      ["sponsor_user", "TEXT"],
-      ["sponsor_name", "TEXT"],
-      ["received", "INTEGER"],
-      ["sponsor_req", "TEXT"],
-      // The join check (see sas.ts): the joiner's commit, the owner's signed nonce, the joiner's reveal.
-      ["commit_to", "TEXT"],
-      ["owner_nonce", "TEXT"],
-      ["reveal", "TEXT"],
-    ] as const) {
+    for (const [col, def] of REQUEST_COLUMNS) {
       if (!cols.has(col)) this.sql.run(`ALTER TABLE requests ADD COLUMN ${col} ${def}`);
     }
   }
@@ -321,23 +331,40 @@ export class RoomStore {
     bytes += ct.length;
     // Prune in batches so retention costs one extra write pass per 100 messages.
     if (seq % 100 === 0) bytes -= this.dropThrough(seq - ROOM_RETENTION);
-    this.set("bytes", bytes);
-    this.set("day", day);
-    this.set("day_count", today + 1);
+    this.setCounters({ bytes, day, n: today + 1 });
     return { seq, ts, iv, ct, e };
   }
 
-  /** Messages stored today (UTC), by the counter in meta: it starts over when the date changes. */
-  messagesToday(now = this.now()): number {
-    return this.get("day") === utcDay(now) ? Number(this.get("day_count") ?? 0) : 0;
+  /**
+   * What the channel holds and has stored today, in one meta row, so a message pays one write for
+   * both counters instead of three. Absent in rooms from before it: bytes are then counted once.
+   */
+  private counters(): Counters | null {
+    const raw = this.get("usage");
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as Counters;
+    } catch {
+      return null;
+    }
   }
 
-  /** Total ciphertext the channel holds, kept in meta (counted once for rooms from before it was). */
+  private setCounters(u: Counters): void {
+    this.set("usage", JSON.stringify(u));
+  }
+
+  /** Messages stored today (UTC): the counter starts over when the date changes. */
+  messagesToday(now = this.now()): number {
+    const u = this.counters();
+    return u?.day === utcDay(now) ? u.n : 0;
+  }
+
+  /** Total ciphertext the channel holds. */
   storedBytes(): number {
-    const known = this.get("bytes");
-    if (known !== undefined) return Number(known);
+    const u = this.counters();
+    if (u) return u.bytes;
     const total = this.sql.all<{ n: number }>("SELECT COALESCE(SUM(LENGTH(ct)), 0) AS n FROM msgs")[0]?.n ?? 0;
-    this.set("bytes", total);
+    this.setCounters({ bytes: total, day: "", n: 0 });
     return total;
   }
 
