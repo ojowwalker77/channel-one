@@ -14,8 +14,10 @@ import { verifyRequest } from "../auth.ts";
 import { verify, verifyText } from "../identity.ts";
 import { MACHINE_SCOPE, machineCode, vouchStatement } from "../vouch.ts";
 import { inlineText } from "../membership.ts";
-import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
-import { HttpError } from "./room.ts";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import { attempt, describeRoutes, json, refuse, Request_, servePerson, SignIn, signedInPerson, type Refused, type Route } from "./http.ts";
+import type { HumanAuth } from "./human.ts";
 import { fits, SignedByMachine } from "./schema.ts";
 
 /** A computer as the relay knows it: its public key, the label its person sees, and whose it is. */
@@ -298,91 +300,178 @@ export async function vouchedBy(store: MachineStore, roomId: string, agentPk: st
   return rec.user;
 }
 
-/** Routes under /v1/machines and /v1/me/machines; null when the path isn't one of them. */
-export async function onMachineHttp(req: Request, store: MachineStore, human: HumanAuth | null, gate?: RegistrationGate | null): Promise<Response | null> {
-  const url = new URL(req.url);
-  const path = url.pathname;
-  const method = req.method.toUpperCase();
-  if (!path.startsWith("/v1/machines") && !path.startsWith("/v1/me/machines")) return null;
-  if (!human) throw new HttpError(404, "this relay has no sign-in, so computers can't be linked");
-  const body = method === "GET" || method === "DELETE" ? "" : await req.text();
-  const person = async () => {
-    const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
-    if (!user) throw new HttpError(401, "sign in first", "SignInRequired");
-    return user;
-  };
-  const signedBy = async (pk: string) => {
-    const who = await verifyRequest((req.headers.get("authorization") ?? "").replace(/^Bearer /, ""), MACHINE_SCOPE, method, path, body);
-    if (who !== pk) throw new HttpError(401, "not signed by this computer's key");
-  };
+// ---------- the routes ----------
 
-  // A computer asks to be linked: it proves it holds its key, and names itself.
-  if (path === "/v1/machines" && method === "POST") {
-    let b: { pk?: unknown; label?: unknown; ts?: unknown; sig?: unknown };
-    try {
-      b = JSON.parse(body);
-    } catch {
-      throw new HttpError(400, "bad json");
-    }
-    if (!fits(SignedByMachine, b) || !(await verify(b))) throw new HttpError(400, "bad signature");
-    if (Math.abs(Date.now() - b.ts) > 5 * 60_000) throw new HttpError(400, "clock is off by more than 5 minutes");
-    const prior = await current(store, b.pk);
-    if (prior?.user) return Response.json({ status: "linked" });
-    if (gate && !(await gate.allow(gate.ip))) throw new HttpError(429, "too many computer registrations; try again in a few minutes");
-    await store.put({ pk: b.pk, label: inlineText(b.label, 60) || "A computer", user: null, created: prior?.created ?? Date.now() });
-    return Response.json({ status: "pending", code: await machineCode(b.pk) });
-  }
+class Computers extends Context.Service<Computers, MachineStore>()("kiwi/relay/Computers") {}
+/** Whether this address may register another computer (null: not limited here). */
+class Registrations extends Context.Service<Registrations, RegistrationGate | null>()("kiwi/relay/Registrations") {}
 
-  const one = /^\/v1\/machines\/([A-Za-z0-9_-]{20,})(\/public|\/confirm)?$/.exec(path);
-  if (one) {
-    const pk = one[1]!;
-    const rec = await current(store, pk);
-    const fresh = rec && (rec.user || Date.now() - rec.created < LINK_TTL_MS);
+/**
+ * The checks: a computer registering proves it holds its key by signing its
+ * request ("selfSigned"); a computer checking or dropping its link signs with
+ * that key ("computer"); its person confirms or lists while signed in
+ * ("person"); the confirm page shows a pending link's label and code to whoever
+ * has the link ("public": nothing secret). All of them need this relay to have sign-in.
+ */
+type MachineGuard = "public" | "selfSigned" | "computer" | "person";
+interface Who {
+  user: string | null;
+  registering: { pk: string; label: unknown; ts: number } | null;
+}
+type MachineRoute = Route<MachineGuard, Who, never, Computers | Registrations | SignIn | Request_>;
+
+const NO_SIGN_IN = "this relay has no sign-in, so computers can't be linked";
+
+const hasSignIn = Effect.gen(function* () {
+  const { human } = yield* SignIn;
+  if (!human) return yield* refuse(404, NO_SIGN_IN);
+  return human;
+});
+
+const nobody: Who = { user: null, registering: null };
+
+const guards: Record<MachineGuard, Effect.Effect<Who, Refused, SignIn | Request_>> = {
+  public: Effect.map(hasSignIn, () => nobody),
+  selfSigned: Effect.gen(function* () {
+    yield* hasSignIn;
+    const b = yield* json<{ pk?: unknown; label?: unknown; ts?: unknown; sig?: unknown }>();
+    if (!fits(SignedByMachine, b) || !(yield* Effect.promise(() => verify(b)))) return yield* refuse(400, "bad signature");
+    if (Math.abs(Date.now() - b.ts) > 5 * 60_000) return yield* refuse(400, "clock is off by more than 5 minutes");
+    return { ...nobody, registering: { pk: b.pk, label: b.label, ts: b.ts } };
+  }),
+  computer: Effect.gen(function* () {
+    yield* hasSignIn;
+    const { req, method, path, body } = yield* Request_;
+    const pk = /^\/v1\/machines\/([A-Za-z0-9_-]{20,})$/.exec(path)?.[1];
+    const who = yield* Effect.promise(() => verifyRequest((req.headers.get("authorization") ?? "").replace(/^Bearer /, ""), MACHINE_SCOPE, method, path, body));
+    if (!pk || who !== pk) return yield* refuse(401, "not signed by this computer's key");
+    return nobody;
+  }),
+  person: Effect.map(signedInPerson(NO_SIGN_IN), (user) => ({ ...nobody, user })),
+};
+
+const PK = "([A-Za-z0-9_-]{20,})";
+
+/** A computer's record, and whether its link is still good (linked, or pending and not expired). */
+const linkOf = (pk: string) =>
+  Effect.gen(function* () {
+    const store = yield* Computers;
+    const rec = yield* attempt(() => current(store, pk));
+    return { rec, fresh: !!rec && (!!rec.user || Date.now() - rec.created < LINK_TTL_MS) };
+  });
+
+const routes: MachineRoute[] = [
+  {
+    // A computer asks to be linked: it proves it holds its key, and names itself.
+    method: "POST",
+    path: "/v1/machines",
+    guard: "selfSigned",
+    run: ({ registering }) =>
+      Effect.gen(function* () {
+        const store = yield* Computers;
+        const b = registering!;
+        const prior = yield* attempt(() => current(store, b.pk));
+        if (prior?.user) return { data: { status: "linked" } };
+        const gate = yield* Registrations;
+        if (gate && !(yield* Effect.promise(async () => gate.allow(gate.ip)))) return yield* refuse(429, "too many computer registrations; try again in a few minutes");
+        yield* attempt(() => store.put({ pk: b.pk, label: inlineText(b.label, 60) || "A computer", user: null, created: prior?.created ?? Date.now() }));
+        return { data: { status: "pending", code: yield* Effect.promise(() => machineCode(b.pk)) } };
+      }),
+  },
+  {
     // What the confirm page shows. Nothing secret: the label the computer gave itself.
-    if (one[2] === "/public" && method === "GET") {
-      if (!fresh) throw new HttpError(404, "this link expired; run kiwi setup again");
-      return Response.json({ label: rec!.label, status: rec!.user ? "linked" : "pending", code: await machineCode(pk), created: rec!.created });
-    }
+    method: "GET",
+    path: new RegExp(`^/v1/machines/${PK}/public$`),
+    guard: "public",
+    run: (_, m) =>
+      Effect.gen(function* () {
+        const { rec, fresh } = yield* linkOf(m[1]!);
+        if (!fresh) return yield* refuse(404, "this link expired; run kiwi setup again");
+        return { data: { label: rec!.label, status: rec!.user ? "linked" : "pending", code: yield* Effect.promise(() => machineCode(m[1]!)), created: rec!.created } };
+      }),
+  },
+  {
     // The person confirms: this computer is mine.
-    if (one[2] === "/confirm" && method === "POST") {
-      const user = await person();
-      if (!fresh) throw new HttpError(404, "this link expired; run kiwi setup again");
-      if (rec!.user && rec!.user !== user) throw new HttpError(409, "this computer is already linked to someone else");
-      await store.put({ ...rec!, user, linked: Date.now() });
-      return Response.json({ status: "linked", label: rec!.label });
-    }
-    // The computer checks on its link, or unlinks itself.
-    if (!one[2] && method === "GET") {
-      await signedBy(pk);
-      if (!fresh) return Response.json({ status: "expired" });
-      if (rec!.user) await markUsed(store, rec!);
-      const name = rec!.user ? ((await human.profile?.(rec!.user).catch(() => null))?.name ?? null) : null;
-      return Response.json({ status: rec!.user ? "linked" : "pending", name });
-    }
-    if (!one[2] && method === "DELETE") {
-      await signedBy(pk);
-      if (rec) await store.remove(rec);
-      return Response.json({ removed: true });
-    }
-  }
+    method: "POST",
+    path: new RegExp(`^/v1/machines/${PK}/confirm$`),
+    guard: "person",
+    run: ({ user }, m) =>
+      Effect.gen(function* () {
+        const store = yield* Computers;
+        const { rec, fresh } = yield* linkOf(m[1]!);
+        if (!fresh) return yield* refuse(404, "this link expired; run kiwi setup again");
+        if (rec!.user && rec!.user !== user) return yield* refuse(409, "this computer is already linked to someone else");
+        yield* attempt(() => store.put({ ...rec!, user: user!, linked: Date.now() }));
+        return { data: { status: "linked", label: rec!.label } };
+      }),
+  },
+  {
+    // The computer checks on its link.
+    method: "GET",
+    path: new RegExp(`^/v1/machines/${PK}$`),
+    guard: "computer",
+    run: (_, m) =>
+      Effect.gen(function* () {
+        const store = yield* Computers;
+        const { human } = yield* SignIn;
+        const { rec, fresh } = yield* linkOf(m[1]!);
+        if (!fresh) return { data: { status: "expired" } };
+        if (rec!.user) yield* attempt(() => markUsed(store, rec!));
+        const name = rec!.user ? ((yield* Effect.promise(async () => (await human?.profile?.(rec!.user!).catch(() => null))?.name ?? null)) ?? null) : null;
+        return { data: { status: rec!.user ? "linked" : "pending", name } };
+      }),
+  },
+  {
+    // Or unlinks itself.
+    method: "DELETE",
+    path: new RegExp(`^/v1/machines/${PK}$`),
+    guard: "computer",
+    run: (_, m) =>
+      Effect.gen(function* () {
+        const store = yield* Computers;
+        const { rec } = yield* linkOf(m[1]!);
+        if (rec) yield* attempt(() => store.remove(rec));
+        return { data: { removed: true } };
+      }),
+  },
+  {
+    // A person's computers. The list holds labels only; each computer's own record knows when it was last used.
+    method: "GET",
+    path: "/v1/me/machines",
+    guard: "person",
+    run: ({ user }) =>
+      Effect.gen(function* () {
+        const store = yield* Computers;
+        const records = yield* attempt(async () => Promise.all((await store.listFor(user!)).map((m) => current(store, m.pk))));
+        const machines = records
+          .filter((r): r is MachineRecord => r?.user === user)
+          .map((r) => ({ pk: r.pk, label: r.label, linked: r.linked ?? r.created, used: r.used ?? null, expires: lastUsed(r) + UNUSED_LINK_TTL_MS }));
+        return { data: { machines } };
+      }),
+  },
+  {
+    // Removing one from the web.
+    method: "DELETE",
+    path: new RegExp(`^/v1/me/machines/${PK}$`),
+    guard: "person",
+    run: ({ user }, m) =>
+      Effect.gen(function* () {
+        const store = yield* Computers;
+        const rec = yield* attempt(() => store.get(m[1]!));
+        if (!rec || rec.user !== user) return yield* refuse(404, "not one of your computers");
+        yield* attempt(() => store.remove(rec));
+        return { data: { removed: true } };
+      }),
+  },
+];
 
-  // A person's computers, and removing one from the web.
-  if (path === "/v1/me/machines" && method === "GET") {
-    // The list holds labels only; each computer's own record knows when it was last used (a person has a handful).
-    const user = await person();
-    const records = await Promise.all((await store.listFor(user)).map((m) => current(store, m.pk)));
-    const machines = records
-      .filter((r): r is MachineRecord => r?.user === user)
-      .map((r) => ({ pk: r.pk, label: r.label, linked: r.linked ?? r.created, used: r.used ?? null, expires: lastUsed(r) + UNUSED_LINK_TTL_MS }));
-    return Response.json({ machines });
-  }
-  const mine = /^\/v1\/me\/machines\/([A-Za-z0-9_-]{20,})$/.exec(path);
-  if (mine && method === "DELETE") {
-    const user = await person();
-    const rec = await store.get(mine[1]!);
-    if (!rec || rec.user !== user) throw new HttpError(404, "not one of your computers");
-    await store.remove(rec);
-    return Response.json({ removed: true });
-  }
-  throw new HttpError(404, "not found");
+/** The computer-link rows, for the route-table test. */
+export const machineRouteTable = describeRoutes(routes);
+
+/** Routes under /v1/machines and /v1/me/machines; null when the path isn't one of them. */
+export async function onMachineHttp(req: Request, store: MachineStore, human: HumanAuth | null, gate: RegistrationGate | null = null): Promise<Response | null> {
+  const path = new URL(req.url).pathname;
+  if (!path.startsWith("/v1/machines") && !path.startsWith("/v1/me/machines")) return null;
+  const otherwise = Effect.flatMap(hasSignIn, () => refuse(404, "not found"));
+  return servePerson(req, routes, guards, otherwise, (e) => e.pipe(Effect.provideService(Computers, store), Effect.provideService(Registrations, gate)), { human, now: Date.now() });
 }

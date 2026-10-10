@@ -167,7 +167,7 @@ describe("relay", () => {
     expect(await (await at("GET", undefined, 1000 + VAULT_RESET_MS + 1))!.json()).not.toHaveProperty("resetAt");
     // Nobody cancels: after a day the vault is gone, and a new one can start.
     await at("DELETE", { reset: true }, 4000);
-    await expect(at("GET", undefined, 4000 + VAULT_RESET_MS)).rejects.toMatchObject({ status: 404 });
+    expect((await at("GET", undefined, 4000 + VAULT_RESET_MS))!.status).toBe(404);
     const fresh = await writerKey();
     const first = await sign({ name: "w", ...fresh }, { user: "erin", expected: 0, hash: await blobHash("new"), writer: fresh.pk });
     expect((await at("PUT", { version: 0, blob: "new", auth: first, writer: fresh.pk }, 5000 + VAULT_RESET_MS))!.status).toBe(200);

@@ -15,7 +15,10 @@
 
 import { sha256Hex } from "../auth.ts";
 import { canonical, verify } from "../identity.ts";
-import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import { attempt, describeRoutes, json, refuse, Request_, servePerson, SignIn, signedInPerson, type Refused, type Route } from "./http.ts";
+import type { HumanAuth } from "./human.ts";
 import { HttpError } from "./room.ts";
 import { fits, Present, VaultVersion } from "./schema.ts";
 
@@ -68,14 +71,6 @@ export interface VaultAuth {
 /** What a writer signs for a blob: its SHA-256, hex. */
 export const blobHash = sha256Hex;
 
-async function body(req: Request): Promise<Record<string, unknown>> {
-  try {
-    const b = (await req.json()) as unknown;
-    if (b && typeof b === "object") return b as Record<string, unknown>;
-  } catch {}
-  throw new HttpError(400, "bad json");
-}
-
 function version(v: unknown): number {
   if (!fits(VaultVersion, v)) throw new HttpError(400, "version must be the vault version you read (0 for a new vault)");
   return v;
@@ -107,61 +102,106 @@ function conflict(current: VaultRecord | null): Response {
   );
 }
 
+// ---------- the routes ----------
+
+/** The person's vault store. */
+class Vaults extends Context.Service<Vaults, VaultStore>()("kiwi/relay/Vaults") {}
+
+type VaultGuard = "person";
+type VaultRoute = Route<VaultGuard, string, never, Vaults | SignIn | Request_>;
+
+/** The body as an object, or the 400 the vault has always sent. */
+const vaultBody = Effect.gen(function* () {
+  const b = yield* json<unknown>();
+  if (b && typeof b === "object") return b as Record<string, unknown>;
+  return yield* refuse(400, "bad json");
+});
+
+const PATH = "/v1/me/vault";
+
+const routes: VaultRoute[] = [
+  {
+    method: "GET",
+    path: PATH,
+    guard: "person",
+    run: (user) =>
+      Effect.gen(function* () {
+        const store = yield* Vaults;
+        const { now } = yield* SignIn;
+        const rec = yield* attempt(() => live(store, user, now));
+        if (!rec) return yield* refuse(404, "no vault yet");
+        return { data: { version: rec.version, blob: rec.blob, updated: rec.updated, ...(rec.resetAt ? { resetAt: rec.resetAt } : {}) } };
+      }),
+  },
+  {
+    method: "PUT",
+    path: PATH,
+    guard: "person", // and, inside, the vault writer's signature over exactly this save
+    run: (user) =>
+      Effect.gen(function* () {
+        const store = yield* Vaults;
+        const { now } = yield* SignIn;
+        const b = yield* vaultBody;
+        const expected = yield* attempt(() => version(b.version));
+        if (!fits(Present, b.blob)) return yield* refuse(400, "missing blob");
+        if (b.blob.length > MAX_VAULT) return yield* refuse(413, "the vault is larger than 1MB");
+        if (b.writer !== undefined && !fits(Present, b.writer)) return yield* refuse(400, "bad writer");
+        const handover = b.writer as string | undefined;
+        const current = yield* attempt(() => live(store, user, now));
+        // A stale version is a conflict, whoever signed it: a second setup on a vault that already
+        // exists must hear "it exists" (409) and go unlock it, not a signature error. The version
+        // is no secret (GET shows it) and nothing changes here.
+        if ((current?.version ?? 0) !== expected) return { res: conflict(current) };
+        // The first save names its writer and signs with it; every later one is signed by the current writer.
+        if (!current && !handover) return yield* refuse(400, "a new vault names its writer key");
+        const signer = current?.writer ?? handover!;
+        const blob = b.blob;
+        yield* attempt(async () => authorize(b.auth, { user, expected, hash: await blobHash(blob), ...(handover ? { writer: handover } : {}) }, signer));
+        const recent = (current?.recent ?? []).filter((t) => now - t < VAULT_WINDOW_MS);
+        if (recent.length >= VAULT_WRITES) return yield* refuse(429, "too many vault saves; try again in a few minutes");
+        // A signed save is proof a device still holds the vault: it cancels any pending reset.
+        const rec: VaultRecord = { version: expected + 1, blob, updated: now, writer: handover ?? signer, recent: [...recent, now] };
+        const r = yield* attempt(() => store.put(user, expected, rec));
+        if (!r.ok) return { res: conflict(r.current) };
+        return { data: { version: rec.version } };
+      }),
+  },
+  {
+    method: "DELETE",
+    path: PATH,
+    guard: "person", // and the writer's signature, or a reset that waits a day
+    run: (user) =>
+      Effect.gen(function* () {
+        const store = yield* Vaults;
+        const { now } = yield* SignIn;
+        const b = yield* vaultBody;
+        const current = yield* attempt(() => live(store, user, now));
+        if (!current) return yield* refuse(404, "no vault yet");
+        if (b.reset === true) {
+          // No writer key: lost every passkey and the recovery code. Wait, so the person's devices can see it and cancel.
+          const resetAt = current.resetAt ?? now + VAULT_RESET_MS;
+          if (!current.resetAt && !(yield* attempt(() => store.put(user, current.version, { ...current, resetAt }))).ok) return yield* refuse(409, "the vault changed; try again");
+          return { data: { resetAt } };
+        }
+        const expected = yield* attempt(() => version(b.version));
+        yield* attempt(() => authorize(b.auth, { user, expected, op: "delete" }, current.writer));
+        if (!(yield* attempt(() => store.remove(user, expected)))) {
+          return { res: Response.json({ error: "the vault changed since you read it", tag: "VaultConflict", version: current.version }, { status: 409 }) };
+        }
+        return { data: { removed: true } };
+      }),
+  },
+];
+
+const guards: Record<VaultGuard, Effect.Effect<string, Refused, SignIn | Request_>> = { person: signedInPerson("this relay has no sign-in") };
+
+/** The vault's rows, for the route-table test. */
+export const vaultRouteTable = describeRoutes(routes);
+
 /** Routes under /v1/me/vault; null when the path isn't one of them. */
 export async function onVaultHttp(req: Request, store: VaultStore, human: HumanAuth | null, now = Date.now()): Promise<Response | null> {
-  const path = new URL(req.url).pathname;
-  if (path !== "/v1/me/vault") return null;
-  if (!human) throw new HttpError(404, "this relay has no sign-in");
-  const user = await human.verify(req.headers.get(HUMAN_HEADER) ?? "");
-  if (!user) throw new HttpError(401, "sign in first", "SignInRequired");
-  const method = req.method.toUpperCase();
-
-  if (method === "GET") {
-    const rec = await live(store, user, now);
-    if (!rec) throw new HttpError(404, "no vault yet");
-    return Response.json({ version: rec.version, blob: rec.blob, updated: rec.updated, ...(rec.resetAt ? { resetAt: rec.resetAt } : {}) });
-  }
-
-  if (method === "PUT") {
-    const b = await body(req);
-    const expected = version(b.version);
-    if (!fits(Present, b.blob)) throw new HttpError(400, "missing blob");
-    if (b.blob.length > MAX_VAULT) throw new HttpError(413, "the vault is larger than 1MB");
-    if (b.writer !== undefined && !fits(Present, b.writer)) throw new HttpError(400, "bad writer");
-    const handover = b.writer as string | undefined;
-    const current = await live(store, user, now);
-    // A stale version is a conflict, whoever signed it: a second setup on a vault that already
-    // exists must hear "it exists" (409) and go unlock it, not a signature error. The version
-    // is no secret (GET shows it) and nothing changes here.
-    if ((current?.version ?? 0) !== expected) return conflict(current);
-    // The first save names its writer and signs with it; every later one is signed by the current writer.
-    if (!current && !handover) throw new HttpError(400, "a new vault names its writer key");
-    const signer = current?.writer ?? handover!;
-    await authorize(b.auth, { user, expected, hash: await blobHash(b.blob), ...(handover ? { writer: handover } : {}) }, signer);
-    const recent = (current?.recent ?? []).filter((t) => now - t < VAULT_WINDOW_MS);
-    if (recent.length >= VAULT_WRITES) throw new HttpError(429, "too many vault saves; try again in a few minutes");
-    // A signed save is proof a device still holds the vault: it cancels any pending reset.
-    const rec: VaultRecord = { version: expected + 1, blob: b.blob, updated: now, writer: handover ?? signer, recent: [...recent, now] };
-    const r = await store.put(user, expected, rec);
-    if (!r.ok) return conflict(r.current);
-    return Response.json({ version: rec.version });
-  }
-
-  if (method === "DELETE") {
-    const b = await body(req);
-    const current = await live(store, user, now);
-    if (!current) throw new HttpError(404, "no vault yet");
-    if (b.reset === true) {
-      // No writer key: lost every passkey and the recovery code. Wait, so the person's devices can see it and cancel.
-      const resetAt = current.resetAt ?? now + VAULT_RESET_MS;
-      if (!current.resetAt && !(await store.put(user, current.version, { ...current, resetAt })).ok) throw new HttpError(409, "the vault changed; try again");
-      return Response.json({ resetAt });
-    }
-    const expected = version(b.version);
-    await authorize(b.auth, { user, expected, op: "delete" }, current.writer);
-    if (!(await store.remove(user, expected))) return Response.json({ error: "the vault changed since you read it", tag: "VaultConflict", version: current.version }, { status: 409 });
-    return Response.json({ removed: true });
-  }
-
-  throw new HttpError(405, "use GET, PUT or DELETE");
+  if (new URL(req.url).pathname !== PATH) return null;
+  // Another method: sign-in first, as always, then the 405.
+  const otherwise = Effect.flatMap(guards.person, () => refuse(405, "use GET, PUT or DELETE"));
+  return servePerson(req, routes, guards, otherwise, (e) => Effect.provideService(e, Vaults, store), { human, now });
 }

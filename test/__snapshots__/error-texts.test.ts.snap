@@ -74,6 +74,7 @@ exports[`the relay's error texts are exactly these 1`] = `
   "413 too much to hand over at once",
   "426 <UPDATE_KIWI>",
   "426 expected websocket",
+  "426 update kiwi to join or approve here: curl -fsSL https://channels.kiwiinit.com/install | sh (Windows: irm https://channels.kiwiinit.com/install.ps1 | iex)",
   "429 this channel has \${most} members, the most this relay allows; remove someone to let another in",
   "429 this channel has stored \${perDay} messages today, its daily limit; more can be sent after 00:00 UTC (in \${untilUtcMidnight(ts)})",
   "429 too many computer registrations; try again in a few minutes",

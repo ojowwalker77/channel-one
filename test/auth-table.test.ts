@@ -129,6 +129,10 @@ describe("routes with their own checks", () => {
     };
     expect(refused(await create({}))).toBe(true);
     expect(refused(await create({ as: stranger }))).toBe(true);
+    // A good signature but no session, or a session but no signature: still no.
+    const someone = await generateIdentity("new-owner");
+    expect(refused(await create({ as: someone }))).toBe(true);
+    expect(await create({ human: "dev:alice" })).not.toBe(200);
   });
 
   test("POST /requests needs a session or a linked computer's vouch on a sign-in relay", async () => {
@@ -212,5 +216,24 @@ describe("the live stream (WebSocket)", () => {
     await ownerCh.remove(bye.pk);
     expect(await closed).toBe(CLOSE_REMOVED);
     expect((await connect(bye)).opened).not.toBe("open");
+  });
+});
+
+describe("a computer's own routes need its key", () => {
+  test("checking or dropping a link: unsigned, or signed by another key, is refused", async () => {
+    const m = await newMachine(relay);
+    await registerMachine(m);
+    const other = await newMachine(relay);
+    for (const method of ["GET", "DELETE"]) {
+      const path = `/v1/machines/${m.identity.pk}`;
+      expect(refused((await fetch(`${relay}${path}`, { method })).status)).toBe(true);
+      const token = await signRequest(other.identity, "kiwi-machines", method, path, "");
+      expect(refused((await fetch(`${relay}${path}`, { method, headers: { authorization: `Bearer ${token}` } })).status)).toBe(true);
+    }
+  });
+
+  test("registering needs a body the computer signed", async () => {
+    const res = await fetch(`${relay}/v1/machines`, { method: "POST", body: JSON.stringify({ pk: "x".repeat(43), ts: Date.now(), sig: "nope" }) });
+    expect(res.status).toBe(400);
   });
 });

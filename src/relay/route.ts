@@ -9,18 +9,16 @@
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import { verifyRequest } from "../auth.ts";
 import { ownerFingerprint } from "../crypto.ts";
-import { tagForStatus, type ErrorTag } from "../errors.ts";
 import { PAGE_LIMIT } from "../protocol.ts";
+import { answer, attempt, describeRoutes, dispatch, incoming, json, refuse, Request_, type Refused, type Route } from "./http.ts";
 import { HUMAN_HEADER, type HumanAuth } from "./human.ts";
 import { betaMessage, inBeta, OPEN_POLICY, type RelayPolicy } from "./policy.ts";
 import {
   allow,
   frame,
   errorResponse,
-  HttpError,
   MESSAGES_PER_MINUTE,
   msgFrame,
   requestToken,
@@ -32,24 +30,6 @@ import {
   type RequestBody,
   type RoomStore,
 } from "./room.ts";
-
-// ---------- what a request can fail with ----------
-
-/** A refusal, with the status, text and tag the client gets. */
-export class Refused extends Schema.TaggedError<Refused>()("Refused", {
-  status: Schema.Number,
-  message: Schema.String,
-  tag: Schema.String,
-}) {}
-
-export const refuse = (status: number, message: string, tag?: ErrorTag) => Effect.fail(new Refused({ status, message, tag: tag ?? tagForStatus(status) }));
-
-/** Run room logic that throws HttpError (RoomStore's methods are plain): its refusals become Refused; anything else is a defect (a 500). */
-const attempt = <A>(f: () => A | Promise<A>): Effect.Effect<A, Refused> =>
-  Effect.tryPromise({
-    try: async () => f(),
-    catch: (err) => (err instanceof HttpError ? new Refused({ status: err.status, message: err.message, tag: err.tag }) : (err as Refused)),
-  }).pipe(Effect.catch((e) => (e instanceof Refused ? Effect.fail(e) : Effect.die(e))));
 
 // ---------- services ----------
 
@@ -67,26 +47,23 @@ export interface RelayContext {
 }
 export class Relay extends Context.Service<Relay, Required<RelayContext>>()("kiwi/relay/Relay") {}
 
-/** The request, read once. */
-interface Incoming {
-  req: Request;
-  url: URL;
-  method: string;
-  path: string;
-  body: string;
-}
-export class Request_ extends Context.Service<Request_, Incoming>()("kiwi/relay/Request") {}
-
 // ---------- the checks a route can ask for ----------
 
-type Guard = "public" | "requester" | "member" | "owner";
+/**
+ * The checks. Only GET /info is public; every other row names one of these, so
+ * test/route-table.test.ts and the auth table can see what each route needs.
+ */
+type Guard = "public" | "creator" | "joiner" | "ownerPerson" | "requester" | "member" | "owner";
 
-/** The request body as JSON, or the 400 every route has always sent. */
-const json = <T>() =>
-  Effect.gen(function* () {
-    const { body } = yield* Request_;
-    return yield* Effect.try({ try: () => JSON.parse(body) as T, catch: () => new Refused({ status: 400, message: "bad json", tag: "BadRequest" }) });
-  });
+/** Who a check found: the key that signed, the signed-in person, the vouching person. */
+interface Who {
+  me: string;
+  signer: string | null;
+  user: string | null;
+  person: { user: string; name: string } | null;
+  vouchUser: string | null;
+}
+const nobody: Who = { me: "", signer: null, user: null, person: null, vouchUser: null };
 
 /** The signed-in person behind this request, when the relay requires sign-in. */
 const signedIn = Effect.gen(function* () {
@@ -144,23 +121,48 @@ const owner = Effect.gen(function* () {
   return me;
 });
 
-const guards: Record<Guard, Effect.Effect<string | null, Refused, Room | Relay | Request_>> = {
-  public: Effect.succeed(null),
-  requester,
-  member,
-  owner,
+/** Creating a channel: the creator's signature (the room checks it is the owner key's) and, on sign-in relays, a session. */
+const creator = Effect.gen(function* () {
+  const store = yield* Room;
+  const { req, method, path, url, body } = yield* Request_;
+  const signer = yield* Effect.promise(() => verifyRequest(requestToken(req), store.roomId, method, path + url.search, body));
+  const user = yield* signedIn;
+  return { ...nobody, signer, user };
+});
+
+/** Asking to join: on a sign-in relay, a person's session or the vouch of a computer its person linked. */
+const joiner = Effect.gen(function* () {
+  const { human, vouch } = yield* Relay;
+  const b = yield* json<{ pk?: unknown; machine?: unknown }>();
+  const who = yield* person;
+  const vouchUser = !who && vouch && typeof b?.pk === "string" ? yield* Effect.promise(() => vouch(b.pk as string, b.machine)) : null;
+  if (human && !who && !vouchUser) return yield* refuse(403, "this computer isn't set up: its person runs `kiwi setup` once, then agents can join from it");
+  return { ...nobody, person: who, vouchUser };
+});
+
+/** The person who owns this channel, signed in (its usage page). */
+const ownerPerson = Effect.gen(function* () {
+  const store = yield* Room;
+  const user = yield* signedIn;
+  if (!user || user !== store.ownerUser()) return yield* refuse(403, "only the person who owns this channel can see its usage");
+  return { ...nobody, user };
+});
+
+const asKey = <E, R>(check: Effect.Effect<string, E, R>) => Effect.map(check, (me): Who => ({ ...nobody, me }));
+
+const guards: Record<Guard, Effect.Effect<Who, Refused, Room | Relay | Request_>> = {
+  public: Effect.succeed(nobody),
+  creator,
+  joiner,
+  ownerPerson,
+  requester: asKey(requester),
+  member: asKey(member),
+  owner: asKey(owner),
 };
 
 // ---------- the routes ----------
 
-type Reply = { data: unknown; fx?: Effects } | { res: Response; fx?: Effects };
-type Handler = (me: string, match: RegExpExecArray) => Effect.Effect<Reply, Refused, Room | Relay | Request_>;
-interface Route {
-  method: string;
-  path: string | RegExp;
-  guard: Guard;
-  run: Handler;
-}
+type RoomRoute = Route<Guard, Who, Effects, Room | Relay | Request_>;
 
 const ID = "([0-9a-f-]{36})";
 
@@ -170,7 +172,7 @@ const withRoom = <A>(f: (store: RoomStore) => A) =>
     return f(yield* Room);
   });
 
-const routes: Route[] = [
+const routes: RoomRoute[] = [
   {
     method: "GET",
     path: "/info",
@@ -193,14 +195,11 @@ const routes: Route[] = [
   {
     method: "POST",
     path: "/create",
-    guard: "public", // checks its own signature: the creator isn't a member until this succeeds
-    run: () =>
+    guard: "creator",
+    run: ({ signer, user }) =>
       Effect.gen(function* () {
         const store = yield* Room;
         const { human, policy, ownedChannels } = yield* Relay;
-        const { req, method, path, url, body } = yield* Request_;
-        const signer = yield* Effect.promise(() => verifyRequest(requestToken(req), store.roomId, method, path + url.search, body));
-        const user = yield* signedIn;
         // During a private beta only listed people create channels; anyone may still join one.
         if (user && !(yield* Effect.promise(() => inBeta(policy, user, human)))) return yield* refuse(403, betaMessage(policy));
         const most = policy.channelsPerOwner;
@@ -216,16 +215,11 @@ const routes: Route[] = [
   {
     method: "POST",
     path: "/requests",
-    guard: "public", // a join request: a person's session or a linked computer's vouch, checked here
-    run: () =>
+    guard: "joiner",
+    run: ({ person: who, vouchUser }) =>
       Effect.gen(function* () {
         const store = yield* Room;
-        const { human, vouch } = yield* Relay;
         const b = yield* json<RequestBody & { machine?: unknown }>();
-        const who = yield* person;
-        const vouchUser = !who && vouch && typeof b?.pk === "string" ? yield* Effect.promise(() => vouch(b.pk, b.machine)) : null;
-        // On a relay with sign-in, every agent arrives vouched for by its person's linked computer.
-        if (human && !who && !vouchUser) return yield* refuse(403, "this computer isn't set up: its person runs `kiwi setup` once, then agents can join from it");
         const { id, fresh } = yield* attempt(() => store.request(b, who, vouchUser));
         return { data: { id }, fx: fresh ? { broadcast: [frame({ t: "request" })] } : undefined };
       }),
@@ -233,20 +227,14 @@ const routes: Route[] = [
   {
     method: "GET",
     path: "/usage",
-    guard: "public", // the owning person's session, checked here
-    run: () =>
-      Effect.gen(function* () {
-        const store = yield* Room;
-        const user = yield* signedIn;
-        if (!user || user !== store.ownerUser()) return yield* refuse(403, "only the person who owns this channel can see its usage");
-        return { data: store.usage() };
-      }),
+    guard: "ownerPerson",
+    run: () => withRoom((store) => ({ data: store.usage() })),
   },
   {
     method: "POST",
     path: new RegExp(`^/requests/${ID}/reveal$`),
     guard: "requester", // the joiner reveals its half of the code, signed by the key that's asking
-    run: (pk, m) =>
+    run: ({ me: pk }, m) =>
       Effect.gen(function* () {
         const store = yield* Room;
         const { nonce } = yield* json<{ nonce?: unknown }>();
@@ -258,7 +246,7 @@ const routes: Route[] = [
     method: "GET",
     path: new RegExp(`^/requests/${ID}$`),
     guard: "requester", // signed by the requester's key, which isn't a member yet
-    run: (pk, m) => Effect.gen(function* () {
+    run: ({ me: pk }, m) => Effect.gen(function* () {
       const store = yield* Room;
       return { data: yield* attempt(() => store.requestStatus(m[1]!, pk)) };
     }),
@@ -281,7 +269,7 @@ const routes: Route[] = [
     method: "POST",
     path: "/messages",
     guard: "member",
-    run: (me) =>
+    run: ({ me }) =>
       Effect.gen(function* () {
         const store = yield* Room;
         if (!allow(`${store.roomId}:${me}`, MESSAGES_PER_MINUTE)) return yield* refuse(429, "too many messages; wait a minute");
@@ -290,7 +278,7 @@ const routes: Route[] = [
         return { data: { seq: e.seq, ts: e.ts }, fx: { broadcast: [msgFrame(e)], expireAt: store.touch() ?? undefined } };
       }),
   },
-  { method: "GET", path: "/keys", guard: "member", run: (me) => withRoom((store) => ({ data: store.keysFor(me) })) },
+  { method: "GET", path: "/keys", guard: "member", run: ({ me }) => withRoom((store) => ({ data: store.keysFor(me) })) },
   { method: "GET", path: "/icon", guard: "member", run: () => withRoom((store) => ({ data: { icon: store.icon(), at: store.iconAt() } })) },
   {
     method: "PUT",
@@ -321,7 +309,7 @@ const routes: Route[] = [
     method: "DELETE",
     path: "/members/me",
     guard: "member",
-    run: (me) =>
+    run: ({ me }) =>
       Effect.gen(function* () {
         const store = yield* Room;
         yield* attempt(() => store.remove(me));
@@ -427,30 +415,7 @@ const routes: Route[] = [
 ];
 
 /** The table, for tests that check every route declares a guard. */
-export const routeTable = routes.map(({ method, path, guard }) => ({ method, path: String(path), guard }));
-
-// ---------- the dispatcher ----------
-
-const match = (r: Route, method: string, path: string): RegExpExecArray | null => {
-  if (r.method !== method) return null;
-  if (typeof r.path === "string") return r.path === path ? /^.*$/s.exec(path) : null;
-  return r.path.exec(path);
-};
-
-/** Find the route, run its check, then its handler. An unknown path still asks for a member first, as it always has. */
-const dispatch = Effect.gen(function* () {
-  const { method, path } = yield* Request_;
-  for (const r of routes) {
-    const m = match(r, method, path);
-    if (!m) continue;
-    const me = yield* guards[r.guard];
-    return yield* r.run(me ?? "", m);
-  }
-  yield* member;
-  return yield* refuse(404, "not found");
-});
-
-const respond = (reply: Reply): { res: Response; fx?: Effects } => ("res" in reply ? reply : { res: Response.json(reply.data), fx: reply.fx });
+export const routeTable = describeRoutes(routes);
 
 /** Handle one HTTP request to a room. Adapters apply `fx`. */
 export async function onHttp(store: RoomStore, req: Request, path: string, ctx: RelayContext = {}): Promise<{ res: Response; fx?: Effects }> {
@@ -463,16 +428,13 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
   }
   // Shared-code rooms from before owners existed: delete them outright the first time anything touches them.
   if (store.isLegacy()) return { res: Response.json({ error: "no such channel", tag: "ChannelGone" }, { status: 404 }), fx: { wipe: true } };
-  const method = req.method.toUpperCase();
-  const incoming: Incoming = { req, url: new URL(req.url), method, path, body: method === "GET" || method === "DELETE" ? "" : await req.text() };
   const relay: Required<RelayContext> = { human: ctx.human ?? null, vouch: ctx.vouch ?? null, policy: ctx.policy ?? OPEN_POLICY, ownedChannels: ctx.ownedChannels ?? (async () => 0) };
-  const program = dispatch.pipe(
-    Effect.map(respond),
-    // A refusal is an answer, not a failure: its status, text and tag go back as they always have.
-    Effect.catchTag("Refused", (r) => Effect.succeed({ res: Response.json({ error: r.message, tag: r.tag }, { status: r.status }) })),
+  // An unknown path still asks for a member first, as it always has.
+  const otherwise = Effect.flatMap(member, () => refuse(404, "not found"));
+  const program = answer(dispatch(routes, guards, otherwise)).pipe(
     Effect.provideService(Room, store),
     Effect.provideService(Relay, relay),
-    Effect.provideService(Request_, incoming),
+    Effect.provideService(Request_, await incoming(req, path)),
   );
   // Anything else (a bug, a storage error) propagates, and the adapter answers 500 as before.
   return Effect.runPromise(program);
