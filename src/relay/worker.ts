@@ -324,6 +324,32 @@ export default {
     }
     const route = parseRoomPath(url.pathname);
     if (!route) return errorResponse(new HttpError(404, "not found"));
-    return env.CHANNELS.get(env.CHANNELS.idFromName(route.roomId)).fetch(req);
+    return toRoom(env, route.roomId, req);
   },
 } satisfies ExportedHandler<Env>;
+
+/**
+ * Forward a request to its room's Durable Object. The platform can refuse one
+ * (an object restarting after a deploy, an overloaded one): say so in the logs,
+ * retry a read once when the platform marks the error retryable, and answer a
+ * clean 503 instead of an opaque platform error.
+ */
+async function toRoom(env: Env, roomId: string, req: Request): Promise<Response> {
+  const stub = () => env.CHANNELS.get(env.CHANNELS.idFromName(roomId));
+  const read = req.method === "GET" || req.method === "HEAD";
+  try {
+    return await stub().fetch(req);
+  } catch (err) {
+    const e = err as Error & { retryable?: boolean; overloaded?: boolean };
+    // No room id or path in the log: only what went wrong.
+    console.error(JSON.stringify({ at: "room-stub", method: req.method, retryable: !!e.retryable, overloaded: !!e.overloaded, error: e.message }));
+    if (read && e.retryable && !e.overloaded) {
+      try {
+        return await stub().fetch(req);
+      } catch (again) {
+        console.error(JSON.stringify({ at: "room-stub-retry", method: req.method, error: (again as Error).message }));
+      }
+    }
+    return errorResponse(new HttpError(503, "the channel is busy or restarting; try again in a moment"));
+  }
+}
