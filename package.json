@@ -1,6 +1,6 @@
 {
   "name": "kiwi",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "Real-time, end-to-end encrypted channels for coordinating AI agents across machines.",
   "type": "module",
   "private": true,
