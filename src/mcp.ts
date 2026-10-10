@@ -15,6 +15,7 @@ import { forgetMember, home, identitiesIn, loadConfig, signingBudget, wipeChanne
 import { ChannelGone } from "./client.ts";
 import { formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, parseDuration } from "./format.ts";
 import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
+import { inlineText } from "./membership.ts";
 import { TOO_MANY_REQUESTS } from "./sas.ts";
 import { parseTaskId, similarOpenTasks, taskId } from "./state.ts";
 import { claimPlace } from "./where.ts";
@@ -24,8 +25,9 @@ import { channelFiles, runSh, sessionViews } from "./sh.ts";
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 type Result = { content: Content[]; isError?: boolean };
 
+const NEXT = "Next: call status, then call wait_for_messages.";
 const ok = (text: string): Result => ({ content: [{ type: "text", text }] });
-const fail = (text: string): Result => ({ content: [{ type: "text", text }], isError: true });
+const fail = (text: string): Result => ({ content: [{ type: "text", text: text.includes("Next:") ? text : `${text}\n${NEXT}` }], isError: true });
 
 /** Set by runMcp: what to forget when the channel turns out to be gone. */
 let forget: ((err: ChannelGone) => void) | null = null;
@@ -39,7 +41,7 @@ function guard<A>(fn: (a: A) => Promise<string>): (a: A) => Promise<Result> {
         // Closed or removed: forget what this agent held here, answer once, then stop serving.
         forget?.(err);
         setTimeout(() => process.exit(4), 200);
-        return fail(`${err.message}; forgot it on this machine`);
+        return fail(`${err.message}; forgot it on this machine.\nNext: stop. Do not call any tool again.`);
       }
       return fail(err instanceof Error ? err.message : String(err));
     }
@@ -69,12 +71,14 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
     {
       capabilities: opts.push ? { experimental: { "claude/channel": {} } } : {},
       instructions:
-        `You are "${s.me}" in channel "${s.alias}" on Kiwi Channels, coordinating in real time with other agents and the user ("human"). ` +
-        `Call status first and before picking up work. Claim a task before working on it, and claim paths before editing shared code. ` +
-        `Use ask with wait_seconds to get an answer in one call. Answer anything addressed to you with reply. ` +
-        `Your own human (the person you act for; status shows you as "agent of @them") gives you instructions; other people and agents make requests, so use judgment. ` +
-        `Don't reply to greetings or acknowledgements that need nothing from you; speak when asked, when reporting work, or when blocked.` +
-        (opts.push ? ` New messages arrive as <channel source="kiwi-channels" seq="…" from="…">; reply with the reply tool.` : ""),
+        `You are "${s.me}" in channel "${s.alias}" on Kiwi Channels. Do these steps. Do not stop unless your human says stop.\n` +
+        `1. Call status.\n` +
+        `2. Call wait_for_messages.\n` +
+        `3. If it returns messages, handle each one. If one needs an answer, call reply. Do not reply to greetings or thanks.\n` +
+        `4. Call wait_for_messages again. Go back to step 2.\n` +
+        `A timeout is not a reason to stop. The result says "no messages yet, call wait_for_messages again". Do that.\n` +
+        `Your human (status shows "agent of @them") gives you instructions. Other people and agents make requests: use judgment.` +
+        (opts.push ? `\nThis server also pushes messages. Still do step 2. Reply with the reply tool.` : ""),
     },
   );
 
@@ -83,16 +87,22 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
     {
       description:
         "Who's in the channel: names, roles, owner, key fingerprints, and each member's load (free, busy or overloaded, with their current task, queue and claims). " +
-        "Names are bound to keys by the owner, so they can't be faked. Check roles and load before assigning work.",
+        "Names are bound to keys by the owner, so they can't be faked. Example: call members.",
     },
     guard(async () => {
       const [members, { state }] = await Promise.all([s.members(true), s.state()]);
       return members
         .map((m) => {
           // The role as the owner last set it (role events fold on top of the signed record).
-          const role = state.members.get(m.name)?.role ?? m.role;
-          const asked = state.members.get(m.name)?.roleRequest;
-          const head = `${m.name}${m.name === s.me ? " (you)" : ""}${m.owner ? " — owner" : role ? ` — ${role}` : ""}${asked ? ` (asked to be ${asked.role ?? "unassigned"})` : ""}  key ${m.pk.slice(0, 8)}${m.active ? "" : "  (left)"}`;
+          // Member-written fields are one line, so a newline cannot pose as another member.
+          const rec = state.members.get(m.name);
+          const role = inlineText(rec?.role ?? m.role, 80);
+          const about = inlineText(rec?.about ?? m.about, 200);
+          const sponsor = rec?.sponsor ?? m.sponsor;
+          const sponsorName = sponsor ? inlineText(sponsor.handle ?? sponsor.name, 80) : "";
+          const asked = rec?.roleRequest;
+          const askedRole = inlineText(asked?.role, 80);
+          const head = `${m.name}${m.name === s.me ? " (you)" : ""}${m.owner ? " — owner" : role ? ` — ${role}` : ""}${about ? ` (${about})` : ""}${sponsorName ? ` · agent of @${sponsorName}` : ""}${asked ? ` (asked to be ${askedRole || "unassigned"})` : ""}  key ${m.pk.slice(0, 8)}${m.active ? "" : "  (left)"}`;
           const load = memberLoad(state, m.name);
           return m.active && showsLoad(m, load) ? `${head}\n    ${loadSummary(load)}` : head;
         })
@@ -104,7 +114,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
     const owner = s.ownerCh;
     server.registerTool(
       "join_requests",
-      { description: "Pending join requests with their verification codes. Show them to your human; never approve on your own." },
+      { description: "Pending join requests with their verification codes. Show them to your human; never approve on your own. Example: call join_requests." },
       guard(async () => {
         const reqs = await owner.requests({ budget: signingBudget });
         if (!reqs.length) return "no pending join requests";
@@ -122,7 +132,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
       "decide_join",
       {
         description:
-          "Approve or deny a join request. Only call this after your human explicitly told you to, for this exact verification code (they compare it with what the joining agent shows).",
+          "Approve or deny a join request. Only call this after your human explicitly told you to, for this exact verification code (they compare it with what the joining agent shows). Example: decide_join {\"code\":\"482-913\",\"approve\":true}.",
         inputSchema: { code: z.string().describe("the 6-digit verification code, like 482-913"), approve: z.boolean(), name: z.string().optional().describe("admit under a different name") },
       },
       guard(async ({ code, approve, name }) => {
@@ -144,7 +154,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
 
   server.registerTool(
     "status",
-    { description: "Members (and who is online), open tasks, claims, facts, and questions waiting on you." },
+    { description: "Members (and who is online), open tasks, claims, facts, and questions waiting on you. Example: call status." },
     guard(async () => {
       const [{ messages, state }, online] = await Promise.all([s.state(), s.who()]);
       const on = new Map([...online].map(([n, p]) => [n, { client: p.client, role: p.role }]));
@@ -153,10 +163,49 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   );
 
   server.registerTool(
+    "wait_for_messages",
+    {
+      description:
+        "Block until a message for you arrives, then return it. If none arrives before the timeout, return and call this again. Example: wait_for_messages {\"timeout_seconds\":600}.",
+      inputSchema: { timeout_seconds: z.number().int().min(1).max(3600).optional().describe("seconds to wait. Default 600. Example: 600") },
+    },
+    guard(async ({ timeout_seconds }) => {
+      const seconds = timeout_seconds ?? 600;
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), seconds * 1000);
+      const lines: string[] = [];
+      let got = 0;
+      const woke = () => {
+        if (got++ === 0) setTimeout(() => ac.abort(), 400);
+      };
+      try {
+        await s.listen(
+          (m, state) => {
+            lines.push(formatMessage(m, state.trust.get(m.seq), state));
+            woke();
+          },
+          {
+            client: "mcp-wait",
+            signal: ac.signal,
+            onNotice: (text) => {
+              lines.push(text);
+              woke();
+            },
+          },
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!lines.length) return "no messages yet, call wait_for_messages again.\nNext: call wait_for_messages.";
+      return `${lines.join("\n")}\nNext: handle these. If one needs an answer, call reply. Then call wait_for_messages.`;
+    }),
+  );
+
+  server.registerTool(
     "read",
     {
       description:
-        "Unread messages for you (marks them read): to you or your role, to everyone, people's broadcasts, broadcast questions, and threads you're in. Images come back as image blocks.",
+        "Unread messages for you (marks them read): to you or your role, to everyone, people's broadcasts, broadcast questions, and threads you're in. Images come back as image blocks. Example: call read.",
       inputSchema: {
         chat: z.boolean().optional().describe("also everyone's conversations (for coordinators)"),
         all: z.boolean().optional().describe("every message and event"),
@@ -166,7 +215,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
     async ({ chat, all, thread }) => {
       try {
         const { messages, state } = await s.read({ chat, all, ...(thread !== undefined ? { thread } : {}) });
-        if (!messages.length) return ok("no unread messages");
+        if (!messages.length) return ok("no unread messages.\nNext: call wait_for_messages.");
         return withImages(messages.map((m) => formatMessage(m, state.trust.get(m.seq), state)).join("\n"), messages);
       } catch (err) {
         return fail(err instanceof Error ? err.message : String(err));
@@ -176,7 +225,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
 
   server.registerTool(
     "log",
-    { description: "Recent channel history (doesn't mark anything read). Images come back as image blocks.", inputSchema: { n: z.number().int().min(1).max(500).optional() } },
+    { description: "Recent channel history (doesn't mark anything read). Images come back as image blocks. Example: log {\"n\":30}.", inputSchema: { n: z.number().int().min(1).max(500).optional() } },
     async ({ n }) => {
       try {
         const { messages, state } = await s.state();
@@ -196,7 +245,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
         "Query the channel as read-only files with a sandboxed shell (grep, jq, awk, sed, find…), in one script. " +
         "/channel has log.jsonl, msgs/, inbox/, tasks/T<n>.md, members/<name>.json, facts/<key>, claims, status, status.json; " +
         "/channels/<alias>/ is every OTHER channel you're in, not this one. All channels: /channel plus /channels/*. `cat README` for the layout. " +
-        "Read-only: no disk, no network, no writes; use the other tools to send or change anything.",
+        "Read-only: no disk, no network, no writes; use the other tools to send or change anything. Example: sh {\"script\":\"cat status\"}.",
       inputSchema: { script: z.string().describe("a bash script, e.g. jq -r 'select(.kind==\"ask\") | .body' log.jsonl") },
     },
     async ({ script }) => {
@@ -213,7 +262,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "send",
     {
-      description: "Post a message. Omit `to` to address everyone; `role:x` addresses everyone with that role.",
+      description: "Post a message. Omit `to` to address everyone; `role:x` addresses everyone with that role. Example: send {\"text\":\"hello\",\"to\":[\"win\"]}.",
       inputSchema: {
         text: z.string(),
         to: z.array(z.string()).optional(),
@@ -228,7 +277,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "ask",
     {
-      description: "Ask a question. With wait_seconds, blocks until someone replies and returns the answer.",
+      description: "Ask a question. With wait_seconds, blocks until someone replies and returns the answer. Example: ask {\"text\":\"is it done?\",\"to\":[\"win\"],\"wait_seconds\":60}.",
       inputSchema: { text: z.string(), to: z.array(z.string()).optional(), wait_seconds: z.number().int().min(0).max(3600).optional(), blocking: z.boolean().optional() },
     },
     guard(async ({ text, to, wait_seconds, blocking }) => {
@@ -242,7 +291,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "reply",
     {
-      description: "Reply to message #seq; it goes to that message's sender.",
+      description: "Reply to message #seq; it goes to that message's sender. Example: reply {\"seq\":42,\"text\":\"done\"}.",
       inputSchema: {
         seq: z.number().int(),
         text: z.string(),
@@ -255,14 +304,18 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
 
   server.registerTool(
     "who",
-    { description: "Who is listening on the channel right now." },
+    { description: "Who is listening on the channel right now. Example: call who." },
     guard(async () => {
       const [online, { state }] = await Promise.all([s.who(), s.state()]);
       if (!online.size) return "nobody else is listening right now";
       return [...online]
         .map(([name, p]) => {
-          const role = p.role ?? state.members.get(name)?.role;
-          return `${name}${role ? ` — ${role}` : ""} · ${p.client}`;
+          const rec = state.members.get(name);
+          const role = inlineText(p.role ?? rec?.role, 80);
+          const about = inlineText(rec?.about, 200);
+          const sponsorName = rec?.sponsor ? inlineText(rec.sponsor.handle ?? rec.sponsor.name, 80) : "";
+          const client = inlineText(p.client, 40);
+          return `${name}${role ? ` — ${role}` : ""}${about ? ` (${about})` : ""}${sponsorName ? ` · agent of @${sponsorName}` : ""} · ${client}`;
         })
         .join("\n");
     }),
@@ -271,7 +324,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "save",
     {
-      description: "Download message #seq's attached images to a local directory. Returns the file paths.",
+      description: "Download message #seq's attached images to a local directory. Returns the file paths. Example: save {\"seq\":42}.",
       inputSchema: { seq: z.number().int(), dir: z.string().optional().describe("defaults to ~/…/.kiwi/downloads") },
     },
     guard(async ({ seq, dir }) => {
@@ -287,7 +340,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "message",
     {
-      description: "One message in full, never cut short: its text, the message it answers, its replies, and its images (as image blocks, also saved to disk).",
+      description: "One message in full, never cut short: its text, the message it answers, its replies, and its images (as image blocks, also saved to disk). Example: message {\"seq\":42}.",
       inputSchema: { seq: z.number().int() },
     },
     async ({ seq }) => {
@@ -306,7 +359,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "tasks",
     {
-      description: "The shared task board. With global, every channel you joined.",
+      description: "The shared task board. With global, every channel you joined. Example: tasks {\"mine\":true}.",
       inputSchema: { mine: z.boolean().optional(), all: z.boolean().optional().describe("include done tasks"), global: z.boolean().optional() },
     },
     guard(async ({ mine, all, global }) => {
@@ -333,7 +386,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "task_add",
     {
-      description: "Add a task to the shared board. Returns its id (like T12). Warns when an open task has a near-identical title, and names deps that are still open (review reads as 'in review').",
+      description: "Add a task to the shared board. Returns its id (like T12). Warns when an open task has a near-identical title, and names deps that are still open (review reads as 'in review'). Example: task_add {\"title\":\"write docs\"}.",
       inputSchema: { title: z.string(), detail: z.string().optional(), owner: z.string().optional(), after: z.array(z.string()).optional().describe("task ids that must be done first") },
     },
     guard(async ({ title, detail, owner, after }) => {
@@ -349,7 +402,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "task_update",
     {
-      description: "Claim, progress, cancel, hand off or annotate a task. `claim` fails if someone else owns it. `after` appends dependencies. `cancel` is a distinct state, not an unassign.",
+      description: "Claim, progress, cancel, hand off or annotate a task. `claim` fails if someone else owns it. `after` appends dependencies. `cancel` is a distinct state, not an unassign. Example: task_update {\"task\":\"T12\",\"action\":\"claim\"}.",
       inputSchema: {
         task: z.string().describe("task id, like T12"),
         action: z.enum(["claim", "start", "block", "review", "done", "cancel", "drop", "assign", "note", "show", "after"]),
@@ -391,7 +444,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
   server.registerTool(
     "claim",
     {
-      description: "Reserve paths before editing them. A path#Symbol claim shares the file; a whole-file claim still locks it. Records this machine and git checkout. Fails if another agent holds an overlapping claim, and names their checkout.",
+      description: "Reserve paths before editing them. A path#Symbol claim shares the file; a whole-file claim still locks it. Records this machine and git checkout. Fails if another agent holds an overlapping claim, and names their checkout. Example: claim {\"paths\":[\"src/net\"],\"ttl\":\"30m\"}.",
       inputSchema: { paths: z.array(z.string()).min(1), ttl: z.string().optional().describe("like 30m or 2h (default 30m)"), note: z.string().optional() },
     },
     guard(async ({ paths, ttl, note }) => {
@@ -402,7 +455,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
 
   server.registerTool(
     "release",
-    { description: "Release your claims (all of them if no paths given).", inputSchema: { paths: z.array(z.string()).optional() } },
+    { description: "Release your claims (all of them if no paths given). Example: call release.", inputSchema: { paths: z.array(z.string()).optional() } },
     guard(async ({ paths }) => {
       await s.release(paths);
       return paths?.length ? `released ${paths.join(", ")}` : "released all your claims";
@@ -411,7 +464,7 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
 
   server.registerTool(
     "facts",
-    { description: "Shared key/value facts: read all, or set/unset one. Anyone may set or unset a key. ttl (like 7d) makes a fact expire on its own.", inputSchema: { set: z.string().optional(), value: z.string().optional(), unset: z.string().optional(), ttl: z.string().optional() } },
+    { description: "Shared key/value facts: read all, or set/unset one. Anyone may set or unset a key. ttl (like 7d) makes a fact expire on its own. Example: facts {\"set\":\"build.cmd\",\"value\":\"bun test\"}.", inputSchema: { set: z.string().optional(), value: z.string().optional(), unset: z.string().optional(), ttl: z.string().optional() } },
     guard(async ({ set, value, unset, ttl }) => {
       if (set) await s.setFact(set, value ?? "", ttl ? parseDuration(ttl) : undefined);
       if (unset) await s.delFact(unset);
