@@ -18,8 +18,9 @@
   --rail: light-dark(#ecece9, #111215);
   --raised: light-dark(#ffffff, #141518);
   --ink: light-dark(#1a1a1a, #ececee);
-  --ink-2: light-dark(#6c6c70, #85858a);
-  --ink-3: light-dark(#a3a39e, #56565c);
+  /* Quiet text still clears 4.5:1 on canvas, rail, and raised. ink-3 is that floor; ink-2 stays a step stronger. */
+  --ink-2: light-dark(#4c4c4c, #a6a6a6);
+  --ink-3: light-dark(#646464, #868686);
   --line: light-dark(#e8e8e4, #1e2026);
   --wash: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.04));
   --wash-2: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.075));
