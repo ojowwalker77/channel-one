@@ -24,6 +24,7 @@ import {
   onClientFrame,
   onHttp,
   parseRoomPath,
+  requireInfoFingerprint,
   welcomeFrames,
   wsHeaders,
   type DirectoryEntry,
@@ -207,6 +208,8 @@ export function startRelay(
         }
         const route = parseRoomPath(url.pathname);
         if (!route) throw new HttpError(404, "not found");
+        // No fingerprint: 426 before the room file is opened.
+        requireInfoFingerprint(req.method, route.rest, url);
         const store = storeFor(route.roomId, route.rest === "/create");
         if (route.rest === "/ws") {
           if (store.isLegacy()) {
