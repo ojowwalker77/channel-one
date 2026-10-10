@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react"
 
-import { Channel, ChannelGone, myChannels, ownerStatement, type HumanSession, type MyChannel, type SendOptions } from "@mc/client.ts"
+import { Channel, ChannelGone, RelayError, myChannels, ownerStatement, type HumanSession, type MyChannel, type SendOptions } from "@mc/client.ts"
 import { decodeJoinCode, fromB64url, newRoomId, ownerFingerprint, type ChannelAccess } from "@mc/crypto.ts"
 import { generateIdentity, withExchangeKey, type Identity } from "@mc/identity.ts"
 import { handleFor, type JoinRequest, type Member } from "@mc/membership.ts"
@@ -443,9 +443,14 @@ export async function createChannel(name: string, token: string | null, me: Pers
 export async function inviteInfo(code: string): Promise<{ ownerName: string | null } | null> {
   const { roomId, ownerFp } = decodeJoinCode(code)
   const res = await fetch(`${location.origin}/v1/rooms/${roomId}/info`)
-  if (res.status === 404) return null
-  if (!res.ok) throw new Error(`the relay returned ${res.status}`)
-  const info = (await res.json()) as { ownerPk: string; ownerName?: string | null }
+  const body = (await res.json().catch(() => ({}))) as { ownerPk: string; ownerName?: string | null; error?: string; tag?: string }
+  if (!res.ok) {
+    const err = new RelayError(res.status, body.error ?? `the relay returned ${res.status}`, body.tag)
+    // Closed, or never was: both are "this code leads nowhere". (A relay from before tags says 404.)
+    if (err.tag === "ChannelGone" || err.tag === "NotFound") return null
+    throw err
+  }
+  const info = body
   // Only name the owner the code itself names.
   if ((await ownerFingerprint(info.ownerPk)) !== ownerFp) throw new Error("The relay is serving a different owner than this code names.")
   return { ownerName: info.ownerName ?? null }
