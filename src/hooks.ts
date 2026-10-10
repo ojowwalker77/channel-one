@@ -139,9 +139,25 @@ function writeSettings(s: Settings): void {
   writeFileSync(p, JSON.stringify(s, null, 2) + "\n");
 }
 
+/**
+ * A command this program wrote: `<invocation> hook <event> # <mark>`.
+ * Matching the mark alone would delete someone else's hook that merely
+ * mentions "# kiwi". The invocation is whatever path installed it, so an
+ * older install is still recognised and removed.
+ */
+function isOurHookCommand(command: string): boolean {
+  for (const event of Object.values(EVENTS)) {
+    for (const mark of [MARK, ...OLD_MARKS]) {
+      const tail = ` hook ${event} ${mark}`;
+      if (command.endsWith(tail) && command.length > tail.length) return true;
+    }
+  }
+  return false;
+}
+
 function withoutOurs(entries: HookEntry[] | undefined): HookEntry[] {
   return (entries ?? [])
-    .map((e) => ({ ...e, hooks: e.hooks.filter((h) => ![MARK, ...OLD_MARKS].some((m) => h.command.includes(m))) }))
+    .map((e) => ({ ...e, hooks: e.hooks.filter((h) => !isOurHookCommand(h.command)) }))
     .filter((e) => e.hooks.length > 0);
 }
 
@@ -173,7 +189,21 @@ export function uninstallHooks(): string {
 
 export function hooksInstalled(): boolean {
   const s = readSettings();
-  return Object.keys(EVENTS).every((e) => s.hooks?.[e]?.some((x) => x.hooks.some((h) => h.command.includes(MARK))));
+  return Object.entries(EVENTS).every(
+    ([event, arg]) => s.hooks?.[event]?.some((x) => x.hooks.some((h) => h.command === `${selfCommand()} hook ${arg} ${MARK}`)),
+  );
+}
+
+/** One of our hooks still tagged with a pre-rename mark, so install should refresh it. */
+function staleHooks(s: Settings): boolean {
+  for (const entries of Object.values(s.hooks ?? {})) {
+    for (const e of entries) {
+      for (const h of e.hooks) {
+        if (isOurHookCommand(h.command) && OLD_MARKS.some((m) => h.command.endsWith(m))) return true;
+      }
+    }
+  }
+  return false;
 }
 
 /** Install automatically when an agent joins from inside Claude Code (opt out with KIWI_NO_HOOKS=1). */
@@ -182,7 +212,7 @@ export function autoInstallHooks(): string | null {
   if (process.env.KIWI_NO_HOOKS || !process.env.CLAUDECODE || loadConfig().claudeHooks === "off") return null;
   try {
     // Installed, but by an older version (different path or marker)? Refresh them.
-    return hooksInstalled() && !OLD_MARKS.some((m) => JSON.stringify(readSettings()).includes(m)) ? null : installHooks();
+    return hooksInstalled() && !staleHooks(readSettings()) ? null : installHooks();
   } catch {
     return null;
   }

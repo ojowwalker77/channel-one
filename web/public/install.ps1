@@ -4,6 +4,9 @@
 #   1. downloads the Windows build from this project's GitHub release, built from the public source
 #   2. checks its SHA-256 against the release's SHA256SUMS before installing
 #   3. puts it at ~\.kiwi\bin\kiwi.exe and adds that folder to your user PATH (no admin rights)
+# SHA256SUMS comes from the same release as the binary. It catches a bad
+# download, not a release that was swapped. The `gh attestation verify`
+# line at the end is printed for you to run; this script does not run it.
 # Read the source: https://github.com/ojowwalker77/channels
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -24,6 +27,14 @@ try {
   $want = if ($line) { ($line -split '\s+')[0].ToLower() } else { '' }
   $got = (Get-FileHash "$tmp\kiwi.exe" -Algorithm SHA256).Hash.ToLower()
   if (-not $want -or $want -ne $got) { throw "kiwi: checksum doesn't match the release; not installing" }
+  # ~\.kiwi is private to this account. A custom KIWI_INSTALL is left as the caller made it.
+  if (-not $env:KIWI_INSTALL) {
+    $kiwiHome = Join-Path $HOME '.kiwi'
+    New-Item -ItemType Directory -Force -Path $kiwiHome | Out-Null
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    & icacls $kiwiHome /inheritance:r /grant:r "*${me}:(OI)(CI)F" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "kiwi: couldn't make $kiwiHome private" }
+  }
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   Move-Item -Force "$tmp\kiwi.exe" "$dir\kiwi.exe"
 } finally {

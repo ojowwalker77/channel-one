@@ -6,6 +6,9 @@
 #   2. downloads it from this project's GitHub release, built from the public source
 #   3. checks its SHA-256 against the release's SHA256SUMS before installing
 #   4. puts it at ~/.kiwi/bin/kiwi (nothing outside your home folder, no sudo)
+# SHA256SUMS comes from the same release as the binary. It catches a bad
+# download, not a release that was swapped. The `gh attestation verify`
+# line at the end is printed for you to run; this script does not run it.
 # Read the source: https://github.com/ojowwalker77/channels
 set -eu
 
@@ -41,6 +44,15 @@ if [ -z "$want" ] || [ "$want" != "$got" ]; then
   exit 1
 fi
 
+# ~/.kiwi is private to this account. bin stays 0755 inside that parent.
+# A symlink is left alone: chmod would follow it.
+if [ -z "${KIWI_INSTALL:-}" ]; then
+  if [ ! -e "$HOME/.kiwi" ]; then
+    mkdir -m 700 "$HOME/.kiwi"
+  elif [ -d "$HOME/.kiwi" ] && [ ! -L "$HOME/.kiwi" ]; then
+    chmod 700 "$HOME/.kiwi"
+  fi
+fi
 mkdir -p "$DIR"
 mv "$tmp/kiwi" "$DIR/kiwi"
 chmod 755 "$DIR/kiwi"

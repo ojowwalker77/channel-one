@@ -4,7 +4,8 @@
 //   cursors/<ch>/<agent>   last sequence number each agent has consumed
 //   cache/<room>.jsonl     decrypted, verified messages (so state folds are fast)
 
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChannelAccess } from "./crypto.ts";
@@ -47,19 +48,114 @@ export interface Config {
 }
 
 export function home(): string {
-  if (process.env.KIWI_HOME) return process.env.KIWI_HOME;
+  if (process.env.KIWI_HOME) {
+    tightenHome(process.env.KIWI_HOME);
+    return process.env.KIWI_HOME;
+  }
   const dir = join(homedir(), ".kiwi");
-  if (existsSync(dir)) return dir;
+  if (existsSync(dir)) {
+    tightenHome(dir);
+    return dir;
+  }
   // Carry state over from the project's earlier names, once. An older client may still be
   // running against ~/.channel-one: don't pull its files out from under it; use it in place.
   for (const name of [".channel-one", ".modelchannel"]) {
     const old = join(homedir(), name);
     if (!existsSync(old)) continue;
-    if (oldClientRunning(old)) return old;
+    if (oldClientRunning(old)) {
+      tightenHome(old);
+      return old;
+    }
     renameSync(old, dir);
+    tightenHome(dir);
     return dir;
   }
   return dir;
+}
+
+/** Directories already considered this process. home() is on the hot path; one look is enough. */
+const tightened = new Set<string>();
+
+/** Top-level names kiwi itself creates. Nothing else is walked. `bin` is not here, so it stays 0755. */
+const KIWI_DIRS = ["cache", "cursors", "downloads", "hook-state", "identities", "listeners"] as const;
+const KIWI_FILES = ["config.json", "machine.json"] as const;
+
+function isRealDir(p: string): boolean {
+  try {
+    return lstatSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isRealFile(p: string): boolean {
+  try {
+    return lstatSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Make an existing kiwi home private, once. The root is chmodded only when it
+ * already holds kiwi state (`config.json` or `identities/`). Only kiwi's own
+ * entries are walked, never the rest of the tree: KIWI_HOME is user-supplied,
+ * and pointing it at a home directory or a project must not chmod that tree.
+ * Symlinks are not followed.
+ */
+function tightenHome(dir: string): void {
+  if (tightened.has(dir)) return;
+  let st;
+  try {
+    st = lstatSync(dir);
+  } catch {
+    return;
+  }
+  if (!st.isDirectory()) return;
+  tightened.add(dir);
+  if (!isRealFile(join(dir, "config.json")) && !isRealDir(join(dir, "identities"))) return;
+  try {
+    chmodSync(dir, 0o700);
+    for (const name of KIWI_DIRS) lockKiwiDir(join(dir, name), name === "downloads");
+    for (const name of KIWI_FILES) {
+      const p = join(dir, name);
+      if (!isRealFile(p)) continue;
+      try {
+        chmodSync(p, 0o600);
+      } catch {}
+    }
+  } catch {
+    // A file this user can't chmod must not stop startup.
+  }
+}
+
+/** chmod one kiwi directory and what is inside it. Files become 0600 only under downloads. */
+function lockKiwiDir(dir: string, privateFiles: boolean): void {
+  if (!isRealDir(dir)) return;
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    return;
+  }
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    let child;
+    try {
+      child = lstatSync(p);
+    } catch {
+      continue;
+    }
+    if (child.isSymbolicLink()) continue;
+    if (child.isDirectory()) {
+      lockKiwiDir(p, privateFiles);
+      continue;
+    }
+    if (child.isFile() && privateFiles) {
+      try {
+        chmodSync(p, 0o600);
+      } catch {}
+    }
+  }
 }
 
 /** Whether a live process is still listening out of an old state directory. */
@@ -93,12 +189,39 @@ export const signingBudget: SigningBudget = {
 
 export function writePrivate(path: string, data: string): void {
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, data, { mode: 0o600 });
-  renameSync(tmp, path);
-  try {
-    chmodSync(path, 0o600);
-  } catch {}
+  // Exclusive create. The first name is predictable, so a symlink planted there
+  // must fail the open instead of being followed. Leave it in place and use a
+  // fresh name; unlinking it would reopen the race.
+  const names = [`${path}.${process.pid}.tmp`, `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`];
+  let blocked: unknown;
+  for (const tmp of names) {
+    try {
+      writeFileSync(tmp, data, { mode: 0o600, flag: "wx" });
+    } catch (err) {
+      if (fileExists(err)) {
+        blocked = err;
+        continue;
+      }
+      throw err;
+    }
+    try {
+      renameSync(tmp, path);
+    } catch (err) {
+      try {
+        rmSync(tmp, { force: true });
+      } catch {}
+      throw err;
+    }
+    try {
+      chmodSync(path, 0o600);
+    } catch {}
+    return;
+  }
+  throw blocked;
+}
+
+function fileExists(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && (err as { code?: unknown }).code === "EEXIST";
 }
 
 export function loadConfig(): Config {
@@ -157,7 +280,11 @@ function withLock<T>(lock: string, fn: () => T): T {
  * case-insensitive disks.
  */
 function safe(s: string): string {
-  return [...s].map((c) => (/[a-z0-9_.-]/.test(c) ? c : `~${c.codePointAt(0)!.toString(16)}~`)).join("");
+  const out = [...s].map((c) => (/[a-z0-9_.-]/.test(c) ? c : `~${c.codePointAt(0)!.toString(16)}~`)).join("");
+  // "." and ".." are path segments, not names. Spell them out, the way segment() does.
+  if (out === ".") return "~2e~";
+  if (out === "..") return "~2e~~2e~";
+  return out;
 }
 
 /** Each channel's cursors live in a folder of their own, so forgetting one never touches another's. */
