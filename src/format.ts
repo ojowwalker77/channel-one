@@ -125,6 +125,11 @@ function cleanBody(s: string): string {
   return s.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, "");
 }
 
+/** Member-written text that may span lines. Later lines are marked, so one cannot pose as a new row. */
+export function markedText(s: string): string {
+  return cleanBody(s).replace(/\n/g, "\n  │ ");
+}
+
 /**
  * `#12 win (for @jonatas) → mac [ask] re #9: body` — the format agents see in tail/wait/read.
  * Every message starts with `#N`; continuation lines of a body start with "  │ ", so no text
@@ -142,20 +147,22 @@ export function formatMessage(m: Message, trust?: Trust, state?: ChannelState): 
 
 function taskLine(state: ChannelState, t: Task): string {
   const waits = waitingOn(state, t);
-  const owner = t.owner ? ` @${t.owner}` : "";
+  const owner = t.owner ? ` @${inlineText(t.owner, 40)}` : "";
   const wait = waits.length ? ` (after ${waits.map(taskId).join(", ")})` : "";
-  return `  ${taskId(t.id).padEnd(5)} ${t.state.padEnd(7)}${owner} ${t.title}${wait}`;
+  return `  ${taskId(t.id).padEnd(5)} ${t.state.padEnd(7)}${owner} ${inlineText(t.title, 200)}${wait}`;
 }
 
 function claimLine(c: Claim, now: number): string {
-  const where = c.checkout ? ` in ${c.owner}'s checkout (${c.checkout}${c.machine ? `, on ${c.machine}` : ""})` : "";
-  return `  ${c.path}  @${c.owner}, ${left(c.expires, now)}${where}${c.note ? ` — ${c.note}` : ""}`;
+  const where = c.checkout ? ` in ${inlineText(c.owner, 40)}'s checkout (${inlineText(c.checkout, 200)}${c.machine ? `, on ${inlineText(c.machine, 80)}` : ""})` : "";
+  return `  ${inlineText(c.path, 300)}  @${inlineText(c.owner, 40)}, ${left(c.expires, now)}${where}${c.note ? ` — ${inlineText(c.note, 200)}` : ""}`;
 }
 
-/** `build.cmd = cargo test  (win, 2h ago, 5h left)`. */
+/** `build.cmd = cargo test  (win, 2h ago, 5h left)`. A value with several lines keeps its tail marked. */
 export function formatFact(f: Fact, now = Date.now()): string {
   const remain = f.expires ? `, ${left(f.expires, now)}` : "";
-  return `${f.key} = ${f.value}  (${f.by}, ${ago(f.ts, now)}${remain})`;
+  const lines = cleanBody(String(f.value ?? "")).split("\n");
+  const head = `${inlineText(f.key, 200)} = ${lines[0] ?? ""}  (${inlineText(f.by, 40)}, ${ago(f.ts, now)}${remain})`;
+  return [head, ...lines.slice(1).map((l) => `  │ ${l}`)].join("\n");
 }
 
 export interface Snapshot {
@@ -173,11 +180,11 @@ export function memberJson(state: ChannelState, name: string, online: Snapshot["
   const on = online.get(name);
   return {
     name,
-    role: m?.role ?? on?.role ?? null,
-    about: m?.about ?? null,
+    role: inlineText(m?.role ?? on?.role, 80) || null,
+    about: inlineText(m?.about, 200) || null,
     kind: m?.kind ?? (m?.owner ? "human" : "agent"),
     owner: !!m?.owner,
-    sponsor: m?.sponsor ? (m.sponsor.handle ?? m.sponsor.name) : null,
+    sponsor: m?.sponsor ? inlineText(m.sponsor.handle ?? m.sponsor.name, 80) || null : null,
     color: colorOf(state, name),
     online: !!on,
     lastSeen: m?.lastSeen ?? null,
@@ -195,7 +202,7 @@ export function statusJson({ alias, me, state, online, unread, now = Date.now() 
 export function formatStatus({ alias, me, state, online, unread, now = Date.now() }: Snapshot): string {
   const out: string[] = [];
   const meM = state.members.get(me);
-  out.push(`channel ${alias} · you are ${me}${meM?.role ? ` (${meM.role})` : ""} · head #${state.head}${unread ? ` · ${unread} unread` : ""}`);
+  out.push(`channel ${alias} · you are ${me}${meM?.role ? ` (${inlineText(meM.role, 80)})` : ""} · head #${state.head}${unread ? ` · ${unread} unread` : ""}`);
 
   // Only people and agents still in the channel; anyone who left or was removed is listed apart.
   const current = [...state.members.values()].filter((m) => m.active).map((m) => m.name);
@@ -205,10 +212,10 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
   for (const name of [...names].sort()) {
     const m = state.members.get(name);
     const on = online.get(name);
-    const where = on ? `online (${on.client})` : m ? `last seen ${ago(m.lastSeen, now)}` : "online";
-    const role = m?.role ?? on?.role;
+    const where = on ? `online (${inlineText(on.client, 40)})` : m ? `last seen ${ago(m.lastSeen, now)}` : "online";
+    const role = inlineText(m?.role ?? on?.role, 80);
     const key = m?.pk ? ` · key ${m.pk.slice(0, 8)}` : "";
-    const kind = m?.kind === "human" ? ` · human${m.display ? ` (${m.display})` : ""}${m.owner ? ", owner" : ""}` : m?.sponsor ? ` · agent of @${m.sponsor.handle ?? m.sponsor.name}` : "";
+    const kind = m?.kind === "human" ? ` · human${m.display ? ` (${inlineText(m.display, 80)})` : ""}${m.owner ? ", owner" : ""}` : m?.sponsor ? ` · agent of @${inlineText(m.sponsor.handle ?? m.sponsor.name, 80)}` : "";
     out.push(`  ${name}${name === me ? " (you)" : ""}${role ? ` — ${role}` : ""}${kind} · ${where}${key}`);
     // How busy they are, so work goes to whoever's free (people only when they hold tasks).
     const load = memberLoad(state, name, now);
@@ -243,7 +250,11 @@ export function formatStatus({ alias, me, state, online, unread, now = Date.now(
   }
   if (state.facts.size) {
     out.push("", "facts:");
-    for (const f of [...state.facts.values()].sort((a, b) => a.key.localeCompare(b.key))) out.push(`  ${f.key} = ${f.value}  (${f.by})`);
+    for (const f of [...state.facts.values()].sort((a, b) => a.key.localeCompare(b.key))) {
+      const lines = cleanBody(String(f.value ?? "")).split("\n");
+      out.push(`  ${inlineText(f.key, 200)} = ${lines[0] ?? ""}  (${inlineText(f.by, 40)})`);
+      for (const l of lines.slice(1)) out.push(`  │ ${l}`);
+    }
   }
   return out.join("\n");
 }
@@ -257,7 +268,7 @@ export function formatTasks(state: ChannelState, opts: { all?: boolean; owner?: 
 }
 
 export function formatTask(state: ChannelState, t: Task, now = Date.now()): string {
-  const out = [`${taskId(t.id)} ${t.title}`, `  state: ${t.state}${t.owner ? ` · owner: ${t.owner}` : " · unassigned"} · created by ${t.createdBy} ${ago(t.createdAt, now)}`];
+  const out = [`${taskId(t.id)} ${inlineText(t.title, 200)}`, `  state: ${t.state}${t.owner ? ` · owner: ${inlineText(t.owner, 40)}` : " · unassigned"} · created by ${inlineText(t.createdBy, 40)} ${ago(t.createdAt, now)}`];
   const waits = waitingOn(state, t);
   if (t.after.length) {
     const settled = t.after.every((d) => {
@@ -266,10 +277,10 @@ export function formatTask(state: ChannelState, t: Task, now = Date.now()): stri
     });
     out.push(`  after: ${t.after.map((d) => `${taskId(d)} (${state.tasks.get(d)?.state ?? "?"})`).join(", ")}${waits.length ? "" : settled ? " — all done" : " — ready"}`);
   }
-  if (t.detail) out.push("", t.detail);
+  if (t.detail) out.push("", markedText(t.detail));
   if (t.notes.length) {
     out.push("", "notes:");
-    for (const n of t.notes) out.push(`  #${n.seq} ${n.by}, ${ago(n.ts, now)}: ${n.text}`);
+    for (const n of t.notes) out.push(`  #${n.seq} ${inlineText(n.by, 40)}, ${ago(n.ts, now)}: ${markedText(n.text)}`);
   }
   return out.join("\n");
 }
