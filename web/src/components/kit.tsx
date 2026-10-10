@@ -1,6 +1,8 @@
 import { Dialog } from "@base-ui/react/dialog"
 import { Component, useSyncExternalStore, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type Ref } from "react"
 
+import type { Color } from "@mc/protocol.ts"
+import { CENTER, PALETTE, VIEWBOX, shapeFor } from "@/lib/characters"
 import { initials } from "@/lib/format"
 import { noteSignInGone } from "@/lib/session"
 import { cx } from "@/lib/utils"
@@ -87,22 +89,48 @@ export function TextField({ className, ...props }: InputHTMLAttributes<HTMLInput
 }
 
 /**
- * A monogram. Agents are rounded squares and people are circles, so you can
- * tell who's a person at a glance without a single colour.
+ * Who someone is, at a glance. Agents are characters (a body shape picked by
+ * name, two eyes) and people are circles with their initials, so shape tells
+ * a person from an agent. Colour is the person's pick, and their agents wear
+ * it; no pick means neutral. `working` gives an agent's eyes a slow blink.
  */
-export function Monogram({ name, agent, size = 28, online, className }: { name: string; agent?: boolean; size?: number; online?: boolean; className?: string }) {
+export function Monogram({
+  name,
+  agent,
+  size = 28,
+  online,
+  color,
+  working,
+  className,
+}: {
+  name: string
+  agent?: boolean
+  size?: number
+  online?: boolean
+  color?: Color | null
+  working?: boolean
+  className?: string
+}) {
+  const tone = color ? PALETTE[color] : null
   const letters = initials(name)
   return (
     <span className={cx("relative inline-flex shrink-0", className)} style={{ width: size, height: size }}>
-      <span
-        className={cx(
-          "flex size-full items-center justify-center font-semibold text-ink-2 select-none",
-          agent ? "bg-wash-2 shadow-[inset_0_0_0_0.5px_var(--line)]" : "bg-[color-mix(in_srgb,var(--ink)_12%,var(--canvas))]"
-        )}
-        style={{ borderRadius: agent ? size * 0.28 : size / 2, fontSize: Math.round(size * (letters.length > 1 ? 0.36 : 0.42)), letterSpacing: "-0.01em" }}
-      >
-        {letters}
-      </span>
+      {agent ? (
+        <svg viewBox={VIEWBOX} width={size} height={size} aria-hidden className={cx("block overflow-visible", working && "character-working")}>
+          <path d={shapeFor(name)} fill={tone?.fill ?? "var(--char)"} />
+          <g fill={tone?.ink ?? "var(--char-ink)"} className="character-eyes">
+            <ellipse cx={CENTER - 29} cy={CENTER - 8} rx={11} ry={14} />
+            <ellipse cx={CENTER + 29} cy={CENTER - 8} rx={11} ry={14} />
+          </g>
+        </svg>
+      ) : (
+        <span
+          className={cx("flex size-full items-center justify-center rounded-full font-semibold select-none", !tone && "bg-[color-mix(in_srgb,var(--ink)_12%,var(--canvas))] text-ink-2")}
+          style={{ ...(tone && { background: tone.fill, color: tone.text }), fontSize: Math.round(size * (letters.length > 1 ? 0.36 : 0.42)), letterSpacing: "-0.01em" }}
+        >
+          {letters}
+        </span>
+      )}
       {online && (
         <span
           className="absolute -right-0.5 -bottom-0.5 rounded-full bg-live shadow-[0_0_0_2px_var(--canvas)]"

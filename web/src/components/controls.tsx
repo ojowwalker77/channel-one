@@ -1,14 +1,15 @@
 import { Dialog } from "@base-ui/react/dialog"
 import { Add01Icon, Copy01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons"
-import { createContext, useContext, useState, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react"
 
 import { loadLine, memberLoad, showsLoad, type Load } from "@mc/load.ts"
 import { NAME_RE, type JoinRequest, type Member as RosterMember } from "@mc/membership.ts"
-import type { ChannelIcon, Event } from "@mc/protocol.ts"
+import { COLORS, type ChannelIcon, type Color, type Event } from "@mc/protocol.ts"
 import { TOO_MANY_REQUESTS } from "@mc/sas.ts"
-import { taskId, type ChannelState, type Member } from "@mc/state.ts"
+import { colorOf, taskId, type ChannelState, type Member } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
-import { formatAgo, memberLine, memberName } from "@/lib/format"
+import { formatAgo, initials, memberLine, memberName } from "@/lib/format"
+import { PALETTE } from "@/lib/characters"
 import { cx } from "@/lib/utils"
 import { IconDialog } from "./channel-icon"
 import { cachedIcon } from "@/lib/icons"
@@ -60,6 +61,8 @@ export interface ControlsProps {
   onSetIcon?: (icon: ChannelIcon | null) => Promise<void>
   /** Owner: rename the channel (a title signed by the owner). Absent for everyone else. */
   onRename?: (name: string) => Promise<void>
+  /** A person sets their own colour (unique in the channel; their agents wear it). */
+  onColor?: (color: Color | null) => Promise<void>
   /** The channel's name as this browser knows it, to start the rename from. */
   title?: string
   /** This channel's room, so the icon dialog can show what's there now. */
@@ -319,8 +322,8 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
           {live && here.length > 0 && (
             <span className="flex shrink-0 -space-x-1" aria-hidden>
               {here.slice(0, 5).map((m) => (
-                <span key={m.name} className="flex bg-canvas p-px" style={{ borderRadius: m.kind !== "human" ? 6 : 999 }}>
-                  <Monogram name={memberName(m)} agent={m.kind !== "human"} size={16} />
+                <span key={m.name} className="flex rounded-full bg-canvas p-px">
+                  <Monogram name={memberName(m)} agent={m.kind !== "human"} color={colorOf(p.state, m.name)} working={m.kind !== "human" && memberLoad(p.state, m.name, p.now).current.length > 0} size={16} />
                 </span>
               ))}
             </span>
@@ -341,7 +344,7 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
           return (
             <div key={m.pk} className="rounded-[8px] px-2 py-1.5 hover:bg-wash">
               <div className="flex items-center gap-2.5">
-                <Monogram name={memberName(m)} agent={m.kind !== "human"} size={26} online={p.online.has(m.name)} />
+                <Monogram name={memberName(m)} agent={m.kind !== "human"} size={26} online={p.online.has(m.name)} color={colorOf(p.state, m.name)} working={m.kind !== "human" && load.current.length > 0} />
                 <button type="button" className="min-w-0 flex-1 text-left" onClick={act(() => p.onFilter({ kind: "from", name: m.name }))} title="Show only their messages">
                   <p className="truncate text-[13px] font-medium">
                     {memberName(m)}
@@ -402,6 +405,7 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
                   )}
                 </div>
               )}
+              {m.pk === p.myKey && (m.kind === "human" || m.owner) && p.onColor && <ColorPicker state={p.state} me={m.name} />}
             </div>
           )
         })}
@@ -409,6 +413,43 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
       </div>
       <div className="mt-1 border-t border-line px-2 pt-2 pb-1 text-[12px] text-ink-2">Choose a name to see only their messages.</div>
     </Popover>
+  )
+}
+
+/** Your colour: one per person in the channel, and your agents wear it. Taken ones show who holds them. */
+function ColorPicker({ state, me }: { state: ChannelState; me: string }) {
+  const { p, busy, run } = useControls()
+  const mine = colorOf(state, me)
+  const holders = new Map<Color, Member>()
+  for (const x of state.members.values()) if (x.active && x.name !== me && x.color && (x.kind === "human" || x.owner)) holders.set(x.color, x)
+  const pick = (c: Color | null) => void run(() => p.onColor!(c), c ? `You're ${c} now` : "Colour cleared")
+  return (
+    <div className="mt-1.5 ml-[36px] flex flex-wrap items-center gap-1" role="radiogroup" aria-label="Your colour">
+      {COLORS.map((c) => {
+        const holder = holders.get(c)
+        const on = mine === c
+        return (
+          <button
+            key={c}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            aria-label={holder ? `${c}, ${memberName(holder)}'s` : c}
+            title={holder ? `${memberName(holder)}'s colour` : on ? `${c} (yours, click to clear)` : c}
+            disabled={busy || !!holder}
+            onClick={() => pick(on ? null : c)}
+            className={cx(
+              "grid size-5 place-items-center rounded-full text-[8px] font-semibold transition-[opacity,box-shadow] disabled:cursor-not-allowed",
+              holder && "opacity-35",
+              on && "shadow-[0_0_0_2px_var(--canvas),0_0_0_3.5px_var(--ink)]",
+            )}
+            style={{ background: PALETTE[c].fill, color: PALETTE[c].text }}
+          >
+            {holder && initials(memberName(holder))}
+          </button>
+        )
+      })}
+    </div>
   )
 }
 
@@ -548,9 +589,14 @@ export function RequestsBanner() {
 function Requests({ onDone }: { onDone: () => void }) {
   const { p, busy, run, ask, lastSeenOf, onlineNow } = useControls()
   const requests = p.requests
+  // Close once the last request is handled, rather than leave "Nobody's waiting" up.
+  const empty = requests.length === 0
+  useEffect(() => {
+    if (empty) onDone()
+  }, [empty, onDone])
   return (
     <div className="p-5">
-      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">{requests.length === 1 ? "Wants to join" : `${requests.length} want to join`}</h2>
+      <h2 className="text-[15px] font-semibold tracking-[-0.01em]">{requests.length > 1 ? `${requests.length} want to join` : "Wants to join"}</h2>
       <p className="mt-1 text-[13px] leading-normal text-ink-2">Show the code, compare it with theirs, then approve.</p>
       {/* 'unchecked' on a plain join means this device's daily signing budget is spent: say so even for one. Reclaims are never checked on their own. */}
       {requests.some((r) => r.check === "unchecked" && !r.reclaims) && <p className="mt-3 rounded-[10px] bg-wash p-3 text-[12.5px] leading-normal text-ink-2">{TOO_MANY_REQUESTS}</p>}

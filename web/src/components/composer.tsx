@@ -2,7 +2,7 @@ import { Add01Icon, ArrowDown01Icon, ArrowUp02Icon, Cancel01Icon } from "@hugeic
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import type { SendOptions } from "@mc/client.ts"
-import { MAX_IMAGE_BYTES, RASTER_MIMES, type Kind, type Message } from "@mc/protocol.ts"
+import { MAX_IMAGE_BYTES, RASTER_MIMES, type Color, type Kind, type Message } from "@mc/protocol.ts"
 import { excerpt } from "@/lib/format"
 import { cx } from "@/lib/utils"
 import { Icon } from "./icon"
@@ -31,6 +31,7 @@ export interface Person {
   name: string
   label: string
   agent: boolean
+  color?: Color | null
 }
 
 interface Props {
@@ -187,7 +188,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
               onMouseDown={(e) => (e.preventDefault(), complete(p))}
               className={cx("flex w-full items-center gap-2.5 rounded-[7px] px-2 py-1.5 text-left text-[13px]", i === mention!.index ? "bg-wash-2" : "hover:bg-wash")}
             >
-              <Monogram name={p.label} agent={p.agent} size={20} />
+              <Monogram name={p.label} agent={p.agent} color={p.color} size={20} />
               <span className="truncate font-medium">{p.label}</span>
               {p.label !== p.name && <span className="truncate text-ink-3">@{p.name}</span>}
             </button>
