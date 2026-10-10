@@ -38,7 +38,11 @@ test("a throwing consumer loses one message, not the stream; a server close stil
   await ch.send("boom");
   await ch.send("after the bug");
   const waitFor = async (body: string) => {
-    for (let i = 0; i < 50 && !got.includes(body); i++) await Bun.sleep(100);
+    const end = Date.now() + 15_000;
+    while (!got.includes(body)) {
+      if (Date.now() > end) throw new Error(`timed out waiting for ${body}; got ${got.join(", ")}`);
+      await Bun.sleep(50);
+    }
   };
   await waitFor("after the bug");
   expect(got).toEqual(["after the bug"]);

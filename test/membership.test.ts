@@ -11,6 +11,11 @@ import { fold, type Roster } from "../src/state.ts";
 import { checked } from "./check.ts";
 
 setDefaultTimeout(30_000);
+
+/** Reject if `p` is still pending when the deadline passes. The sleep is the deadline, not a guess that something is ready. */
+function within(p: Promise<void>, label: string, ms = 10_000): Promise<void> {
+  return Promise.race([p, Bun.sleep(ms).then(() => Promise.reject(new Error(`timed out waiting for ${label}`)))]);
+}
 const external = process.env.KIWI_TEST_RELAY;
 const dataDir = mkdtempSync(join(tmpdir(), "mc-relay-"));
 let server: ReturnType<typeof startRelay> | undefined;
@@ -129,8 +134,10 @@ describe("membership channels", () => {
   test("kicked members are disconnected immediately", async () => {
     const extra = await admit(owner, code, await generateIdentity("temp"));
     const ac = new AbortController();
-    const streaming = extra.stream(await extra.head(), () => {}, { signal: ac.signal }).catch((e: unknown) => e);
-    await Bun.sleep(300);
+    let ready!: () => void;
+    const opened = new Promise<void>((r) => (ready = r));
+    const streaming = extra.stream(await extra.head(), () => {}, { signal: ac.signal, onReady: () => ready() }).catch((e: unknown) => e);
+    await within(opened, "kick stream");
     await owner.remove(extra.identity.pk);
     expect(await streaming).toMatchObject({ why: "removed" });
   });
@@ -138,8 +145,10 @@ describe("membership channels", () => {
   test("closing deletes everything and tells everyone", async () => {
     const ac = new AbortController();
     const got: Message[] = [];
-    const streaming = macCh.stream(await macCh.head(), (m) => void got.push(m), { signal: ac.signal }).catch((e: unknown) => e);
-    await Bun.sleep(300);
+    let ready!: () => void;
+    const opened = new Promise<void>((r) => (ready = r));
+    const streaming = macCh.stream(await macCh.head(), (m) => void got.push(m), { signal: ac.signal, onReady: () => ready() }).catch((e: unknown) => e);
+    await within(opened, "close stream");
     await owner.close();
     expect(await streaming).toMatchObject({ why: "closed" });
     await expect(Channel.requestJoin(relay, code, await generateIdentity("late"), { name: "late" })).rejects.toBeInstanceOf(RelayError);
