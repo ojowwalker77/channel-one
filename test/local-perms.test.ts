@@ -174,12 +174,13 @@ test("hook install removes only kiwi's own commands", () => {
   const stop = (installed.hooks.Stop ?? []).flatMap((e) => e.hooks.map((h) => h.command));
   expect(installed.keep).toBe(true);
   expect(stop).toContain("echo user note # kiwi");
-  expect(stop.some((c) => c.includes("/old/bin/kiwi"))).toBe(false);
-  expect(stop.some((c) => c.endsWith(" hook stop # kiwi"))).toBe(true);
+  expect(stop).toContain("'/old/bin/kiwi' hook stop # channel-one");
+  expect(stop.some((c) => c.includes("/old/bin/kiwi") && c.endsWith(" hook stop # kiwi"))).toBe(false);
+  expect(stop.filter((c) => c.endsWith(" hook stop # kiwi"))).toHaveLength(1);
   uninstallHooks();
   const gone = JSON.parse(readFileSync(settings, "utf8")) as { hooks?: { Stop?: { hooks: { command: string }[] }[] } };
   const left = (gone.hooks?.Stop ?? []).flatMap((e) => e.hooks.map((h) => h.command));
-  expect(left).toEqual(["echo user note # kiwi"]);
+  expect(left).toEqual(["echo user note # kiwi", "'/old/bin/kiwi' hook stop # channel-one"]);
 });
 
 test("installers document the checksum and create a private home", () => {
