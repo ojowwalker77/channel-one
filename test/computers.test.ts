@@ -1,7 +1,8 @@
 import { afterAll, afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { machineStatus, newMachine, registerMachine, vouchFor, type MachineFile } from "../src/machine.ts";
 import type { HumanAuth } from "../src/relay/human.ts";
-import { UNUSED_LINK_TTL_MS, onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "../src/relay/machines.ts";
+import { sign } from "../src/identity.ts";
+import { LINK_TTL_MS, sweepPending, UNUSED_LINK_TTL_MS, onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "../src/relay/machines.ts";
 import { errorResponse } from "../src/relay/room.ts";
 
 // The machine routes on their own: an in-memory store, and a "WorkOS" that trusts any user_ token.
@@ -103,5 +104,49 @@ describe("your computers: unused links expire", () => {
     expect(await list("user_d")).toEqual([]);
     // kiwi setup again: the same key registers as a new pending link.
     expect((await registerMachine(m)).status).toBe("pending");
+  });
+});
+
+describe("unlinked registrations don't live forever", () => {
+  test("a registration nobody confirms is gone after the link window", async () => {
+    const t0 = Date.now();
+    setSystemTime(t0);
+    const m = await newMachine(relay);
+    expect((await registerMachine(m)).status).toBe("pending");
+    expect(records.has(m.identity.pk)).toBe(true);
+
+    setSystemTime(t0 + LINK_TTL_MS + 1000);
+    const res = await fetch(`${relay}/v1/machines/${m.identity.pk}/public`);
+    expect(res.status).toBe(404);
+    expect(records.has(m.identity.pk)).toBe(false);
+  });
+
+  test("the sweep deletes an unlinked registration even if nobody reads it", async () => {
+    const t0 = Date.now();
+    const stale: MachineRecord = { pk: "stale-machine-key", label: "old", user: null, created: t0 - LINK_TTL_MS - 1000 };
+    const fresh: MachineRecord = { pk: "fresh-machine-key", label: "new", user: null, created: t0 };
+    const linked: MachineRecord = { pk: "linked-machine-key", label: "mine", user: "user_z", created: t0 - LINK_TTL_MS - 1000, linked: t0 };
+    const all = [stale, fresh, linked];
+    const n = await sweepPending(
+      async () => all,
+      async (rec) => void all.splice(all.indexOf(rec), 1),
+      t0,
+    );
+    expect(n).toBe(1);
+    expect(all.map((r) => r.pk)).toEqual(["fresh-machine-key", "linked-machine-key"]);
+  });
+
+  test("the 21st registration from one address in 10 minutes is refused", async () => {
+    setSystemTime(Date.now());
+    const ip = "203.0.113.50";
+    let status = 0;
+    for (let i = 0; i < 21; i++) {
+      const m = await newMachine(relay);
+      const body = JSON.stringify(await sign(m.identity, { label: m.label, ts: Date.now() }));
+      const res = await fetch(`${relay}/v1/machines`, { method: "POST", headers: { "content-type": "application/json", "cf-connecting-ip": ip }, body });
+      status = res.status;
+      if (i < 20) expect(status).toBe(200);
+    }
+    expect(status).toBe(429);
   });
 });

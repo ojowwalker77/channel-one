@@ -36,8 +36,11 @@ export interface MachineStore {
   listFor(user: string): Promise<{ pk: string; label: string; linked: number }[]>;
 }
 
-/** How long a pending link waits for its person to confirm. */
-const LINK_TTL_MS = 15 * 60_000;
+/** How long a pending link waits for its person to confirm. After that, an unlinked registration is deleted. */
+export const LINK_TTL_MS = 15 * 60_000;
+/** New registrations one address may make in the window below. */
+const REGISTRATIONS_PER_WINDOW = 20;
+const REGISTER_WINDOW_MS = 10 * 60_000;
 /** A linked computer nobody used for this long stops vouching: a forgotten laptop shouldn't speak for you forever. */
 export const UNUSED_LINK_TTL_MS = 30 * 86_400_000;
 /** Recording use costs a storage write, so it's kept to the hour. */
@@ -45,10 +48,45 @@ const USE_PRECISION_MS = 3600_000;
 
 const lastUsed = (rec: MachineRecord) => rec.used ?? rec.linked ?? rec.created;
 
-/** The computer's record, unless its link went unused too long: then it's deleted, as if its person had removed it. */
+const registrations = new Map<string, number[]>();
+
+/** False once this address has registered REGISTRATIONS_PER_WINDOW computers in the last 10 minutes. */
+export function registrationAllowed(ip: string, now = Date.now()): boolean {
+  const kept = (registrations.get(ip) ?? []).filter((t) => now - t < REGISTER_WINDOW_MS);
+  if (kept.length >= REGISTRATIONS_PER_WINDOW) {
+    registrations.set(ip, kept);
+    return false;
+  }
+  if (registrations.size > 10_000) registrations.clear();
+  kept.push(now);
+  registrations.set(ip, kept);
+  return true;
+}
+
+/** Drop unlinked registrations past the link window. Bun runs this on startup and hourly; the Worker uses an alarm per record. */
+export async function sweepPending(list: () => Promise<MachineRecord[]>, remove: (rec: MachineRecord) => Promise<void>, now = Date.now()): Promise<number> {
+  let n = 0;
+  for (const rec of await list()) {
+    if (rec.user || now - rec.created < LINK_TTL_MS) continue;
+    await remove(rec);
+    n++;
+  }
+  return n;
+}
+
+/** The address a registration counts against. Bun passes the peer; the Worker leaves it unset and Cloudflare's header is used. A missing address is not limited (local tests). */
+function callerIp(req: Request, peer?: string | null): string | null {
+  if (peer) return peer;
+  const cf = req.headers.get("cf-connecting-ip")?.trim();
+  return cf ? cf.slice(0, 80) : null;
+}
+
+/** The computer's record, or null if it has expired and been deleted. An unlinked one lasts the link window; a linked one lasts until it goes unused. */
 async function current(store: MachineStore, pk: string): Promise<MachineRecord | null> {
   const rec = await store.get(pk);
-  if (rec?.user && Date.now() - lastUsed(rec) > UNUSED_LINK_TTL_MS) {
+  if (!rec) return null;
+  const expired = rec.user ? Date.now() - lastUsed(rec) > UNUSED_LINK_TTL_MS : Date.now() - rec.created >= LINK_TTL_MS;
+  if (expired) {
     await store.remove(rec);
     return null;
   }
@@ -72,7 +110,7 @@ export async function vouchedBy(store: MachineStore, roomId: string, agentPk: st
 }
 
 /** Routes under /v1/machines and /v1/me/machines; null when the path isn't one of them. */
-export async function onMachineHttp(req: Request, store: MachineStore, human: HumanAuth | null): Promise<Response | null> {
+export async function onMachineHttp(req: Request, store: MachineStore, human: HumanAuth | null, peer?: string | null): Promise<Response | null> {
   const url = new URL(req.url);
   const path = url.pathname;
   const method = req.method.toUpperCase();
@@ -101,7 +139,9 @@ export async function onMachineHttp(req: Request, store: MachineStore, human: Hu
     if (Math.abs(Date.now() - b.ts) > 5 * 60_000) throw new HttpError(400, "clock is off by more than 5 minutes");
     const prior = await current(store, b.pk);
     if (prior?.user) return Response.json({ status: "linked" });
-    await store.put({ pk: b.pk, label: inlineText(b.label, 60) || "A computer", user: null, created: Date.now() });
+    const ip = callerIp(req, peer);
+    if (ip && !registrationAllowed(ip)) throw new HttpError(429, "too many computer registrations; try again in a few minutes");
+    await store.put({ pk: b.pk, label: inlineText(b.label, 60) || "A computer", user: null, created: prior?.created ?? Date.now() });
     return Response.json({ status: "pending", code: await machineCode(b.pk) });
   }
 

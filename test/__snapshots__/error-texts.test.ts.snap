@@ -23,6 +23,7 @@ exports[`the relay's error texts are exactly these 1`] = `
   "machines.ts 404 this link expired; run kiwi setup again",
   "machines.ts 404 this relay has no sign-in, so computers can't be linked",
   "machines.ts 409 this computer is already linked to someone else",
+  "machines.ts 429 too many computer registrations; try again in a few minutes",
   "room.ts 400 a seat can't be reclaimed by its own key",
   "room.ts 400 approve a pending request",
   "room.ts 400 bad envelope",

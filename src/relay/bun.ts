@@ -11,7 +11,7 @@ import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import { devHostOk, devHumanAuth, devRequestOk, HUMAN_HEADER, workosFromSettings, type HumanAuth } from "./human.ts";
 import { onDeviceHttp, type DeviceStore, type DeviceTransfer } from "./devices.ts";
 import { onVaultHttp, vaultSwap, type VaultRecord, type VaultStore } from "./vault.ts";
-import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
+import { onMachineHttp, sweepPending, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
 import { policyFrom, type RelayPolicy } from "./policy.ts";
 import {
   HttpError,
@@ -99,6 +99,14 @@ export function startRelay(
         .map((r) => JSON.parse(r.rec) as MachineRecord)
         .map((m) => ({ pk: m.pk, label: m.label, linked: m.linked ?? m.created })),
   };
+  const sweepMachines = () =>
+    sweepPending(
+      async () => (people.query("SELECT rec FROM machines WHERE user IS NULL").all() as { rec: string }[]).map((r) => JSON.parse(r.rec) as MachineRecord),
+      async (rec) => void people.query("DELETE FROM machines WHERE pk = ?").run(rec.pk),
+    );
+  void sweepMachines();
+  const machineSweep = setInterval(sweepMachines, 3_600_000);
+  machineSweep.unref?.();
 
   /** A store for the room; rooms that don't exist get a throwaway in-memory DB (so no file appears). */
   const storeFor = (roomId: string, creating: boolean): RoomStore => {
@@ -179,7 +187,7 @@ export function startRelay(
         if (device) return device;
         const vault = await onVaultHttp(req, vaults, human);
         if (vault) return vault;
-        const machine = await onMachineHttp(req, machines, human);
+        const machine = await onMachineHttp(req, machines, human, server.requestIP(req)?.address ?? null);
         if (machine) return machine;
         if (url.pathname === "/v1/me/usage" && req.method === "GET") {
           return await myUsage(
