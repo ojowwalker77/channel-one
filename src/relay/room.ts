@@ -178,6 +178,9 @@ interface Meta {
   rotate: boolean;
 }
 
+/** Storage handles whose room already has every column this version reads. */
+const migrated = new WeakSet<Sql>();
+
 export class RoomStore {
   constructor(
     private readonly sql: Sql,
@@ -186,7 +189,14 @@ export class RoomStore {
     readonly policy: RelayPolicy = OPEN_POLICY,
     /** The clock, injectable so tests can cross midnight without waiting for it. */
     private readonly now: () => number = Date.now,
-  ) {}
+  ) {
+    // A room created by an older relay gets the columns this one reads before anything reads them,
+    // once per storage handle (a Durable Object instance, a Bun relay's database), not per request.
+    if (!migrated.has(sql) && this.exists() && !this.isLegacy()) {
+      this.migrate();
+      migrated.add(sql);
+    }
+  }
 
   /** Tables exist only once a room is created, so a closed room leaves nothing behind. */
   exists(): boolean {
