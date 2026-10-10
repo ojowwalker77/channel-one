@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react"
 
-import { Channel, ChannelGone, RelayError, keepRecordsIn, myChannels, ownerStatement, type HumanSession, type MyChannel, type SendOptions } from "@mc/client.ts"
+import { Channel, ChannelGone, RelayError, keepRecordsIn, myChannels, ownerStatement, type HumanSession, type ModeSetting, type MyChannel, type SendOptions } from "@mc/client.ts"
 import { decodeJoinCode, fromB64url, newRoomId, ownerFingerprint, type ChannelAccess } from "@mc/crypto.ts"
 import { generateIdentity, withExchangeKey, type Identity } from "@mc/identity.ts"
 import { handleFor, type JoinRequest, type Member } from "@mc/membership.ts"
@@ -571,6 +571,13 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
       .catch(() => {})
   }, [ch, member.code, infoAt])
 
+  // The channel's mode as the owner signed it: this view holds only the log's tail, and the mode.set
+  // may be older than that. Read again whenever the info changes, like the name.
+  const [modeFloor, setModeFloor] = useState<ModeSetting | null>(null)
+  useEffect(() => {
+    void ch.mode().then(setModeFloor, () => {})
+  }, [ch, infoAt])
+
   const onGone = useCallback(
     (err: unknown) => {
       noteSignInGone(err)
@@ -674,7 +681,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
       })),
     [roster]
   )
-  const state = useMemo(() => fold(messages, rosterForFold, now), [messages, rosterForFold, now])
+  const state = useMemo(() => fold(messages, rosterForFold, now, modeFloor), [messages, rosterForFold, now, modeFloor])
 
   // Owner: the relay's "can post" bit follows the scopes in the log, put right whenever either side
   // changes (a scope.set whose second step failed, here or on another device). Only with the whole

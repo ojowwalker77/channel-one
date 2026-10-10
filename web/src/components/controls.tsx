@@ -27,7 +27,7 @@ import { Popover } from "./ui/popover"
 // ChannelControls holds the shared state and every confirm dialog; the
 // pieces below read it from context.
 
-export type Filter = { kind: "from"; name: string } | { kind: "open" } | { kind: "mine" }
+export type Filter = { kind: "from"; name: string } | { kind: "open" } | { kind: "mine" } | { kind: "coordinator" }
 
 type Confirm =
   | { kind: "approve"; req: JoinRequest }
@@ -70,6 +70,8 @@ export interface ControlsProps {
   onRename?: (name: string) => Promise<void>
   /** A person sets their own colour (unique in the channel; their agents wear it). */
   onColor?: (color: Color | null) => Promise<void>
+  /** Owner: coordinator-only on or off (an owner-signed mode.set). Absent for everyone else. */
+  onMode?: (coordinatorOnly: boolean, strict: boolean) => Promise<void>
   /** The channel's name as this browser knows it, to start the rename from. */
   title?: string
   /** This channel's room, so the icon dialog can show what's there now. */
@@ -713,6 +715,7 @@ export function ChannelMenu() {
   const auth = useAuth()
   const [iconOpen, setIconOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
+  const [moding, setModing] = useState(false)
   return (
     <>
       <Menu
@@ -734,6 +737,7 @@ export function ChannelMenu() {
         )}
         {p.isOwner && p.onRename && <MenuItem onClick={() => setRenaming(true)}>Rename channel…</MenuItem>}
         {p.isOwner && p.onSetIcon && <MenuItem onClick={() => setIconOpen(true)}>Channel icon…</MenuItem>}
+        {p.isOwner && p.onMode && <MenuItem onClick={() => setModing(true)}>{p.state.mode.coordinatorOnly ? "Coordinator-only: on…" : "Coordinator-only…"}</MenuItem>}
         {p.isOwner && <MenuSeparator />}
         {p.isOwner ? (
           <MenuItem tone="danger" onClick={() => ask({ kind: "close" })}>
@@ -747,7 +751,66 @@ export function ChannelMenu() {
       </Menu>
       {p.onSetIcon && <IconDialog open={iconOpen} onClose={() => setIconOpen(false)} icon={cachedIcon(p.roomId ?? "")} onSave={p.onSetIcon} />}
       {p.onRename && renaming && <RenameDialog title={p.title ?? ""} onClose={() => setRenaming(false)} onSave={p.onRename} />}
+      {p.onMode && moding && <ModeDialog state={p.state} onClose={() => setModing(false)} onSave={p.onMode} />}
     </>
+  )
+}
+
+/** The owner turns coordinator-only on or off: people talk only with the coordinator, who relays. */
+function ModeDialog({ state, onClose, onSave }: { state: ChannelState; onClose: () => void; onSave: (on: boolean, strict: boolean) => Promise<void> }) {
+  const on = state.mode.coordinatorOnly
+  const [strict, setStrict] = useState(on ? state.mode.strict : true)
+  const [busy, setBusy] = useState(false)
+  const save = async (next: boolean) => {
+    setBusy(true)
+    try {
+      await onSave(next, strict)
+      toast(next ? "Coordinator-only is on" : "Coordinator-only is off")
+      onClose()
+    } catch (err) {
+      toast(errorText(err), "error")
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Modal open onClose={onClose}>
+      <div className="p-5">
+        <Dialog.Title className="text-[15px] font-semibold tracking-[-0.01em]">Coordinator-only</Dialog.Title>
+        <Dialog.Description className="mt-1 text-[13px] leading-normal text-ink-2">
+          People talk only with the coordinator, who passes things on to the agents and back. Everyone still sees the whole channel under Everything.
+        </Dialog.Description>
+        <p className="mt-3 text-[13px] leading-normal text-ink">
+          {state.coordinator ? (
+            <>
+              The coordinator is <span className="font-medium">{memberName(state.members.get(state.coordinator))}</span>.
+            </>
+          ) : (
+            <span className="text-ink-2">There’s no coordinator yet: give someone the role “coordinator” in People. Until then, nothing changes.</span>
+          )}
+        </p>
+        <label className="mt-4 flex items-start gap-2 text-[13px] leading-normal">
+          <input type="checkbox" checked={strict} onChange={(e) => setStrict(e.target.checked)} disabled={busy} className="mt-0.5 size-4 accent-[var(--accent)]" />
+          <span>
+            Strict
+            <span className="block text-[12px] text-ink-3">Every member’s client refuses another agent’s message to a person.</span>
+          </span>
+        </label>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          {on && (
+            <Button variant="secondary" disabled={busy} onClick={() => void save(false)}>
+              Turn off
+            </Button>
+          )}
+          <Button disabled={busy || (on && strict === state.mode.strict)} onClick={() => void save(true)}>
+            {on ? "Save" : "Turn on"}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 

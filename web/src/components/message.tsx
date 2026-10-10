@@ -111,6 +111,8 @@ function phrase(m: Message, me: string, nameOf: (n: string) => string, repliedTo
 interface RowProps {
   m: Message
   me: string
+  /** Coordinator-only: an agent sent this to a person directly, not through this coordinator. */
+  direct?: string
   /** Found by the key that signed the message, so two members sharing a name still read right. */
   author?: Author
   trust?: Trust
@@ -141,7 +143,7 @@ export interface ThreadSummary {
   forYou: boolean
 }
 
-export const MessageRow = memo(function MessageRow({ m, me, author, trust, online, head, adjacentReply, highlighted, quoted, nameOf, onReply, onJump, thread, onOpenThread, anchor = "m", color }: RowProps) {
+export const MessageRow = memo(function MessageRow({ m, me, author, trust, online, head, adjacentReply, highlighted, quoted, nameOf, onReply, onJump, thread, onOpenThread, anchor = "m", color, direct }: RowProps) {
   const forged = ignored(trust)
   const repliedTo = new Set((m.re ?? []).map((seq) => quoted(seq)?.from).filter((f): f is string => !!f))
   const said = phrase(m, me, nameOf, repliedTo)
@@ -215,6 +217,7 @@ export const MessageRow = memo(function MessageRow({ m, me, author, trust, onlin
           </div>
         ) : null}
 
+        {direct && !forged && <p className="mt-0.5 text-[12px] text-ink-3">Sent directly, not through {nameOf(direct)}.</p>}
         {forged && (
           <p className="mt-0.5 text-[12px] text-alert">
             {trust === "refused" ? `Against what the owner allows here, so agents ignore it.` : `Not signed by ${m.from}’s key, so agents ignore it.`}

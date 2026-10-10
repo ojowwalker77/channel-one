@@ -44,6 +44,11 @@ interface Props {
   send: (body: string, opts: SendOptions) => Promise<number>
   /** In a thread: every message answers replyTo (the root), and there's no reply bar to cancel. */
   thread?: boolean
+  /**
+   * Coordinator-only, for a person: in the coordinator's view everything goes to the coordinator
+   * (an @agent stays in the text for them to pass on); in Everything it goes as written, copied to them.
+   */
+  route?: { coordinator: string; label: string; view: "coordinator" | "everything" }
 }
 
 /** Who a message is for: the people @mentioned at its start. */
@@ -52,7 +57,7 @@ function recipients(body: string, names: Set<string>): string[] {
   return [...lead.matchAll(/@([\p{L}\p{N}_.-]+)/gu)].map((m) => m[1]!).filter((n) => names.has(n))
 }
 
-export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, send, thread }: Props) {
+export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, send, thread, route }: Props) {
   const [body, setBody] = useState("")
   const [kind, setKind] = useState<Kind>("msg")
   const [files, setFiles] = useState<{ name: string; mime: string; data: string }[]>([])
@@ -73,6 +78,13 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
     return others.filter((p) => p.name.toLowerCase().startsWith(q) || p.label.toLowerCase().startsWith(q)).slice(0, 6)
   }, [mention, others])
   const current = KINDS.find((k) => k.kind === kind)!
+  // Coordinator-only: say plainly where an @agent message goes.
+  const routeNote = useMemo(() => {
+    if (!route) return null
+    const named = recipients(body.trim(), names).filter((n) => n !== route.coordinator)
+    if (!named.length) return null
+    return route.view === "coordinator" ? `Goes to ${route.label} as @${named.join(", @")}: …` : `Goes to @${named.join(", @")}, copied to ${route.label}`
+  }, [route, body, names])
 
   // Grow with the text, up to a point.
   useLayoutEffect(() => {
@@ -156,9 +168,12 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
     setSending(true)
     try {
       const text = body.trim() || files.map((f) => f.name).join(", ")
-      const to = recipients(text, names)
+      const named = recipients(text, names)
+      let to = named.length ? named : replyTo && replyTo.from !== me ? [replyTo.from] : undefined
+      if (route?.view === "coordinator") to = [route.coordinator]
+      else if (route && to?.length && !to.includes(route.coordinator)) to = [...to, route.coordinator]
       await send(text, {
-        to: to.length ? to : replyTo && replyTo.from !== me ? [replyTo.from] : undefined,
+        to,
         kind,
         re: replyTo ? [replyTo.seq] : undefined,
         imgs: files.length ? files : undefined,
@@ -256,7 +271,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
           rows={1}
           value={body}
           disabled={disabled}
-          placeholder={disabled ? "Connecting…" : thread ? "Reply in this thread" : replyTo ? `Reply to ${nameOf(replyTo.from)}` : "Write to the channel. Type @ to address someone."}
+          placeholder={disabled ? "Connecting…" : thread ? "Reply in this thread" : replyTo ? `Reply to ${nameOf(replyTo.from)}` : route?.view === "coordinator" ? `Write to ${route.label}. They pass it on.` : "Write to the channel. Type @ to address someone."}
           onChange={(e) => {
             setBody(e.target.value)
             trackMention(e.target.value, e.target.selectionStart)
@@ -334,7 +349,7 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
               ))}
             </MenuRadioGroup>
           </Menu>
-          <span className="ml-auto hidden pr-1 text-[11.5px] text-ink-3 sm:block">Return to send</span>
+          <span className="ml-auto hidden truncate pr-1 text-[11.5px] text-ink-3 sm:block">{routeNote ?? "Return to send"}</span>
           <button
             type="button"
             aria-label="Send"

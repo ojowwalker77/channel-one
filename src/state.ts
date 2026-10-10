@@ -121,6 +121,17 @@ export interface ChannelState {
   head: number;
 }
 
+/**
+ * Strict coordinator-only, from a person's side: a chat message from an agent other than the
+ * coordinator never reaches them, however its recipients are spelled (a broadcast, *, a thread
+ * reply). Events still do. The sender-side refusal in fold only catches messages that name a person.
+ */
+export function keptFromPeople(state: ChannelState, m: Message): boolean {
+  if (!state.mode.coordinatorOnly || !state.mode.strict || !state.coordinator || m.kind === "event") return false;
+  const from = state.members.get(m.from);
+  return !!from && !isPerson(from) && m.from !== state.coordinator;
+}
+
 /** The role that makes a member the channel's coordinator. */
 export const COORDINATOR = "coordinator";
 const isCoordinatorRole = (role: string | undefined) => role?.trim().toLowerCase() === COORDINATOR;
@@ -170,7 +181,7 @@ export function claimConflict(c: Claim): string {
  * key the owner admitted under the name it claims; anything else is forged and
  * ignored, whoever sent it.
  */
-export function fold(messages: Message[], roster: Roster, now = Date.now()): ChannelState {
+export function fold(messages: Message[], roster: Roster, now = Date.now(), modeFloor?: { coordinatorOnly: boolean; strict: boolean; since: number } | null): ChannelState {
   const members = new Map<string, Member>();
   // A name can be re-admitted under a new key after its old one left; the active key wins.
   for (const r of [...roster].sort((a, b) => Number(a.active) - Number(b.active))) {
@@ -206,6 +217,15 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
     else coordinator = m.name;
   }
   let mode = { coordinatorOnly: false, strict: false };
+  // The mode the owner signed into the channel's settings, from log position `since` on: a client
+  // holding only the log's tail (the web) may not have that mode.set. Any later one still applies.
+  let floor = modeFloor ?? null;
+  const passFloor = (seq: number) => {
+    if (floor && floor.since < seq) {
+      mode = { coordinatorOnly: floor.coordinatorOnly, strict: floor.coordinatorOnly && floor.strict };
+      floor = null;
+    }
+  };
   const direct = new Set<number>();
   const keysByName = new Map<string, Set<string>>();
   for (const r of roster) {
@@ -244,6 +264,7 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
 
   for (const m of messages) {
     passFloors(m.seq);
+    passFloor(m.seq);
     // One bad message must never take the whole channel down for everyone: skip it.
     try {
       head = Math.max(head, m.seq);
@@ -493,6 +514,8 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
   for (const member of members.values()) member.scopes = scopesByKey.get(member.pk) ?? [];
   for (const [key, fact] of facts) if (fact.expires !== undefined && fact.expires <= now) facts.delete(key);
 
+  // A floor past the end of what's loaded: the settings are newer than this tail.
+  passFloor(Infinity);
   return {
     members,
     tasks,

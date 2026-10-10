@@ -19,7 +19,7 @@ import {
 import { sign, signText, verify, verifyText, type Identity } from "./identity.ts";
 import { commitTo, joinCheckCode, joinNonce, ownerNonceStatement, spendAuto, type SigningBudget } from "./sas.ts";
 import { canPost, scopesOf, wireScopes, type Scope } from "./scopes.ts";
-import type { ChannelState } from "./state.ts";
+import { COORDINATOR, type ChannelState } from "./state.ts";
 import { handleFor, inlineText, makeRecord, NAME_RE, nameKey, openRecord, RESERVED_NAMES, sealRecord, type JoinRequest, type Member, type MemberInfo } from "./membership.ts";
 import {
   CLOSE_CLOSED,
@@ -137,6 +137,15 @@ export interface Info {
   ownerName?: string | null;
   /** When the channel's icon last changed (null: never set): refetch icon() when this moves. */
   iconAt?: number | null;
+  /** The channel's settings (its mode), sealed with the epoch-0 key and signed by the owner. */
+  settings?: { iv: string; ct: string } | null;
+}
+
+/** The channel's mode as the owner last signed it, and the log position it took effect at. */
+export interface ModeSetting {
+  coordinatorOnly: boolean;
+  strict: boolean;
+  since: number;
 }
 
 /**
@@ -423,6 +432,29 @@ export class Channel {
     this.noteSignedTitle();
   }
 
+  /**
+   * The mode the owner last signed into the channel's settings: the floor for a client holding only
+   * the tail of the log, where the mode.set itself may have scrolled out. Null if never set.
+   */
+  async mode(): Promise<ModeSetting | null> {
+    const s = (await this.info()).settings;
+    const key = this.access.keys["0"];
+    if (!s || !key) return null;
+    const o = (await open(key, this.roomId, s.iv, s.ct).catch(() => null)) as (Partial<ModeSetting> & { what?: unknown; room?: unknown; pk?: string; sig?: string }) | null;
+    if (!o || o.what !== "channel-settings" || o.room !== this.roomId || o.pk !== this.access.ownerPk || !(await verify(o as never))) return null;
+    if (typeof o.coordinatorOnly !== "boolean" || typeof o.strict !== "boolean" || !Number.isInteger(o.since)) return null;
+    return { coordinatorOnly: o.coordinatorOnly, strict: o.coordinatorOnly && o.strict, since: o.since! };
+  }
+
+  /** Owner: sign the mode into the channel's settings, after the mode.set at log position `since`. */
+  async setMode(mode: ModeSetting): Promise<void> {
+    this.ownerOnly();
+    const key = this.access.keys["0"];
+    if (!key) throw new Error("missing the channel key");
+    const sealed = await seal(key, this.roomId, await sign(this.identity, { what: "channel-settings", room: this.roomId, ...mode }));
+    await this.request("/settings", { method: "PUT", body: JSON.stringify({ settings: sealed }) });
+  }
+
   /** The channel's icon, if the owner set one (only members can read it). */
   async icon(): Promise<ChannelIcon | null> {
     const { icon } = await this.request<{ icon: { e: number; iv: string; ct: string } | null }>("/icon");
@@ -603,7 +635,8 @@ export class Channel {
     const sponsor = req.sponsoredBy ? { ...req.sponsoredBy, ...(kind === "human" ? { handle: as?.name ?? req.name } : sponsorHandle ? { handle: sponsorHandle } : {}) } : undefined;
     const info: MemberInfo = {
       name: as?.name ?? req.name,
-      role: as?.role ?? req.role,
+      // A requested "coordinator" isn't granted on a plain confirm: the owner names that role themselves.
+      role: as?.role ?? (req.role?.trim().toLowerCase() === COORDINATOR ? undefined : req.role),
       about: as?.about ?? req.about,
       kind,
       ...(kind === "human" && req.sponsoredBy ? { display: req.sponsoredBy.name } : {}),

@@ -10,7 +10,7 @@ import { inlineText, type JoinRequest } from "./membership.ts";
 import type { Identity } from "./identity.ts";
 import { canPost, describeScopes, refusal, wireScopes, type Scope } from "./scopes.ts";
 import { ignored, TASK_STATES, type Color, type Event, type ImageAttachment, type Kind, type Message, type Presence, type TaskState } from "./protocol.ts";
-import { claimConflict, fold, overlaps, taskId, waitingOn, wouldCycle, type ChannelState, type Roster } from "./state.ts";
+import { claimConflict, fold, keptFromPeople, overlaps, taskId, waitingOn, wouldCycle, type ChannelState, type Roster } from "./state.ts";
 
 /** How often a listening agent re-announces itself. Receivers treat 2.5x this as offline. */
 export const PRESENCE_EVERY_MS = 60_000;
@@ -442,9 +442,12 @@ export class AgentSession {
    */
   async setMode(coordinatorOnly: boolean, strict = true): Promise<ChannelState> {
     if (!this.ownerCh) throw new Rejected("only the channel owner's machine sets the channel's mode");
-    const ev: Event = { op: "mode.set", coordinatorOnly, strict: coordinatorOnly && strict };
+    const ev = { op: "mode.set" as const, coordinatorOnly, strict: coordinatorOnly && strict };
     const body = coordinatorOnly ? `coordinator-only on${ev.strict ? " (strict)" : ""}` : "coordinator-only off";
-    return this.confirm(await this.ownerCh.send(body, { kind: "event", ev }));
+    const since = await this.ownerCh.send(body, { kind: "event", ev });
+    // Then the channel's settings say it too, for clients holding only the log's tail.
+    await this.ownerCh.setMode({ coordinatorOnly, strict: ev.strict, since });
+    return this.confirm(since);
   }
 
   /**
@@ -590,6 +593,9 @@ export function wants(me: string, m: Message, state: ChannelState | null, d: Del
   if (state?.mode.coordinatorOnly && state.coordinator && sender && (sender.kind === "human" || sender.owner)) {
     return me === state.coordinator || isDirectedAt(m, me);
   }
+  // A person reading from the CLI: in strict mode, other agents' words don't reach them at all.
+  const self = state?.members.get(me);
+  if (state && self && (self.kind === "human" || self.owner) && keptFromPeople(state, m)) return false;
   const asking = isForAgent(m, me) && (m.kind === "ask" || m.kind === "blocking");
   if (d.forMe) return addressed || asking;
   const fromPerson = !m.to?.length && (sender?.kind === "human" || !!sender?.owner);

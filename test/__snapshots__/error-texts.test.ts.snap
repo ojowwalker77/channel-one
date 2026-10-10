@@ -12,6 +12,7 @@ exports[`the relay's error texts are exactly these 1`] = `
   "400 bad owner signature",
   "400 bad request",
   "400 bad request signature",
+  "400 bad settings",
   "400 bad signature",
   "400 bad title",
   "400 bad writer",

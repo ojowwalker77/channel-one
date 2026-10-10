@@ -189,7 +189,7 @@ const routes: RoomRoute[] = [
         // Who invited you, as sign-in knows them: only for someone holding the code.
         const ownerUser = store.ownerUser();
         const ownerName = ownerUser && human?.profile ? ((yield* Effect.promise(async () => (await human.profile!(ownerUser).catch(() => null))?.name ?? null)) ?? null) : null;
-        return { data: { ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, titlesSig: store.getTitlesSig(), epoch: m.epoch, rotate: m.rotate, title: store.title(), ownerName, iconAt: store.iconAt() } };
+        return { data: { ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, titlesSig: store.getTitlesSig(), epoch: m.epoch, rotate: m.rotate, title: store.title(), settings: store.settings(), ownerName, iconAt: store.iconAt() } };
       }),
   },
   {
@@ -301,6 +301,18 @@ const routes: RoomRoute[] = [
         const store = yield* Room;
         const { title } = yield* json<{ title?: unknown }>();
         yield* attempt(() => store.setTitle(title));
+        return { data: { ok: true }, fx: { broadcast: [frame({ t: "info" })] } };
+      }),
+  },
+  {
+    method: "PUT",
+    path: "/settings",
+    guard: "owner",
+    run: () =>
+      Effect.gen(function* () {
+        const store = yield* Room;
+        const { settings } = yield* json<{ settings?: unknown }>();
+        yield* attempt(() => store.setSettings(settings));
         return { data: { ok: true }, fx: { broadcast: [frame({ t: "info" })] } };
       }),
   },

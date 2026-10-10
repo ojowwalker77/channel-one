@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 import { ignored, type Color, type Message } from "@mc/protocol.ts"
 import { describeScopes, wireScopes } from "@mc/scopes.ts"
-import { colorOf } from "@mc/state.ts"
+import { colorOf, keptFromPeople } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
 import { channelTitle, forgetChannel, loadMember, loadRecent, saveMember, saveRecent, useChannel, useClock, useKnownChannels, type StoredMember } from "@/lib/channel"
 import { refreshIcon, useIcons, useLiveIcon } from "@/lib/icons"
@@ -57,7 +57,8 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const icon = useIcons().get(member.access.roomId) ?? null
   const now = useNow()
   const [tab, setTab] = useState<"chat" | "tasks">("chat")
-  const [filter, setFilter] = useState<Filter | null>(null)
+  // undefined: the default view (the coordinator's, in coordinator-only mode for people); null: Everything.
+  const [chosen, setFilter] = useState<Filter | null | undefined>(undefined)
   const [search, setSearch] = useState<string | null>(null)
   const [replyTo, setReplyTo] = useState<Message | null>(null)
   /** The thread open on the right, by its first message. */
@@ -79,9 +80,32 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
     { name: known.find((c) => c.code === member.code)?.name ?? member.name },
     others.length ? { from: "", text: "", ts: 0, people: others.map((m) => memberName(m)) } : loadRecent(member.code)
   )
-  const forMe = useMemo(() => messages.filter((m) => m.from !== me && m.to?.includes(me)), [messages, me])
+  // Strict coordinator-only: nothing another agent sends counts as reaching a person (Everything still shows it).
+  const iAmPerson = !isAgent(state.members.get(me))
+  const reaches = useCallback((m: Message) => !(iAmPerson && keptFromPeople(state, m)), [iAmPerson, state])
+  const forMe = useMemo(() => messages.filter((m) => m.from !== me && m.to?.includes(me) && reaches(m)), [messages, me, reaches])
+  const openAsks = useMemo(() => state.openAsks.filter(reaches), [state.openAsks, reaches])
+
+  // Coordinator-only: a person talks with the coordinator, and sees that exchange by default.
+  const meM = state.members.get(me)
+  const coordinator = state.mode.coordinatorOnly && meM && !isAgent(meM) && state.coordinator !== me ? state.coordinator : null
+  const filter = useMemo<Filter | null>(
+    () => (chosen === undefined ? (coordinator ? { kind: "coordinator" } : null) : chosen?.kind === "coordinator" && !coordinator ? null : chosen),
+    [chosen, coordinator]
+  )
+  const withCoordinator = useMemo(() => {
+    if (!coordinator) return []
+    return messages.filter((m) => {
+      if (m.kind === "event") return m.ev?.op === "mode.set"
+      if (m.from === me) return true
+      // The coordinator's words to you or to everyone; an agent's broadcast isn't a way around it.
+      if (m.from === coordinator) return !m.to?.length || m.to.includes(me) || m.to.includes("*")
+      // Anyone else, only when it names you (people, or an agent the owner didn't make strict).
+      return !!m.to?.includes(me) && reaches(m)
+    })
+  }, [coordinator, messages, me, reaches])
   const openTasks = useMemo(() => [...state.tasks.values()].filter((t) => t.state !== "done" && t.state !== "cancelled").length, [state.tasks])
-  useTitleBadge(messages.filter((m) => m.from !== me).length)
+  useTitleBadge(messages.filter((m) => m.from !== me && reaches(m)).length)
 
   // Remember the latest message and who's here, for the channel list.
   useEffect(() => {
@@ -121,14 +145,23 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
   const visible = useMemo(() => {
     // Filters and search show every match flat, threads or not.
     const flat = !!filter || !!search?.trim()
-    let list = filter?.kind === "open" ? state.openAsks : filter?.kind === "mine" ? forMe : filter?.kind === "from" ? messages.filter((m) => m.from === filter.name) : messages
+    let list =
+      filter?.kind === "open"
+        ? openAsks
+        : filter?.kind === "mine"
+          ? forMe
+          : filter?.kind === "coordinator"
+            ? withCoordinator
+            : filter?.kind === "from"
+              ? messages.filter((m) => m.from === filter.name)
+              : messages
     if (!flat) list = list.filter((m) => m.kind === "event" || rootOf(m.seq) === null)
     // Joins are noise; the member list already shows who's here.
     list = list.filter((m) => m.ev?.op !== "hello")
     const q = search?.trim().toLowerCase()
     if (q) list = list.filter((m) => m.body.toLowerCase().includes(q) || nameOf(m.from).toLowerCase().includes(q))
     return list
-  }, [filter, state.openAsks, forMe, messages, search, nameOf, rootOf])
+  }, [filter, openAsks, forMe, withCoordinator, messages, search, nameOf, rootOf])
 
   const bySeq = useMemo(() => new Map(messages.map((m) => [m.seq, m])), [messages])
   const quoted = useCallback((seq: number) => bySeq.get(seq), [bySeq])
@@ -250,6 +283,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         trust={state.trust.get(m.seq)}
         online={online.has(m.from)}
         color={colorOf(state, m.from)}
+        direct={state.direct.has(m.seq) ? (state.coordinator ?? undefined) : undefined}
         head={head}
         adjacentReply={adjacentReply}
         highlighted={highlight === m.seq}
@@ -302,16 +336,16 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       ? "Connecting…"
       : connection === "reconnecting"
         ? "Reconnecting…"
-        : online.size
-          ? `${memberCount} members, ${online.size} online`
-          : `${memberCount} ${memberCount === 1 ? "member" : "members"}`
+        : (online.size ? `${memberCount} members, ${online.size} online` : `${memberCount} ${memberCount === 1 ? "member" : "members"}`) +
+          (state.mode.coordinatorOnly ? (state.coordinator ? " · coordinator-only" : " · coordinator-only, no coordinator yet") : "")
   // Who's here right now, people first: a glance at the header says who's working.
   const here = active.filter((m) => online.has(m.name)).sort((a, b) => Number(isAgent(a)) - Number(isAgent(b)))
 
   const chips: { label: string; f: Filter | null; n?: number }[] = [
+    ...(coordinator ? [{ label: `With ${nameOf(coordinator)}`, f: { kind: "coordinator" } as Filter }] : []),
     { label: "Everything", f: null },
     { label: "To you", f: { kind: "mine" }, n: forMe.length },
-    { label: "Unanswered", f: { kind: "open" }, n: state.openAsks.length },
+    { label: "Unanswered", f: { kind: "open" }, n: openAsks.length },
   ]
 
   return (
@@ -364,6 +398,16 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       }}
       roomId={member.access.roomId}
       title={title}
+      onMode={
+        isOwner
+          ? async (coordinatorOnly, strict) => {
+              const ev = { op: "mode.set" as const, coordinatorOnly, strict: coordinatorOnly && strict }
+              const since = await send(coordinatorOnly ? `coordinator-only on${ev.strict ? " (strict)" : ""}` : "coordinator-only off", { kind: "event", ev })
+              // Then the channel's settings say it too, for clients holding only the log's tail.
+              await ch.setMode({ coordinatorOnly, strict: ev.strict, since })
+            }
+          : undefined
+      }
       onRename={
         isOwner
           ? async (name) => {
@@ -520,6 +564,7 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
                 nameOf={nameOf}
                 onClearReply={() => setReplyTo(null)}
                 disabled={connection === "connecting"}
+                route={coordinator ? { coordinator, label: nameOf(coordinator), view: filter?.kind === "coordinator" ? "coordinator" : "everything" } : undefined}
                 send={async (body, opts) => {
                   atBottom.current = true
                   return send(body, opts)
@@ -533,7 +578,20 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
           <ThreadPanel
             count={replies.length}
             onClose={() => setThreadRoot(null)}
-            composer={<Composer key={root.seq} thread me={me} people={people} replyTo={root} nameOf={nameOf} onClearReply={() => undefined} disabled={connection === "connecting"} send={send} />}
+            composer={
+              <Composer
+                key={root.seq}
+                thread
+                me={me}
+                people={people}
+                replyTo={root}
+                nameOf={nameOf}
+                onClearReply={() => undefined}
+                disabled={connection === "connecting"}
+                send={send}
+                route={coordinator ? { coordinator, label: nameOf(coordinator), view: "everything" } : undefined}
+              />
+            }
           >
             {threadRows}
           </ThreadPanel>

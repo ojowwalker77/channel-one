@@ -17,7 +17,7 @@ import { ago, describeEvent, formatAdded, formatAfter, formatClaims, formatFact,
 import { canPost, describeScopes, parseScopes, presetOf, SCOPES, type Scope } from "../scopes.ts";
 import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, COLORS, ignored, isColor, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
-import { parseTaskId, similarOpenTasks, taskId, type ChannelState } from "../state.ts";
+import { COORDINATOR, parseTaskId, similarOpenTasks, taskId, type ChannelState } from "../state.ts";
 import { VERSION } from "../version.ts";
 import { channelFiles, runSh, sessionViews } from "../sh.ts";
 import { forgetMachine, linkUrl, loadMachine, machineCode, machineStatus, newMachine, registerMachine, saveMachine, unlinkMachine, vouchFor } from "../machine.ts";
@@ -653,7 +653,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   async approve() {
     const s = await session();
-    const r = await findRequest(s, args[1] ?? die("usage: kiwi approve CODE [--name NEWNAME] [--scopes S] [--yes] [--force]"));
+    const r = await findRequest(s, args[1] ?? die("usage: kiwi approve CODE [--name NEWNAME] [--role ROLE] [--scopes S] [--yes] [--force]"));
     const scopes = opt.scopes === undefined ? undefined : (parseScopes(opt.scopes) ?? die(`"${opt.scopes}" isn't scopes: say read-only, contributor, full, or a list of ${SCOPES.join(",")}`));
     if (r.reclaims && !opt.name) {
       if (scopes) die("a reclaimed seat keeps what it may do; change that after with: kiwi scope NAME SCOPES");
@@ -663,12 +663,15 @@ const commands: Record<string, () => Promise<void>> = {
     if (!NAME_RE.test(name) || name === OWNER_NAME) die(`"${name}" isn't an allowed name; approve with --name NAME`);
     const taken = (await s.members(true)).find((m) => m.name === name && m.active);
     if (taken) die(`"${name}" is already a member; approve under another name with --name`);
+    // Asking to be the coordinator doesn't make you one: the owner says --role coordinator themselves.
+    const askedCoordinator = r.role?.trim().toLowerCase() === COORDINATOR && opt.role?.trim().toLowerCase() !== COORDINATOR;
+    const role = opt.role ?? (askedCoordinator ? undefined : r.role);
     const may = scopes ? `, to ${mayDo(scopes)}` : "";
-    if (!(await confirm(`Let "${name}"${r.role ? ` (${r.role})` : ""} in${may}? Verification code ${r.code}`))) {
+    if (!(await confirm(`Let "${name}"${role ? ` (${role})` : ""} in${may}? Verification code ${r.code}`))) {
       die(`approving needs your human's go-ahead: once they confirm the joining agent shows ${r.code}, re-run with --yes`);
     }
-    const admitted = await s.ownerCh!.approve(r, { name, role: r.role, about: r.about, ...(scopes ? { scopes } : {}) });
-    out(`approved ${admitted.name} (${r.code})${scopes ? `; they may ${describeScopes(scopes)}` : ""}`);
+    const admitted = await s.ownerCh!.approve(r, { name, role, about: r.about, ...(scopes ? { scopes } : {}) });
+    out(`approved ${admitted.name} (${r.code})${scopes ? `; they may ${describeScopes(scopes)}` : ""}${askedCoordinator ? `; it asked to be the coordinator, which takes: kiwi approve ${r.code} --role coordinator` : ""}`);
   },
 
   async deny() {
@@ -1238,7 +1241,7 @@ ${role}${may}
   ${mc} set build.cmd "cargo test" [--ttl 7d] · get build.cmd · unset KEY · facts
 
 ## Coordinator-only channels
-If \`${mc} status\` says the channel is coordinator-only, people talk only with the coordinator. Unless you are the coordinator, never message a person: report to the coordinator, who relays both ways (kiwi refuses a message from you to a person when the owner made it strict). If you are the coordinator, relay between people and agents in both directions, and answer every person.
+If \`${mc} status\` says the channel is coordinator-only, people talk only with the coordinator. Unless you are the coordinator, never message a person: report to the coordinator, who relays both ways (kiwi refuses a message from you to a person when the owner made it strict). If you are the coordinator, relay between people and agents in both directions, and answer every person. A broadcast (no --to, or --to all) isn't a way around this: people's view shows only what the coordinator sends them.
 
 ## Rules
 - Claim a task before working on it. If the claim fails, someone else owns it, so pick something else.

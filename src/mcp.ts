@@ -18,7 +18,7 @@ import { parseScopes, SCOPES } from "./scopes.ts";
 import { CHAT_KINDS, type Kind, type Message } from "./protocol.ts";
 import { inlineText } from "./membership.ts";
 import { TOO_MANY_REQUESTS } from "./sas.ts";
-import { parseTaskId, similarOpenTasks, taskId } from "./state.ts";
+import { COORDINATOR, parseTaskId, similarOpenTasks, taskId } from "./state.ts";
 import { claimPlace } from "./where.ts";
 import { VERSION } from "./version.ts";
 import { channelFiles, runSh, sessionViews } from "./sh.ts";
@@ -159,7 +159,8 @@ export async function runMcp(s: AgentSession, opts: { push?: boolean } = {}): Pr
         }
         const finalName = name ?? r.name;
         if ((await s.members(true)).some((m) => m.name === finalName && m.active)) throw new Rejected(`"${finalName}" is taken; pass name`);
-        await owner.approve(r, { name: finalName, role: r.role, about: r.about, ...(scopes ? { scopes } : {}) });
+        // Asking to be the coordinator doesn't make it one: the owner gives that role with set role.
+        await owner.approve(r, { name: finalName, role: r.role?.trim().toLowerCase() === COORDINATOR ? undefined : r.role, about: r.about, ...(scopes ? { scopes } : {}) });
         return `approved ${finalName} (${r.code})${scopes ? `; they may ${mayDo(scopes)}` : ""}`;
       }),
     );

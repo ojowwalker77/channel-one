@@ -124,3 +124,96 @@ describe("what each member is told", () => {
     expect(agentPrompt("c", "dev")).toContain("## Coordinator-only channels");
   });
 });
+
+// ---------- GLM #993 ----------
+
+describe("strict holds however an agent spells its recipients", () => {
+  test("a broadcast, *, or a thread reply from another agent never reaches a person", async () => {
+    const { keptFromPeople } = await import("../src/state.ts");
+    const setup = [await makeCoord("coord"), await on()];
+    const ask = await msg("ana", "msg", "status?")
+    const broadcast = await msg("dev", "msg", "everyone: shipping now");
+    const star = await msg("dev", "msg", "all: shipping", { to: ["*"] });
+    const inThread = await msg("dev", "msg", "on it", { re: [ask.seq] } as never);
+    const fromCoord = await msg("coord", "msg", "shipping today", { to: ["ana"] });
+    const s = fold([...setup, ask, broadcast, star, inThread, fromCoord], roster);
+    for (const m of [broadcast, star, inThread]) {
+      expect(keptFromPeople(s, m)).toBe(true);
+      expect(wants("ana", m, s)).toBe(false);
+    }
+    // Other agents still hear what's addressed to them.
+    expect(wants("dev2", star, s)).toBe(true);
+    expect(keptFromPeople(s, fromCoord)).toBe(false);
+    expect(wants("ana", fromCoord, s)).toBe(true);
+    // Events still reach people.
+    expect(keptFromPeople(s, setup[1]!)).toBe(false);
+  });
+
+  test("not strict, a person still gets them", async () => {
+    const { keptFromPeople } = await import("../src/state.ts");
+    const broadcast = await msg("dev", "msg", "everyone: shipping");
+    const s = fold([await makeCoord("coord"), await on(false), broadcast], roster);
+    expect(keptFromPeople(s, broadcast)).toBe(false);
+  });
+});
+
+describe("the mode's floor, for a client holding only the log's tail", () => {
+  test("the signed setting stands in for a mode.set the tail doesn't hold; a later one wins", async () => {
+    const tail = [await msg("dev", "msg", "hi ana", { to: ["ana"] })];
+    const r = roster.map((x) => (x.name === "coord" ? { ...x, role: "coordinator" } : x));
+    const floor = { coordinatorOnly: true, strict: true, since: tail[0]!.seq - 1 };
+    const s = fold(tail, r, Date.now(), floor);
+    expect(s.mode).toEqual({ coordinatorOnly: true, strict: true });
+    expect(s.trust.get(tail[0]!.seq)).toBe("refused");
+    // Without the floor, the same tail reads as normal: that's the gap.
+    expect(fold(tail, r).mode.coordinatorOnly).toBe(false);
+    // A newer mode.set in the tail still applies on top.
+    const off = await ev("jon", { op: "mode.set", coordinatorOnly: false, strict: false });
+    expect(fold([...tail, off], r, Date.now(), floor).mode.coordinatorOnly).toBe(false);
+    // A floor past the tail's end: the settings are newer than what's loaded.
+    expect(fold([], r, Date.now(), { ...floor, since: 10_000 }).mode.coordinatorOnly).toBe(true);
+  });
+});
+
+describe("at the relay", () => {
+  test("the owner signs the mode into the settings; members read it; nobody else can set it", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { Channel } = await import("../src/client.ts");
+    const { startRelay } = await import("../src/relay/bun.ts");
+    const { checked } = await import("./check.ts");
+    const dataDir = mkdtempSync(join(tmpdir(), "kiwi-coord-relay-"));
+    const server = startRelay({ port: 0, hostname: "127.0.0.1", dataDir });
+    const relay = server.url.origin;
+    try {
+      const owner = await generateIdentity("human");
+      const made = await Channel.create(relay, owner, { name: "human" });
+      const ownerCh = new Channel(made.access, relay, owner);
+      const admit = async (name: string, role?: string) => {
+        const id = await generateIdentity(name);
+        const ask = await Channel.requestJoin(relay, made.code, id, { name, role });
+        const [req] = await checked(ownerCh, relay, made.code, [{ id, requestId: ask.requestId }]);
+        return { id, req: req!, ask };
+      };
+      // GLM #993 (3): asking to be the coordinator doesn't make you one on a plain confirm.
+      const asker = await admit("eager", "coordinator");
+      const plain = await ownerCh.approve(asker.req);
+      expect(plain.role).toBeUndefined();
+      const chosen = await admit("picked", "coordinator");
+      expect((await ownerCh.approve(chosen.req, { name: "picked", role: "coordinator" })).role).toBe("coordinator");
+      const other = await admit("other", "frontend");
+      expect((await ownerCh.approve(other.req)).role).toBe("frontend");
+
+      expect(await ownerCh.mode()).toBeNull();
+      await ownerCh.setMode({ coordinatorOnly: true, strict: true, since: 7 });
+      const st = await Channel.joinStatus(relay, made.code, other.id, other.ask.requestId);
+      const memberCh = new Channel((st as { access: import("../src/crypto.ts").ChannelAccess }).access, relay, other.id);
+      expect(await memberCh.mode()).toEqual({ coordinatorOnly: true, strict: true, since: 7 });
+      await expect(memberCh.setMode({ coordinatorOnly: false, strict: false, since: 8 })).rejects.toThrow();
+    } finally {
+      server.stop(true);
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});

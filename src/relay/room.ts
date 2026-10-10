@@ -504,6 +504,19 @@ export class RoomStore {
     this.set("title", JSON.stringify({ iv: t.iv, ct: t.ct }));
   }
 
+  /** The channel's sealed settings (its mode), signed by the owner. The relay can't read them. */
+  settings(): { iv: string; ct: string } | null {
+    const t = this.get("settings");
+    return t ? (JSON.parse(t) as { iv: string; ct: string }) : null;
+  }
+
+  /** Replace the sealed settings. The caller has already checked that this is the owner. */
+  setSettings(settings: unknown): void {
+    const t = settings as { iv?: unknown; ct?: unknown };
+    if (typeof t?.iv !== "string" || typeof t.ct !== "string" || t.ct.length === 0 || t.ct.length >= 2048) throw new HttpError(400, "bad settings");
+    this.set("settings", JSON.stringify({ iv: t.iv, ct: t.ct }));
+  }
+
   // ---------- who this channel is listed for ----------
 
   /** Signed-in people tied to this channel now: its owner, people in it, and people whose agents are in it. */
