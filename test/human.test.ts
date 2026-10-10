@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, myChannels, myUsage, relayConfig } from "../src/client.ts";
-import { decodeJoinCode } from "../src/crypto.ts";
+import { decodeJoinCode, ownerFingerprint } from "../src/crypto.ts";
 import { machineStatus, newMachine, registerMachine, unlinkMachine, vouchFor, type MachineFile } from "../src/machine.ts";
 import { b64url } from "../src/crypto.ts";
 import { generateIdentity } from "../src/identity.ts";
@@ -328,8 +328,9 @@ describe("usage", () => {
       await ownerCh.send("one");
       await ownerCh.send("two");
 
-      // Anyone with the code sees who invited them, as sign-in knows the owner.
-      expect(((await (await fetch(`${at}/v1/rooms/${access.roomId}/info`)).json()) as { ownerName?: string }).ownerName).toBe("Alice Owner");
+      // Anyone with the code sees who invited them, as sign-in knows the owner (the code's fingerprint proves it).
+      const fp = await ownerFingerprint(access.ownerPk);
+      expect(((await (await fetch(`${at}/v1/rooms/${access.roomId}/info?fp=${fp}`)).json()) as { ownerName?: string }).ownerName).toBe("Alice Owner");
       const u = await myUsage(at, await alice());
       expect(u.limits).toMatchObject({ channelsPerOwner: 2, messagesPerDay: 2000, membersPerChannel: null });
       expect(u.owned).toBe(1);

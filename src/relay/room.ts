@@ -816,9 +816,16 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
 
   if (path === "/info" && method === "GET") {
     const m = store.meta();
-    // Who invited you, as sign-in knows them: anyone holding the code may see the owner's name.
+    // The join code's second half is the owner key's fingerprint. A client holding the code sends it
+    // (?fp=): a wrong one is answered like a missing room, so a room id alone doesn't make a join code.
+    const fp = url.searchParams.get("fp");
+    const holdsCode = fp !== null && fp === (await ownerFingerprint(m.ownerPk));
+    if (fp !== null && !holdsCode) throw new HttpError(404, "no such channel", "ChannelGone");
+    // Who invited you, as sign-in knows them: only for someone holding the code. Clients before 0.8.2
+    // send no fp and still get the owner key, which they need. That key gives the fp, so until this
+    // path goes (one release after 0.8.2), a room id is still enough for the code and the name. See SECURITY.md.
     const owner = store.ownerUser();
-    const ownerName = owner && human?.profile ? ((await human.profile(owner).catch(() => null))?.name ?? null) : null;
+    const ownerName = holdsCode && owner && human?.profile ? ((await human.profile(owner).catch(() => null))?.name ?? null) : null;
     return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, titlesSig: store.getTitlesSig(), epoch: m.epoch, rotate: m.rotate, title: store.title(), ownerName, iconAt: store.iconAt() });
   }
   if (path === "/create" && method === "POST") {

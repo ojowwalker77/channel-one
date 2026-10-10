@@ -158,7 +158,8 @@ export async function titlesSigned(roomId: string, ownerPk: string, titlesSig: s
 /** Fetch a room's public info and check it against the owner pinned in the join code. */
 async function pinnedInfo(relay: string, code: string): Promise<{ roomId: string; info: Info; signedKeys: boolean }> {
   const { roomId, ownerFp } = decodeJoinCode(code);
-  const info = await call<Info>(relay, roomId, "/info");
+  // Proving we hold the code (its fingerprint half) is what gets the owner's name, and keeps a bare room id from being a join code.
+  const info = await call<Info>(relay, roomId, "/info", {}, { fp: ownerFp });
   if ((await ownerFingerprint(info.ownerPk)) !== ownerFp) throw new Error("this relay is serving a different owner than the join code names; refusing");
   const statement = await ownerStatement(roomId, info);
   if (!statement) throw new Error("the channel owner's keys aren't signed; refusing");
@@ -355,8 +356,14 @@ export class Channel {
     return this.refreshing;
   }
 
-  async info(): Promise<Info> {
-    return call<Info>(this.relay, this.roomId, "/info");
+  /**
+   * The channel's public info. `fp` is the join code's fingerprint half, proof we hold the code; by
+   * default it's the known owner key's. A probe that doesn't know the owner yet passes the code's.
+   * (A 404 here is never read as "closed": only member routes decide that, see gone().)
+   */
+  async info(fp?: string): Promise<Info> {
+    const proof = fp ?? (this.access.ownerPk ? await ownerFingerprint(this.access.ownerPk) : undefined);
+    return call<Info>(this.relay, this.roomId, "/info", {}, proof ? { fp: proof } : {});
   }
 
   /** Remember that this room's title is owner-signed, and tell whoever persists access. */

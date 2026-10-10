@@ -88,7 +88,9 @@ describe("membership channels", () => {
   test("a code for another owner is refused before anything is sent", async () => {
     const other = await generateIdentity("x");
     const forged = encodeJoinCode({ roomId: decodeJoinCode(code).roomId, ownerFp: await ownerFingerprint(other.pk) });
-    await expect(Channel.requestJoin(relay, forged, await generateIdentity("y"), { name: "y" })).rejects.toThrow("different owner");
+    // An honest relay already answers a wrong fingerprint like a missing room; a relay that ignored it would
+    // still be caught by the client's own pin ("different owner"). Either way nothing is sent.
+    await expect(Channel.requestJoin(relay, forged, await generateIdentity("y"), { name: "y" })).rejects.toThrow(/different owner|no such channel/);
   });
 
   test("a member can't impersonate another: the roster binds names to keys", async () => {
