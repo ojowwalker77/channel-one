@@ -10,7 +10,7 @@ import { CLOSE_CLOSED, CLOSE_REMOVED, PING, PONG } from "../protocol.ts";
 import { workosHumanAuth, workosProfiles, type HumanAuth } from "./human.ts";
 import { onDeviceHttp, type DeviceStore, type DeviceTransfer } from "./devices.ts";
 import { onVaultHttp, vaultSwap, type VaultRecord, type VaultStore } from "./vault.ts";
-import { onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
+import { cloudflareClient, LINK_TTL_MS, onMachineHttp, vouchedBy, type MachineRecord, type MachineStore } from "./machines.ts";
 import { policyFrom } from "./policy.ts";
 import {
   HttpError,
@@ -41,6 +41,8 @@ interface Env {
   WORKOS_AUTHKIT_DOMAIN?: string;
   /** Secret: lets the relay vouch for people's real names ("agent of @…"). */
   WORKOS_API_KEY?: string;
+  /** 20 computer registrations per minute per client address. See wrangler.jsonc ratelimits. */
+  MACHINE_REGISTRATIONS: RateLimit;
 }
 
 let humanAuth: HumanAuth | null | undefined;
@@ -195,8 +197,17 @@ export class Directory extends DurableObject<Env> {
       return Response.json({ ok: true });
     }
     if (pathname === "/machine") {
-      if (req.method === "PUT") sql.exec("INSERT OR REPLACE INTO machine (k, rec) VALUES (1, ?)", await req.text());
-      else if (req.method === "DELETE") sql.exec("DELETE FROM machine");
+      if (req.method === "PUT") {
+        const text = await req.text();
+        const rec = JSON.parse(text) as MachineRecord;
+        sql.exec("INSERT OR REPLACE INTO machine (k, rec) VALUES (1, ?)", text);
+        // One alarm per unlinked registration, on this computer's object only. A linked computer is kept until it goes unused, which is checked on read.
+        if (rec.user) await this.ctx.storage.deleteAlarm();
+        else await this.ctx.storage.setAlarm((rec.created || Date.now()) + LINK_TTL_MS);
+      } else if (req.method === "DELETE") {
+        sql.exec("DELETE FROM machine");
+        await this.ctx.storage.deleteAlarm();
+      }
       const row = sql.exec("SELECT rec FROM machine").toArray()[0] as { rec: string } | undefined;
       return Response.json(row ? JSON.parse(row.rec) : null);
     }
@@ -215,6 +226,16 @@ export class Directory extends DurableObject<Env> {
     }
     const rows = this.ctx.storage.sql.exec("SELECT entry FROM entries").toArray() as { entry: string }[];
     return Response.json(rows.map((r) => JSON.parse(r.entry) as DirectoryEntry));
+  }
+
+  /** The link window closed: delete the registration if nobody confirmed it. */
+  override async alarm(): Promise<void> {
+    const row = this.ctx.storage.sql.exec("SELECT rec FROM machine").toArray()[0] as { rec: string } | undefined;
+    if (!row) return;
+    const rec = JSON.parse(row.rec) as MachineRecord;
+    if (rec.user) return;
+    if (Date.now() - rec.created >= LINK_TTL_MS) this.ctx.storage.sql.exec("DELETE FROM machine");
+    else await this.ctx.storage.setAlarm(rec.created + LINK_TTL_MS);
   }
 }
 
@@ -292,7 +313,9 @@ export default {
     }
     if (url.pathname.startsWith("/v1/machines") || url.pathname.startsWith("/v1/me/machines")) {
       try {
-        return (await onMachineHttp(req, machineStore(env), human(env))) ?? errorResponse(new HttpError(404, "not found"));
+        const ip = cloudflareClient(req);
+        const gate = ip ? { ip, allow: (key: string) => env.MACHINE_REGISTRATIONS.limit({ key }).then((r) => r.success) } : null;
+        return (await onMachineHttp(req, machineStore(env), human(env), gate)) ?? errorResponse(new HttpError(404, "not found"));
       } catch (err) {
         return errorResponse(err);
       }

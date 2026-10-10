@@ -49,6 +49,12 @@
     "KIWI_EXPIRE_AFTER_DAYS": ""
   },
   "build": { "command": "bun run web:build" },
+  // Computer registrations, per client address. The binding's period is only 10 or 60
+  // seconds, so this is 20 per minute. The Bun relay counts 20 per 10 minutes in-process.
+  // namespace_id must be unique in the Cloudflare account.
+  "ratelimits": [
+    { "name": "MACHINE_REGISTRATIONS", "namespace_id": "870201", "simple": { "limit": 20, "period": 60 } }
+  ],
   // No request logs: room ids and timing are nobody's business, and a closed
   // channel must leave nothing behind.
   "observability": { "enabled": false }
