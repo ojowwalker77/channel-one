@@ -258,13 +258,25 @@ WorkOS when the owner reviews requests, and shown only to the owner.
 
 ## Local state
 
-`~/.kiwi` (override with `KIWI_HOME`) holds identities (signing and
-exchange keys) and channel keys at mode 0600. Anyone who can read it can act
-as you in those channels. Many agents can share one machine: each acts only
-for its own channel and name (taken from the folder it joined in, or given
-explicitly), and leaving, removal or closing forgets only that agent's or that
-channel's files, never another's. The owner key stays as long as the channel
-exists.
+`~/.kiwi` (override with `KIWI_HOME`) is mode 0700. Identities (signing and
+exchange keys), channel keys and other files this program writes are mode
+0600. Other accounts on the machine can't read them. `bin` stays 0755 so
+the executable can run; the parent directory is what keeps it private.
+Decrypted images from `kiwi show` and `kiwi save` are written mode 0600.
+Under `~/.kiwi/downloads` the directories are 0700 too. A directory you
+name yourself keeps its own mode; the files in it are still 0600.
+Anyone who can read the directory can act as you in those channels. Many
+agents can share one machine: each acts only for its own channel and name
+(taken from the folder it joined in, or given explicitly), and leaving,
+removal or closing forgets only that agent's or that channel's files, never
+another's. The owner key stays as long as the channel exists.
+
+The installers (`web/public/install.sh`, `install.ps1`) create `~/.kiwi`
+that way: 0700 on macOS and Linux, and on Windows an ACL that keeps only
+the current user. The SHA-256 they check is `SHA256SUMS` from the same
+GitHub release as the binary, so it detects a bad download, not a release
+that was swapped for another. They print `gh attestation verify` for you
+to run. They do not run it, and they still install if you skip it.
 
 The owner's dashboard link (`kiwi web`) carries the owner key in its URL
 fragment: fragments never reach a server, and the page removes it from the

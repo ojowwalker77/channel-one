@@ -1,8 +1,9 @@
 // Loading local image files into message attachments. Bun/Node only: reads
 // from disk, so the web app and the Worker never import this.
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { home } from "./config.ts";
 import { MAX_IMAGE_BYTES, MAX_IMAGES, type ImageAttachment, type RasterMime } from "./protocol.ts";
 
 export type { ImageAttachment };
@@ -35,13 +36,38 @@ export function loadImages(paths: string[]): ImageAttachment[] {
   });
 }
 
-/** Write message #seq's images into `dir` as `#<seq>-<name>`; returns the paths. */
+/** True when `child` is `parent` or a directory inside it, by path spelling (the directory may not exist yet). */
+function inside(parent: string, child: string): boolean {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/** chmod `dir` and each parent up through `root`. Stops at `root`. Skips anything that isn't a real directory. */
+function lockDirs(dir: string, root: string): void {
+  const top = resolve(root);
+  for (let cur = resolve(dir); ; ) {
+    if (cur !== top && !inside(top, cur)) break;
+    try {
+      if (lstatSync(cur).isDirectory()) chmodSync(cur, 0o700);
+    } catch {}
+    if (cur === top || dirname(cur) === cur) break;
+    cur = dirname(cur);
+  }
+}
+
+/** Write message #seq's images into `dir` as `#<seq>-<name>`; returns the paths. Files are 0600. Directories under ~/.kiwi/downloads are 0700; a directory the caller named keeps its own mode. */
 export function saveImages(seq: number, imgs: ImageAttachment[], dir: string): string[] {
-  mkdirSync(dir, { recursive: true });
+  const downloads = join(home(), "downloads");
+  const locked = inside(downloads, dir);
+  mkdirSync(dir, locked ? { recursive: true, mode: 0o700 } : { recursive: true });
+  if (locked) lockDirs(dir, downloads);
   return imgs.map((img) => {
     const safe = img.name.replace(/[^A-Za-z0-9_.-]/g, "_") || "image";
     const path = join(dir, `#${seq}-${safe}`);
-    writeFileSync(path, Buffer.from(img.data, "base64"));
+    writeFileSync(path, Buffer.from(img.data, "base64"), { mode: 0o600 });
+    try {
+      chmodSync(path, 0o600);
+    } catch {}
     return path;
   });
 }
