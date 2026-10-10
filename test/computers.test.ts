@@ -191,6 +191,9 @@ describe("which address a registration counts against", () => {
     expect(registrationAddress("127.0.0.1", "203.0.113.9", ["172.17.0.1"])).toBe("203.0.113.9");
     expect(registrationAddress("fd00::1", "2001:db8::5", ["fd00::/8"])).toBe("2001:db8::5");
     expect(registrationAddress("fe80::1", "2001:db8::5", ["fd00::/8"])).toBe("fe80::1");
+    // Only the last entry is the proxy's. A garbage tail must not fall back to a forged earlier address.
+    expect(registrationAddress("172.17.0.1", "203.0.113.9, not-an-ip", ["172.17.0.1"])).toBe("172.17.0.1");
+    expect(registrationAddress("127.0.0.1", "203.0.113.50, garbage", true)).toBe("127.0.0.1");
     expect(() => parseTrustProxy(["0.0.0.0/0"])).toThrow(/not an IPv4 CIDR/);
     expect(() => parseTrustProxy(["not-an-ip"])).toThrow(/not an address/);
     expect(() => parseTrustProxy(["172.17.0.1/33"])).toThrow(/not an IPv4 CIDR/);

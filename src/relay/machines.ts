@@ -245,19 +245,18 @@ function proxyPeer(peerIp: string, trust: TrustProxy): boolean {
 
 /**
  * Who a Bun registration counts against. The peer, unless that peer is a trusted
- * proxy: then the last address in X-Forwarded-For, which is the one the proxy added.
- * Loopback is trusted when trust is on. A list also trusts those addresses and CIDRs
- * (Docker's bridge is not loopback). Any other peer ignores the header.
+ * proxy: then only the very last X-Forwarded-For entry, which is the one the proxy
+ * added. Everything before it was supplied by the client. If that last entry is not
+ * an address, count the peer instead of scanning backward. Loopback is trusted when
+ * trust is on. A list also trusts those addresses and CIDRs (Docker's bridge is not
+ * loopback). Any other peer ignores the header.
  */
 export function registrationAddress(peer: string | null | undefined, forwardedFor: string | null | undefined, trustProxy: TrustProxy = false): string | null {
   const peerIp = peer ? usableIp(peer) : null;
   if (!peerIp || !proxyPeer(peerIp, trustProxy)) return peerIp;
   const parts = (forwardedFor ?? "").split(",");
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const client = usableIp(parts[i] ?? "");
-    if (client) return client;
-  }
-  return peerIp;
+  const last = usableIp(parts[parts.length - 1] ?? "");
+  return last ?? peerIp;
 }
 
 /** The client address Cloudflare puts on a Worker request. Absent in local tests, which are then not limited. */
