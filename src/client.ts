@@ -451,7 +451,9 @@ export class Channel {
         await this.refreshKeys();
         key = this.access.keys[String(m.e)];
       }
-      const member = key ? await openRecord(key, m.rec, this.roomId, this.access.ownerPk, m.pk) : null;
+      const opened = key ? await openRecord(key, m.rec, this.roomId, this.access.ownerPk, m.pk) : null;
+      // The newest record seen for this key wins: a relay can't hand back an older, broader one.
+      const member = opened && newestRecord(this.roomId, opened);
       if (member) out.push({ ...member, active: !!m.active, ...(m.read_only ? { readOnly: true } : {}) });
       // A key the relay says is a member, with no record we can verify: show it, so the owner can remove it.
       else if (m.active) out.push({ name: `unverified-${m.pk.slice(0, 6)}`, pk: m.pk, xpk: m.xpk, owner: false, at: 0, active: true, unverified: true });
@@ -671,11 +673,26 @@ export class Channel {
   }
 
   /**
-   * Owner: make the relay's "can post" bit match what the log says each member may do. A scope.set
-   * lands first and the bit follows in a second call; if that one failed, or the relay's bit was
+   * Owner: after a scope.set at log position `since`, re-sign the member's record to say so (a client
+   * that loads only the tail of the log learns it there) and set the relay's "can post" bit, in one
+   * request. The record keeps what it said at approval; `later` is what holds from `since` on.
+   */
+  async updateScopes(m: Member, scopes: readonly Scope[], since: number): Promise<void> {
+    this.ownerOnly();
+    if (m.owner) throw new Error("the owner may do everything");
+    const e = this.access.epoch;
+    const key = this.access.keys[String(e)]!;
+    const { active: _a, readOnly: _r, unverified: _u, at: _at, ...info } = m;
+    const rec = await makeRecord(this.identity, this.roomId, { ...info, later: { scopes: [...scopes], since } });
+    await this.request(`/members/${m.pk}/record`, { method: "PUT", body: JSON.stringify({ rec: await sealRecord(key, rec), e, post: canPost(scopes) }) });
+  }
+
+  /**
+   * Owner: make each member's record and the relay's "can post" bit match the log. A scope.set lands
+   * first and the record (with the bit) follows in a second call; if that one failed, or the bit was
    * changed some other way, this puts it right. Returns the keys it changed.
    */
-  async reconcilePosting(state: Pick<ChannelState, "members">, members?: Member[]): Promise<string[]> {
+  async reconcilePosting(state: Pick<ChannelState, "members" | "scopeSets">, members?: Member[]): Promise<string[]> {
     this.ownerOnly();
     const changed: string[] = [];
     for (const m of members ?? (await this.members())) {
@@ -683,6 +700,12 @@ export class Channel {
       const folded = state.members.get(m.name);
       // Only the key the log knows as this name's: a key the fold hasn't seen yet keeps its record's word.
       if (!folded || folded.pk !== m.pk) continue;
+      const set = state.scopeSets.get(m.pk);
+      if (set && (m.later?.since ?? -1) < set.seq) {
+        await this.updateScopes(m, set.scopes, set.seq);
+        changed.push(m.pk);
+        continue;
+      }
       const want = canPost(folded.scopes);
       if (want === !m.readOnly) continue;
       await this.setCanPost(m.pk, want);
@@ -925,6 +948,30 @@ export class Channel {
       backoff = Math.min(backoff * 2, 30_000);
     }
   }
+}
+
+/**
+ * Where a client keeps the newest member record it has seen per key, across runs (the CLI's cache
+ * folder, the browser's storage). Unset, it's kept for this process only.
+ */
+export interface RecordMemory {
+  get(room: string, pk: string): Member | null;
+  set(room: string, pk: string, m: Member): void;
+}
+const inProcess = new Map<string, Member>();
+let recordMemory: RecordMemory = {
+  get: (room, pk) => inProcess.get(`${room}/${pk}`) ?? null,
+  set: (room, pk, m) => void inProcess.set(`${room}/${pk}`, m),
+};
+export function keepRecordsIn(memory: RecordMemory): void {
+  recordMemory = memory;
+}
+/** The newer of `served` and what this client has seen for that key (by the owner-signed `at`). */
+function newestRecord(room: string, served: Member): Member {
+  const seen = recordMemory.get(room, served.pk);
+  if (seen && seen.at > served.at) return seen;
+  if (!seen || served.at > seen.at) recordMemory.set(room, served.pk, served);
+  return served;
 }
 
 /** Map the relay errors that mean "you're out" to ChannelGone; leave everything else alone. */

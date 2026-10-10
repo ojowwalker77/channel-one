@@ -2,8 +2,8 @@
 // and MCP tool. Keeps a local cache of the decrypted log so folding shared
 // state (tasks, claims, facts, members) costs one incremental fetch.
 
-import { Channel, ChannelGone, isDirectedAt, isForAgent, QUIET_DROP_MS, RelayError, type SendOptions } from "./client.ts";
-import { appendCache, loadIdentity, markSeen, readCache, readCursor, readSeen, saveAccess, signingBudget, writeCursor, type ChannelConfig } from "./config.ts";
+import { Channel, ChannelGone, isDirectedAt, isForAgent, keepRecordsIn, QUIET_DROP_MS, RelayError, type SendOptions } from "./client.ts";
+import { appendCache, fileRecordMemory, loadIdentity, markSeen, readCache, readCursor, readSeen, saveAccess, signingBudget, writeCursor, type ChannelConfig } from "./config.ts";
 import { TOO_MANY_REQUESTS } from "./sas.ts";
 import type { ChannelAccess } from "./crypto.ts";
 import { inlineText, type JoinRequest } from "./membership.ts";
@@ -49,6 +49,8 @@ export class AgentSession {
   }
 
   static async open(alias: string, cfg: ChannelConfig, name: string): Promise<AgentSession> {
+    // Member records: the newest this machine has seen per key wins, across runs.
+    keepRecordsIn(fileRecordMemory);
     const owner = cfg.owner ? await loadIdentity(cfg.owner, cfg.roomId) : null;
     return new AgentSession(alias, cfg, await loadIdentity(name, cfg.roomId), owner);
   }
@@ -69,6 +71,7 @@ export class AgentSession {
         sponsor: m.sponsor,
         color: m.color,
         ...(m.scopes ? { scopes: m.scopes } : {}),
+        ...(m.later ? { later: m.later } : {}),
       }));
     }
     return this.roster;
@@ -405,9 +408,12 @@ export class AgentSession {
     if (m.owner) throw new Rejected("the owner may do everything");
     const wire = wireScopes(scopes);
     const ev: Event = { op: "scope.set", member, pk: m.pk, scopes: wire };
-    const after = await this.confirm(await this.ownerCh.send(`set what ${member} may do: ${wire ? describeScopes(wire) : "full"}`, { kind: "event", ev }));
-    // The log is the record; the relay's bit follows. If this fails, ownerChores puts it right next time.
-    await this.ownerCh.setCanPost(m.pk, canPost(after.members.get(member)?.scopes ?? [])).catch(() => {
+    const seq = await this.ownerCh.send(`set what ${member} may do: ${wire ? describeScopes(wire) : "full"}`, { kind: "event", ev });
+    const after = await this.confirm(seq);
+    // Then the member's record says it too (for clients holding only the log's tail), with the relay's
+    // bit. If this fails, ownerChores puts both right next time.
+    const rec = (await this.ownerCh.members()).find((r) => r.pk === m.pk);
+    await (rec ? this.ownerCh.updateScopes(rec, after.members.get(member)?.scopes ?? [], seq) : Promise.reject(new Error("no record"))).catch(() => {
       this.postingChecked = false;
     });
     return after;

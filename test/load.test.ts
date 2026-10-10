@@ -6,7 +6,7 @@ const now = 1_000_000;
 const task = (id: number, owner: string | undefined, state: Task["state"], title = `task ${id}`): Task => ({ id, title, state, owner, createdBy: "x", createdAt: 0, updatedAt: 0, after: [], notes: [] });
 const claim = (owner: string, path: string, expires = now + 60_000): Claim => ({ owner, path, seq: 1, since: 0, expires });
 const board = (tasks: Task[], claims: Claim[] = []): ChannelState =>
-  ({ members: new Map(), tasks: new Map(tasks.map((t) => [t.id, t])), claims, facts: new Map(), trust: new Map(), rejected: new Map(), openAsks: [], threadOf: new Map(), threadPeople: new Map(), head: 0 }) as ChannelState;
+  ({ members: new Map(), tasks: new Map(tasks.map((t) => [t.id, t])), claims, facts: new Map(), trust: new Map(), scopeSets: new Map(), rejected: new Map(), openAsks: [], threadOf: new Map(), threadPeople: new Map(), head: 0 }) as ChannelState;
 
 describe("member load", () => {
   test("nothing assigned is free; done tasks and other people's don't count", () => {

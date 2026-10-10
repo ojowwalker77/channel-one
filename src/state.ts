@@ -47,6 +47,8 @@ export type Roster = {
   color?: Color;
   /** As the owner signed them into this key's record; absent is everything. */
   scopes?: Scope[];
+  /** What the owner re-signed this key's record to after a change: from log position `since` on. */
+  later?: { scopes: Scope[]; since: number };
 }[];
 
 export interface TaskNote {
@@ -102,6 +104,8 @@ export interface ChannelState {
   trust: Map<number, Trust>;
   /** Events that lost a race or broke a rule, with the reason. */
   rejected: Map<number, string>;
+  /** Per key, the latest scope.set in the log (its seq and what it set). */
+  scopeSets: Map<string, { seq: number; scopes: Scope[] }>;
   /** Asks and blockers nobody else has replied to. */
   openAsks: Message[];
   /** Each verified chat message's thread: the seq at the top of its reply chain (itself if it starts one). */
@@ -195,6 +199,21 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
   // from its own record, and an old key's history is judged by what that key was allowed.
   const scopesByKey = new Map<string, Scope[]>();
   for (const r of roster) scopesByKey.set(r.pk, scopesOf(r));
+  // The record's later scopes, applied once the log passes where they took effect. A client holding
+  // only the tail of the log (the web) never sees that scope.set; this says the same thing. Any
+  // scope.set after it, in the log, still applies on top.
+  const floors = roster
+    .filter((r) => r.later && !r.owner)
+    .map((r) => ({ pk: r.pk, ...r.later! }))
+    .sort((a, b) => a.since - b.since);
+  const passFloors = (seq: number) => {
+    while (floors.length && floors[0]!.since < seq) {
+      const f = floors.shift()!;
+      scopesByKey.set(f.pk, f.scopes);
+    }
+  };
+  /** The latest scope.set the log holds for each key: the owner's client checks the record matches. */
+  const scopeSets = new Map<string, { seq: number; scopes: Scope[] }>();
   const tasks = new Map<number, Task>();
   let claims: Claim[] = [];
   const facts = new Map<string, Fact>();
@@ -206,6 +225,7 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
   let head = 0;
 
   for (const m of messages) {
+    passFloors(m.seq);
     // One bad message must never take the whole channel down for everyone: skip it.
     try {
       head = Math.max(head, m.seq);
@@ -299,6 +319,7 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
           }
           const scopes = ev.scopes === null ? [...SCOPES] : (readScopes(ev.scopes) ?? []);
           scopesByKey.set(ev.pk, scopes);
+          scopeSets.set(ev.pk, { seq: m.seq, scopes });
           // Losing claims lets go of the ones held now; tasks they own stay theirs until reassigned.
           if (!scopes.includes("claims")) claims = claims.filter((c) => c.owner !== ev.member);
           break;
@@ -421,6 +442,8 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
     return !by || [...by].every((n) => n === m.from);
   });
 
+  // Floors the loaded log hasn't passed yet: the record is newer than anything here says.
+  passFloors(Infinity);
   for (const member of members.values()) member.scopes = scopesByKey.get(member.pk) ?? [];
   for (const [key, fact] of facts) if (fact.expires !== undefined && fact.expires <= now) facts.delete(key);
 
@@ -430,6 +453,7 @@ export function fold(messages: Message[], roster: Roster, now = Date.now()): Cha
     claims: claims.filter((c) => c.expires > now),
     facts,
     trust,
+    scopeSets,
     rejected,
     openAsks,
     threadOf,

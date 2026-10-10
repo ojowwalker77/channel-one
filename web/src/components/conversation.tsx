@@ -2,7 +2,7 @@ import { ArrowDown01Icon, ArrowLeft01Icon, Cancel01Icon, Search01Icon } from "@h
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import { ignored, type Color, type Message } from "@mc/protocol.ts"
-import { canPost, describeScopes, wireScopes } from "@mc/scopes.ts"
+import { describeScopes, wireScopes } from "@mc/scopes.ts"
 import { colorOf } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
 import { channelTitle, forgetChannel, loadMember, loadRecent, saveMember, saveRecent, useChannel, useClock, useKnownChannels, type StoredMember } from "@/lib/channel"
@@ -342,9 +342,9 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       }}
       onScopes={async (m, scopes) => {
         const wire = wireScopes(scopes)
-        await send(`set what ${m.name} may do: ${wire ? describeScopes(wire) : "full"}`, { kind: "event", ev: { op: "scope.set", member: m.name, pk: m.pk, scopes: wire } })
-        // The log is the record; the relay's bit follows (and the reconcile puts it right if this fails).
-        await ch.setCanPost(m.pk, canPost(scopes))
+        const seq = await send(`set what ${m.name} may do: ${wire ? describeScopes(wire) : "full"}`, { kind: "event", ev: { op: "scope.set", member: m.name, pk: m.pk, scopes: wire } })
+        // Then their record says it too, with the relay's bit (the reconcile puts both right if this fails).
+        await ch.updateScopes(m, scopes, seq)
         await refreshRoster()
       }}
       onRole={async (ev) => {

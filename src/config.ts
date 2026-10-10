@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChannelAccess } from "./crypto.ts";
 import { generateIdentity, withExchangeKey, type Identity } from "./identity.ts";
+import type { Member } from "./membership.ts";
 import type { Message } from "./protocol.ts";
 import type { Signed, SigningBudget } from "./sas.ts";
 
@@ -433,6 +434,34 @@ export function forgetMember(alias: string, name: string): void {
     if (ch?.as === name) ch.as = left[0] ?? ch.owner;
   });
 }
+
+/**
+ * The newest owner-signed member record this machine has seen, per key: a relay serving an older,
+ * broader one (from before the owner narrowed what that member may do) doesn't win.
+ */
+export const fileRecordMemory = {
+  get(room: string, pk: string): Member | null {
+    try {
+      return (JSON.parse(readFileSync(join(home(), "records", `${safe(room)}.json`), "utf8")) as Record<string, Member>)[pk] ?? null;
+    } catch {
+      return null;
+    }
+  },
+  set(room: string, pk: string, m: Member): void {
+    const path = join(home(), "records", `${safe(room)}.json`);
+    mkdirSync(join(home(), "records"), { recursive: true, mode: 0o700 });
+    withLock(`${path}.lock`, () => {
+      let all: Record<string, Member> = {};
+      try {
+        all = JSON.parse(readFileSync(path, "utf8")) as Record<string, Member>;
+      } catch {
+        // First record for this room, or a torn file: start over (the relay serves them all again).
+      }
+      all[pk] = m;
+      writePrivate(path, JSON.stringify(all));
+    });
+  },
+};
 
 function cachePath(roomId: string): string {
   return join(home(), "cache", `${roomId}.jsonl`);

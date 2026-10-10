@@ -9,7 +9,7 @@
 import { openWith, sealWith } from "./crypto.ts";
 import { sign, verify, type Identity } from "./identity.ts";
 import { isColor, type Color } from "./protocol.ts";
-import { readScopes, wireScopes, type Scope } from "./scopes.ts";
+import { readScopes, SCOPES, wireScopes, type Scope } from "./scopes.ts";
 
 /** The signed-in person an agent acts for, as the relay verified them with WorkOS. */
 export interface Sponsor {
@@ -34,8 +34,14 @@ export interface MemberInfo {
   sponsor?: Sponsor;
   /** A person's colour, if the owner set one when admitting them (later changes are color.set events). */
   color?: Color;
-  /** What they may do besides read, as the owner signed it. Absent: everything (see scopes.ts). */
+  /** What they may do besides read, as the owner signed it at approval. Absent: everything (see scopes.ts). */
   scopes?: Scope[];
+  /**
+   * What they may do from log position `since` on, after the owner changed it (re-signed with every
+   * change). A client that loads only the tail of the log still knows it; the scope.set at `since`
+   * says the same thing to one that loads it all.
+   */
+  later?: { scopes: Scope[]; since: number };
   /** In a join request only: the requester means to take over the seat under this name with a new key. */
   reclaim?: boolean;
 }
@@ -58,7 +64,9 @@ export function handleFor(name: string, email?: string): string {
 }
 
 /** What the owner signs when admitting a key. */
-export interface MemberRecord extends MemberInfo {
+export interface MemberRecord extends Omit<MemberInfo, "later"> {
+  /** On the wire, null scopes are everything (see wireScopes). */
+  later?: { scopes: Scope[] | null; since: number };
   room: string;
   /** The member's Ed25519 key (`pk` itself is the signer's, i.e. the owner's). */
   member: string;
@@ -123,6 +131,7 @@ export async function makeRecord(owner: Identity, room: string, m: MemberInfo & 
     ...(m.sponsor ? { sponsor: m.sponsor } : {}),
     ...(m.color && (m.kind === "human" || m.owner) ? { color: m.color } : {}),
     ...(!m.owner && wireScopes(m.scopes) ? { scopes: wireScopes(m.scopes)! } : {}),
+    ...(!m.owner && m.later ? { later: { scopes: wireScopes(m.later.scopes), since: m.later.since } } : {}),
     at: Date.now(),
   });
 }
@@ -142,6 +151,9 @@ export async function openRecord(key: string, sealed: string, room: string, owne
     const owner = !!rec.owner && rec.member === ownerPk;
     // Scopes the record can't be read as are none at all: a garbled grant gives nothing.
     const scopes = owner || rec.scopes === undefined ? undefined : (readScopes(rec.scopes) ?? []);
+    const l = (rec as { later?: { scopes?: unknown; since?: unknown } }).later;
+    // null is everything; anything unreadable is nothing.
+    const later = !owner && l && Number.isInteger(l.since) ? { scopes: l.scopes === null ? [...SCOPES] : (readScopes(l.scopes) ?? []), since: l.since as number } : undefined;
     return {
       pk: rec.member,
       xpk: rec.mxpk,
@@ -153,6 +165,7 @@ export async function openRecord(key: string, sealed: string, room: string, owne
       sponsor: rec.sponsor,
       ...(isColor(rec.color) ? { color: rec.color } : {}),
       ...(scopes ? { scopes } : {}),
+      ...(later ? { later } : {}),
       owner,
       at: rec.at,
       active: true,

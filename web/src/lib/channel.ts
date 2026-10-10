@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react"
 
-import { Channel, ChannelGone, RelayError, myChannels, ownerStatement, type HumanSession, type MyChannel, type SendOptions } from "@mc/client.ts"
+import { Channel, ChannelGone, RelayError, keepRecordsIn, myChannels, ownerStatement, type HumanSession, type MyChannel, type SendOptions } from "@mc/client.ts"
 import { decodeJoinCode, fromB64url, newRoomId, ownerFingerprint, type ChannelAccess } from "@mc/crypto.ts"
 import { generateIdentity, withExchangeKey, type Identity } from "@mc/identity.ts"
 import { handleFor, type JoinRequest, type Member } from "@mc/membership.ts"
@@ -12,6 +12,19 @@ import { noteSignInGone } from "./session"
 
 /** How much history to load when the page opens. */
 const HISTORY = 2_000
+
+// Member records: the newest this browser has seen per key wins, so a relay can't hand back an older,
+// broader one after the owner narrowed what that member may do.
+keepRecordsIn({
+  get: (room, pk) => {
+    try {
+      return JSON.parse(localStorage.getItem(`mc.rec.${room}.${pk}`) ?? "null") as Member | null
+    } catch {
+      return null
+    }
+  },
+  set: (room, pk, m) => localStorage.setItem(`mc.rec.${room}.${pk}`, JSON.stringify(m)),
+})
 /** Presence beacons arrive every 60s; treat 2.5 missed beats as offline. */
 const PRESENCE_TTL = 150_000
 
@@ -657,6 +670,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
         display: m.display,
         sponsor: m.sponsor,
         ...(m.scopes ? { scopes: m.scopes } : {}),
+        ...(m.later ? { later: m.later } : {}),
       })),
     [roster]
   )

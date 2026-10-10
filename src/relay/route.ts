@@ -396,6 +396,20 @@ const routes: RoomRoute[] = [
   },
   {
     method: "PUT",
+    path: /^\/members\/([A-Za-z0-9_-]{20,})\/record$/,
+    guard: "owner",
+    run: (_, m) =>
+      Effect.gen(function* () {
+        const store = yield* Room;
+        const b = yield* json<{ rec?: unknown; e?: unknown; post?: unknown }>();
+        if (typeof b.rec !== "string" || typeof b.e !== "number" || typeof b.post !== "boolean") return yield* refuse(400, "send the sealed record, its epoch, and whether they may post");
+        yield* attempt(() => store.setRecord(m[1]!, b.rec as string, b.e as number, b.post as boolean));
+        // Everyone re-reads the roster, so the new record (and what it lets them do) lands at once.
+        return { data: { ok: true }, fx: { broadcast: [frame({ t: "roster" })] } };
+      }),
+  },
+  {
+    method: "PUT",
     path: /^\/members\/([A-Za-z0-9_-]{20,})\/post$/,
     guard: "owner",
     run: (_, m) =>

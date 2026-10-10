@@ -149,6 +149,32 @@ describe("scopes in fold", () => {
     expect(refusal([], { kind: "event", ev: { op: "release", paths: ["x"] } })).toBeNull();
   });
 
+  test("the record's later scopes are the floor for a client holding only the log's tail", async () => {
+    // The tail: the scope.set (narrowing chat to read-only at seq 5) isn't in it; the record says so.
+    const before = await msg("chat", "msg", "said while allowed")
+    seq++ // the scope.set's position, missing from this tail
+    const after = await msg("chat", "msg", "said after being narrowed")
+    const r = roster.map((x) => (x.name === "chat" ? { ...x, later: { scopes: [] as Scope[], since: before.seq + 1 } } : x))
+    const s = fold([before, after], r)
+    expect(s.trust.get(before.seq)).toBe("verified")
+    expect(s.trust.get(after.seq)).toBe("refused")
+    expect(s.members.get("chat")!.scopes).toEqual([])
+  })
+
+  test("with the whole log, the record and the scope.set agree; a later scope.set still wins", async () => {
+    const narrow = await set("chat", [])
+    const quiet = await msg("chat", "msg", "refused")
+    const widen = await set("chat", ["post"])
+    const back = await msg("chat", "msg", "allowed again")
+    // The record only knows the first change (its update after the second one failed).
+    const r = roster.map((x) => (x.name === "chat" ? { ...x, later: { scopes: [] as Scope[], since: narrow.seq } } : x))
+    const s = fold([narrow, quiet, widen, back], r)
+    expect([quiet, back].map((m) => s.trust.get(m.seq))).toEqual(["refused", "verified"])
+    expect(s.scopeSets.get(ids.chat!.pk)).toEqual({ seq: widen.seq, scopes: ["post"] })
+    // A tail that ends before the floor's position still takes it: the record is newer than the tail.
+    expect(fold([], r).members.get("chat")!.scopes).toEqual([])
+  })
+
   test("a scope.set with names this version doesn't know grants only the ones it does", async () => {
     const ms = [await ev("jon", { op: "scope.set", member: "ro", pk: ids.ro!.pk, scopes: ["post", "superpowers"] }), await msg("ro", "msg", "now I can talk")];
     const s = fold(ms, roster);
@@ -248,6 +274,39 @@ describe("scopes at the relay", () => {
     expect(await ch.send("back")).toBeGreaterThan(0);
     expect((await ownerCh.members()).find((m) => m.pk === id.pk)!.readOnly).toBeUndefined();
   });
+
+  test("a scope change re-signs the record; reconcile writes it when only the event landed", async () => {
+    const { id, ch } = await admit("recorded")
+    const roster = async () => (await ownerCh.members()).map((m) => ({ name: m.name, pk: m.pk, owner: m.owner, at: m.at, active: m.active, kind: m.kind, ...(m.scopes ? { scopes: m.scopes } : {}), ...(m.later ? { later: m.later } : {}) }))
+    const folded = async () => fold((await ownerCh.history(0)).messages, await roster())
+    const ev1 = await ownerCh.send("recorded may only talk", { ev: { op: "scope.set", member: "recorded", pk: id.pk, scopes: ["post"] } })
+    const rec = (await ownerCh.members()).find((m) => m.pk === id.pk)!
+    await ownerCh.updateScopes(rec, ["post"], ev1)
+    expect((await ch.members()).find((m) => m.pk === id.pk)!.later).toEqual({ scopes: ["post"], since: ev1 })
+    // Only the event, not the record: reconcile re-signs the record, and the bit follows.
+    const ev2 = await ownerCh.send("recorded may only read", { ev: { op: "scope.set", member: "recorded", pk: id.pk, scopes: [] } })
+    expect(await ownerCh.reconcilePosting(await folded())).toEqual([id.pk])
+    const now = (await ownerCh.members()).find((m) => m.pk === id.pk)!
+    expect(now.later).toEqual({ scopes: [], since: ev2 })
+    expect(now.readOnly).toBe(true)
+    await expect(ch.send("hi")).rejects.toThrow(/only read/)
+    expect(await ownerCh.reconcilePosting(await folded())).toEqual([])
+  })
+
+  test("the newest record seen for a key wins over an older one the relay serves", async () => {
+    const { id } = await admit("pinned")
+    const served = (await ownerCh.members()).find((m) => m.pk === id.pk)!
+    const newer = { ...served, at: served.at + 1000, later: { scopes: [] as Scope[], since: 1 } }
+    const kept = new Map<string, import("../src/membership.ts").Member>([[`${ownerCh.roomId}/${id.pk}`, newer]])
+    const { keepRecordsIn } = await import("../src/client.ts")
+    keepRecordsIn({ get: (room, pk) => kept.get(`${room}/${pk}`) ?? null, set: (room, pk, m) => void kept.set(`${room}/${pk}`, m) })
+    try {
+      expect((await ownerCh.members()).find((m) => m.pk === id.pk)!.later).toEqual({ scopes: [], since: 1 })
+    } finally {
+      const fresh = new Map<string, import("../src/membership.ts").Member>()
+      keepRecordsIn({ get: (room, pk) => fresh.get(`${room}/${pk}`) ?? null, set: (room, pk, m) => void fresh.set(`${room}/${pk}`, m) })
+    }
+  })
 
   test("a reclaimed seat keeps what the seat may do now", async () => {
     const { id: oldKey, ch: oldCh } = await admit("seat", ["post", "claims"]);

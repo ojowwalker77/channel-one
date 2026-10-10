@@ -691,6 +691,18 @@ export class RoomStore {
     return { epoch: this.meta().epoch, keys: Object.fromEntries(rows.map((r) => [String(r.e), r.wrapped])) };
   }
 
+  /**
+   * The owner re-signs a member's record when what they may do changes (sealed: the relay can't read
+   * it), and sets the "can post" bit with it, in one step. `e` is the epoch whose key sealed it.
+   */
+  setRecord(pk: string, rec: string, e: number, post: boolean): void {
+    if (pk === this.meta().ownerPk) throw new HttpError(400, "the owner's record isn't changed this way");
+    if (!this.isMember(pk)) throw new HttpError(404, "not a member");
+    if (!Number.isInteger(e) || e < 0 || e > this.meta().epoch) throw new HttpError(400, "no such epoch");
+    if (rec.length > 8_192) throw new HttpError(413, "record too large");
+    this.sql.run("UPDATE members SET rec = ?, rec_e = ?, read_only = ? WHERE pk = ?", rec, e, post ? 0 : 1, pk);
+  }
+
   /** Whether a member may post (the owner's scope.set says what they may do; this is the bit the relay enforces). */
   setCanPost(pk: string, post: boolean): void {
     if (pk === this.meta().ownerPk) throw new HttpError(400, "the owner may always post");
@@ -803,6 +815,7 @@ export function onClientFrame(store: RoomStore, raw: string, sender = ""): Effec
  *   DELETE /members/me                member: leave
  *   DELETE /members/<pk>              owner: remove
  *   PUT    /members/<pk>/post         owner: whether they may post (the relay's bit of member scopes)
+ *   PUT    /members/<pk>/record       owner: a re-signed record (what they may do changed) and that bit, together
  *   GET    /keys                      member: my wrapped channel keys
  *   POST   /epochs                    owner: rotate the channel key
  *   DELETE /                          owner: close and delete everything
