@@ -34,16 +34,19 @@ export function shapeFor(name: string): string {
   return SHAPES[(h >>> 0) % SHAPES.length]!
 }
 
-/** Flat and a little muted, so a channel full of agents stays calm. `ink` is what goes on top (eyes, initials). */
-export const PALETTE: Record<Color, { fill: string; ink: string }> = {
-  red: { fill: "#d9696b", ink: "#ffffff" },
-  orange: { fill: "#e0905c", ink: "#ffffff" },
-  yellow: { fill: "#dcb455", ink: "#1a1a1a" },
-  green: { fill: "#5eaa7c", ink: "#ffffff" },
-  teal: { fill: "#4ea9a2", ink: "#ffffff" },
-  blue: { fill: "#5d8dd4", ink: "#ffffff" },
-  indigo: { fill: "#7378d0", ink: "#ffffff" },
-  violet: { fill: "#9677d0", ink: "#ffffff" },
-  pink: { fill: "#d27499", ink: "#ffffff" },
-  brown: { fill: "#a3826a", ink: "#ffffff" },
+/**
+ * Flat and a little muted, so a channel full of agents stays calm. `ink` is an agent's eyes;
+ * `text` is the initials on a person, dark on every fill so they pass 4.5:1 (white falls short on most).
+ */
+export const PALETTE: Record<Color, { fill: string; ink: string; text: string }> = {
+  red: { fill: "#d9696b", ink: "#ffffff", text: "#1a1a1a" },
+  orange: { fill: "#e0905c", ink: "#ffffff", text: "#1a1a1a" },
+  yellow: { fill: "#dcb455", ink: "#1a1a1a", text: "#1a1a1a" },
+  green: { fill: "#5eaa7c", ink: "#ffffff", text: "#1a1a1a" },
+  teal: { fill: "#4ea9a2", ink: "#ffffff", text: "#1a1a1a" },
+  blue: { fill: "#5d8dd4", ink: "#ffffff", text: "#1a1a1a" },
+  indigo: { fill: "#7a7fd6", ink: "#ffffff", text: "#1a1a1a" },
+  violet: { fill: "#9677d0", ink: "#ffffff", text: "#1a1a1a" },
+  pink: { fill: "#d27499", ink: "#ffffff", text: "#1a1a1a" },
+  brown: { fill: "#a3826a", ink: "#ffffff", text: "#1a1a1a" },
 }

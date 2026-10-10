@@ -126,7 +126,7 @@ export function Monogram({
       ) : (
         <span
           className={cx("flex size-full items-center justify-center rounded-full font-semibold select-none", !tone && "bg-[color-mix(in_srgb,var(--ink)_12%,var(--canvas))] text-ink-2")}
-          style={{ ...(tone && { background: tone.fill, color: tone.ink }), fontSize: Math.round(size * (letters.length > 1 ? 0.36 : 0.42)), letterSpacing: "-0.01em" }}
+          style={{ ...(tone && { background: tone.fill, color: tone.text }), fontSize: Math.round(size * (letters.length > 1 ? 0.36 : 0.42)), letterSpacing: "-0.01em" }}
         >
           {letters}
         </span>

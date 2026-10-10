@@ -441,7 +441,7 @@ function ColorPicker({ state, me }: { state: ChannelState; me: string }) {
               holder && "opacity-35",
               on && "shadow-[0_0_0_2px_var(--canvas),0_0_0_3.5px_var(--ink)]",
             )}
-            style={{ background: PALETTE[c].fill, color: PALETTE[c].ink }}
+            style={{ background: PALETTE[c].fill, color: PALETTE[c].text }}
           >
             {holder && initials(memberName(holder))}
           </button>
