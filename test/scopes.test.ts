@@ -265,3 +265,18 @@ describe("scopes at the relay", () => {
     expect(members.find((m) => m.pk === oldKey.pk)!.active).toBe(false);
   });
 });
+
+// ---------- what the agent is told ----------
+
+describe("the agent's prompt", () => {
+  test("says what it may do when that's less than everything, and nothing when it's everything", async () => {
+    const { agentPrompt } = await import("../src/cli/main.ts");
+    expect(agentPrompt("c", "bot", { scopes: ["post", "ask", "tasks", "claims", "facts"] })).not.toContain("What you may do here");
+    expect(agentPrompt("c", "bot")).not.toContain("What you may do here");
+    const some = agentPrompt("c", "bot", { scopes: ["post", "claims"] });
+    expect(some).toContain("## What you may do here");
+    expect(some).toContain("write messages; claim paths");
+    const none = agentPrompt("c", "bot", { scopes: [] });
+    expect(none).toContain("lets you only read this channel");
+  });
+});

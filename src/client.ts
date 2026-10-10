@@ -581,7 +581,7 @@ export class Channel {
   }
 
   /** Admit a requester: sign its record, and wrap every epoch key to it. */
-  async approve(req: JoinRequest, as?: MemberInfo): Promise<Member> {
+  async approve(req: JoinRequest, as?: Partial<MemberInfo>): Promise<Member> {
     this.ownerOnly();
     if (req.check !== "ready" || !req.code) throw new Error(`${req.name} hasn't shown its code yet: approve once you've both seen the same 6 digits`);
     const kind = req.kind ?? "agent";

@@ -535,6 +535,8 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
     [member]
   )
   const [connection, setConnection] = useState<Connection>("connecting")
+  /** The head when this view started, and whether the whole log fits in what it loads. */
+  const [start, setStart] = useState<{ head: number; whole: boolean } | null>(null)
   const [gone, setGone] = useState<"removed" | "closed" | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [roster, setRoster] = useState<Member[]>([])
@@ -611,6 +613,7 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
     ;(async () => {
       await Promise.all([refreshRoster(), refreshRequests()])
       const head = await ch.head()
+      setStart({ head, whole: head <= HISTORY })
       await ch.stream(Math.max(0, head - HISTORY), enqueue, {
         signal: ac.signal,
         onOpen: ({ presence }) => {
@@ -658,6 +661,24 @@ export function useChannel(member: StoredMember, human?: HumanSession): ChannelH
     [roster]
   )
   const state = useMemo(() => fold(messages, rosterForFold, now), [messages, rosterForFold, now])
+
+  // Owner: the relay's "can post" bit follows the scopes in the log, put right whenever either side
+  // changes (a scope.set whose second step failed, here or on another device). Only with the whole
+  // log loaded: a window that misses an old scope.set would read that member as allowed everything.
+  const scopesKey = useMemo(() => [...state.members.values()].map((m) => `${m.pk}:${m.scopes.join(",")}`).join("|"), [state])
+  const bitsKey = useMemo(() => roster.map((m) => `${m.pk}:${m.readOnly ? 0 : 1}`).join("|"), [roster])
+  // The whole log, replayed up to where it stood when this view opened.
+  const caughtUp = !!start?.whole && (messages.at(-1)?.seq ?? 0) >= start.head
+  const reconcile = useEffectEvent(() => {
+    if (!ch.isOwner || !caughtUp || roster.length === 0) return
+    ch.reconcilePosting(state, roster).then(
+      (changed) => {
+        if (changed.length) void refreshRoster()
+      },
+      () => {}
+    )
+  })
+  useEffect(() => reconcile(), [scopesKey, bitsKey, caughtUp])
   // Online only if signed by the very key the owner admitted under that name.
   const live = useMemo(() => new Map([...online].filter(([name, o]) => !!o.pk && keyOf.get(name) === o.pk && now - o.at < PRESENCE_TTL)), [online, keyOf, now])
 

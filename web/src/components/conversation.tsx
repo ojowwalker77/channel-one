@@ -2,6 +2,7 @@ import { ArrowDown01Icon, ArrowLeft01Icon, Cancel01Icon, Search01Icon } from "@h
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import { ignored, type Color, type Message } from "@mc/protocol.ts"
+import { canPost, describeScopes, wireScopes } from "@mc/scopes.ts"
 import { colorOf } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
 import { channelTitle, forgetChannel, loadMember, loadRecent, saveMember, saveRecent, useChannel, useClock, useKnownChannels, type StoredMember } from "@/lib/channel"
@@ -327,8 +328,8 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
         setFilter(f)
         setTab("chat")
       }}
-      onApprove={async (r) => {
-        await ch.approve(r)
+      onApprove={async (r, scopes) => {
+        await ch.approve(r, wireScopes(scopes) ? { scopes } : undefined)
         await Promise.all([refreshRequests(), refreshRoster()])
       }}
       onReclaim={async (r, opts) => {
@@ -338,6 +339,13 @@ export function Conversation({ member, onBack, onGone }: { member: StoredMember;
       }}
       onColor={async (color) => {
         await send(color ? `took ${color}` : "cleared their colour", { kind: "event", ev: { op: "color.set", member: me, color } })
+      }}
+      onScopes={async (m, scopes) => {
+        const wire = wireScopes(scopes)
+        await send(`set what ${m.name} may do: ${wire ? describeScopes(wire) : "full"}`, { kind: "event", ev: { op: "scope.set", member: m.name, pk: m.pk, scopes: wire } })
+        // The log is the record; the relay's bit follows (and the reconcile puts it right if this fails).
+        await ch.setCanPost(m.pk, canPost(scopes))
+        await refreshRoster()
       }}
       onRole={async (ev) => {
         await send(ev.op === "role.set" ? `made ${ev.member} ${ev.role ?? "unassigned"}` : `kept ${ev.member}'s role`, { kind: "event", ev })

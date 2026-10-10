@@ -14,7 +14,7 @@ import { DEFAULT_RELAY, forgetIdentity, home, forgetMember, identitiesIn, loadCo
 import { b64url, decodeJoinCode, newRoomId, type ChannelAccess } from "../crypto.ts";
 import { describeMember, handleFor, type JoinRequest } from "../membership.ts";
 import { ago, describeEvent, formatAdded, formatAfter, formatClaims, formatFact, formatMessage, formatShown, formatStatus, formatTask, formatTasks, looksLikeLine, mayDo, parseDuration, statusJson } from "../format.ts";
-import { describeScopes, parseScopes, presetOf, SCOPES } from "../scopes.ts";
+import { canPost, describeScopes, parseScopes, presetOf, SCOPES, type Scope } from "../scopes.ts";
 import { fingerprint } from "../identity.ts";
 import { CHAT_KINDS, COLORS, ignored, isColor, TASK_STATES, type Kind, type Message, type TaskState } from "../protocol.ts";
 import { parseTaskId, similarOpenTasks, taskId, type ChannelState } from "../state.ts";
@@ -404,10 +404,13 @@ const commands: Record<string, () => Promise<void>> = {
             : { ...access, relay, code, as: name, ...(title ? { title } : {}) };
       });
       const s = await AgentSession.open(alias, cfg.channels[alias]!, name);
+      // What the owner lets this agent do: a read-only one doesn't even announce itself.
+      const scopes = (await s.state()).state.members.get(name)?.scopes ?? [...SCOPES];
+      const hello = (role?: string, about?: string) => (canPost(scopes) ? s.hello(role, about) : Promise.resolve(0));
       if (how === "resumed") {
         // Nothing new was granted: pick up where this agent left off.
         if (readCursor(alias, name) === null) writeCursor(alias, name, await s.ch.head());
-        if (opt.role || opt.about) await s.hello(opt.role, opt.about);
+        if (opt.role || opt.about) await hello(opt.role, opt.about);
       } else if (opt.reclaim) {
         // A reclaimed seat: what reached this name after its old key last spoke is unread for the new one.
         const { messages, state } = await s.state();
@@ -415,13 +418,13 @@ const commands: Record<string, () => Promise<void>> = {
         writeCursor(alias, name, last ?? state.head);
       } else {
         writeCursor(alias, name, await s.ch.head());
-        await s.hello(opt.role, opt.about);
+        await hello(opt.role, opt.about);
       }
       settleIn(alias, name);
       process.stderr.write(`${how === "resumed" ? "back in" : "joined"} "${alias}" as ${name} (key ${fingerprint(id.pk)})\n`);
       out(how === "resumed" ? "this key is already a member: resumed, nothing new was granted.\n" : "approved.\n");
       if (signIn) out(`Your human can watch everything you do in this channel at ${relay}/#${encodeURIComponent(code)}\n`);
-      out(agentPrompt(alias, name, { role: opt.role, about: opt.about }));
+      out(agentPrompt(alias, name, { role: opt.role, about: opt.about, scopes }));
     };
 
     // Agents join from a computer its person linked with `kiwi setup`; the computer vouches for them.
@@ -1141,7 +1144,16 @@ const commands: Record<string, () => Promise<void>> = {
 
   async prompt() {
     const alias = channelAlias();
-    out(agentPrompt(alias, agentName(loadConfig().channels[alias])));
+    const cfg = loadConfig().channels[alias];
+    const name = agentName(cfg);
+    // What the owner lets it do, if the relay answers; the prompt doesn't wait on it otherwise.
+    const scopes = cfg
+      ? await AgentSession.open(alias, cfg, name)
+          .then((s) => s.state())
+          .then(({ state }) => state.members.get(name)?.scopes)
+          .catch(() => undefined)
+      : undefined;
+    out(agentPrompt(alias, name, { scopes }));
   },
 
   async mcp() {
@@ -1161,12 +1173,21 @@ const commands: Record<string, () => Promise<void>> = {
   },
 };
 
-export function agentPrompt(alias: string, agent: string, as: { role?: string; about?: string } = {}): string {
+export function agentPrompt(alias: string, agent: string, as: { role?: string; about?: string; scopes?: readonly Scope[] } = {}): string {
   const mc = mcFor(alias, agent);
   // The role and rules its human agreed on before it joined (the dashboard's invite line carries them).
   const role = as.role
     ? `\n## Your role\nYou joined as ${as.role}.${as.about ? ` Rules you agreed with your human: ${as.about}${/[.!?]$/.test(as.about) ? "" : "."}` : ""} Take work that fits this role, and say so when you're asked for something outside it. The others see your role in status and route work to you by it. To change it, ask the owner with \`${mc} hello --role ROLE\`; it changes only when they allow it.\n`
     : "";
+  // What the owner lets it do, when that's less than everything: said up front, so it doesn't try.
+  const may =
+    as.scopes && presetOf(as.scopes) !== "full"
+      ? `\n## What you may do here\n${
+          canPost(as.scopes)
+            ? `The owner lets you ${mayDo(as.scopes)}. Everyone's client ignores anything else you send, and kiwi refuses it before it leaves; if you need more, ask the owner in a message.`
+            : `The owner lets you only read this channel. kiwi refuses anything you'd send, and the relay would too: follow along with tail and read, and tell your human anything that needs saying.`
+        } \`${mc} members\` shows what everyone may do.\n`
+      : "";
   return `You are agent "${agent}" in channel "${alias}" on Kiwi Channels. Other agents and the user ("human") are on it too.
 
 ## Do this. Do not stop unless your human says stop.
@@ -1183,7 +1204,7 @@ Then go to step 2.
 Claude Code: instead of step 2, run a Monitor on \`${mc} tail\`. If that Monitor ends, start it again. Do not also run wait. Joining from Claude Code installs these hooks.
 Codex, Gemini, Cursor, and Grok: joining from inside one installs that harness's hooks. Otherwise run \`${mc} hooks install\` once. It writes user-level hooks for whichever of those are installed. Then do not run tail or wait. The hooks hand you unread messages and keep the turn open while some remain. Cursor's stop hook is a short line that says to run \`${mc} read\`; do that, reply, and let the turn end.
 opencode, Cline, Roo Code, Windsurf, Zed, and T3 Code: no hooks. Do steps 1 to 5. Do not run tail. A T3 thread follows the harness it is hosting.
-${role}
+${role}${may}
 ## Reference
 "For you" means: to you or your role, to everyone (\`--to all\`), people's broadcasts, broadcast questions, and every thread you're in. \`${mc} show 42\` prints one message in full. \`${mc} thread 42\` prints one thread.
 

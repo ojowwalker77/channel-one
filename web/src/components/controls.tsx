@@ -6,12 +6,15 @@ import { loadLine, memberLoad, showsLoad, type Load } from "@mc/load.ts"
 import { NAME_RE, type JoinRequest, type Member as RosterMember } from "@mc/membership.ts"
 import { COLORS, type ChannelIcon, type Color, type Event } from "@mc/protocol.ts"
 import { TOO_MANY_REQUESTS } from "@mc/sas.ts"
+import { SCOPES, type Scope } from "@mc/scopes.ts"
 import { colorOf, taskId, type ChannelState, type Member } from "@mc/state.ts"
 import { useAuth } from "@/lib/auth"
 import { formatAgo, initials, memberLine, memberName } from "@/lib/format"
 import { PALETTE } from "@/lib/characters"
 import { cx } from "@/lib/utils"
+import { isSignInGone } from "@/lib/session"
 import { IconDialog } from "./channel-icon"
+import { defaultScopes, saveDefaultScopes, ScopePicker, scopesLine } from "./scopes"
 import { cachedIcon } from "@/lib/icons"
 import { Icon } from "./icon"
 import { Alert, Button, IconButton, Modal, Monogram, Tabs, TextField, errorText, toast } from "./kit"
@@ -31,6 +34,7 @@ type Confirm =
   | { kind: "reclaim"; req: JoinRequest; online: boolean }
   | { kind: "remove"; member: RosterMember }
   | { kind: "role"; member: RosterMember }
+  | { kind: "scopes"; member: RosterMember }
   | { kind: "close" }
   | { kind: "leave" }
   | null
@@ -46,13 +50,16 @@ export interface ControlsProps {
   state: ChannelState
   now: number
   onFilter: (f: Filter) => void
-  onApprove: (r: JoinRequest) => Promise<void>
+  /** `scopes`: what they may do besides read; left out, everything. */
+  onApprove: (r: JoinRequest, scopes?: Scope[]) => Promise<void>
   /** Owner: move a member's seat to the key in a RECLAIM request. `force` is the second confirm when the old key is online. */
   onReclaim: (r: JoinRequest, opts: { online: boolean; force?: boolean }) => Promise<void>
   onDeny: (r: JoinRequest) => Promise<void>
   /** Sign this browser's half of a request's code check, at the person's click. */
   onCheck: (r: JoinRequest) => Promise<void>
   onRemove: (m: RosterMember) => Promise<void>
+  /** Owner: change what a member may do besides read (a signed scope.set, then the relay's bit). */
+  onScopes?: (m: RosterMember, scopes: Scope[]) => Promise<void>
   /** Owner: set a member's role, or allow or refuse the one they asked for (a signed event). */
   onRole: (ev: Extract<Event, { op: "role.set" | "role.refuse" }>) => Promise<void>
   onCloseChannel: () => Promise<void>
@@ -77,6 +84,7 @@ interface Api {
   openRequests: () => void
   openInvite: () => void
   editRole: (m: RosterMember) => void
+  editScopes: (m: RosterMember) => void
   lastSeenOf: (name: string) => number | null
   onlineNow: (name: string) => boolean
 }
@@ -116,6 +124,7 @@ export function ChannelControls({ children, ...p }: ControlsProps & { children: 
   const [busy, setBusy] = useState(false)
   const [sure, setSure] = useState(false)
   const [roleDraft, setRoleDraft] = useState({ role: "", about: "" })
+  const [scopeDraft, setScopeDraft] = useState<Scope[]>([...SCOPES])
   const active = p.roster.filter((m) => m.active)
   const taken = confirm?.kind === "approve" && active.some((m) => m.name === confirm.req.name)
   // A seat in use: seen in the last ten minutes or listening right now (the same rule as kiwi approve).
@@ -130,7 +139,7 @@ export function ChannelControls({ children, ...p }: ControlsProps & { children: 
       setConfirm(null)
     } catch (err) {
       const message = errorText(err)
-      toast(/sign in required/.test(message) ? "Sign in first. Owner actions need your session." : message, "error")
+      toast(isSignInGone(err) ? "Sign in first. Owner actions need your session." : message, "error")
     } finally {
       setBusy(false)
     }
@@ -140,13 +149,21 @@ export function ChannelControls({ children, ...p }: ControlsProps & { children: 
     p,
     busy,
     run,
-    ask: setConfirm,
+    ask: (c) => {
+      // Approving starts from what this browser picked for new members when inviting.
+      if (c?.kind === "approve") setScopeDraft(p.roomId ? defaultScopes(p.roomId) : [...SCOPES])
+      setConfirm(c)
+    },
     openRequests: () => setSheet("requests"),
     openInvite: () => setSheet("invite"),
     editRole: (m) => {
       const live = p.state.members.get(m.name)
       setRoleDraft({ role: live?.role ?? "", about: live?.about ?? "" })
       setConfirm({ kind: "role", member: m })
+    },
+    editScopes: (m) => {
+      setScopeDraft(p.state.members.get(m.name)?.scopes ?? [...SCOPES])
+      setConfirm({ kind: "scopes", member: m })
     },
     lastSeenOf,
     onlineNow,
@@ -206,7 +223,9 @@ export function ChannelControls({ children, ...p }: ControlsProps & { children: 
           confirm?.kind === "approve" && (
             <>
               Approve only if {confirm.req.kind === "human" ? "they show" : "its terminal shows"} this exact code.
-              <span className="mt-4 mb-1 block text-[34px] leading-none font-semibold tracking-[0.04em] text-ink tabular-nums">{confirm.req.code}</span>
+              <span className="mt-4 mb-4 block text-[34px] leading-none font-semibold tracking-[0.04em] text-ink tabular-nums">{confirm.req.code}</span>
+              <span className="mb-2 block text-[12.5px] font-medium text-ink">What {confirm.req.kind === "human" ? "they" : "it"} can do</span>
+              <ScopePicker value={scopeDraft} onChange={setScopeDraft} disabled={busy} />
             </>
           )
         }
@@ -215,8 +234,31 @@ export function ChannelControls({ children, ...p }: ControlsProps & { children: 
           Cancel
         </Button>
         {confirm?.kind === "approve" && (
-          <Button disabled={busy || taken} onClick={() => run(() => p.onApprove(confirm.req), `${confirm.req.name} joined`)}>
+          <Button disabled={busy || taken} onClick={() => run(() => p.onApprove(confirm.req, scopeDraft), `${confirm.req.name} joined`)}>
             {taken ? "That name is taken" : "Approve"}
+          </Button>
+        )}
+      </Alert>
+
+      <Alert
+        open={confirm?.kind === "scopes"}
+        onClose={() => setConfirm(null)}
+        title={confirm?.kind === "scopes" ? `What ${confirm.member.name} can do` : ""}
+        message={
+          confirm?.kind === "scopes" && (
+            <>
+              <span className="mb-3 block">Everyone can read. Every member’s client holds them to this from now on; what they sent before stands.</span>
+              <ScopePicker value={scopeDraft} onChange={setScopeDraft} disabled={busy} />
+            </>
+          )
+        }
+      >
+        <Button variant="secondary" onClick={() => setConfirm(null)}>
+          Cancel
+        </Button>
+        {confirm?.kind === "scopes" && p.onScopes && (
+          <Button disabled={busy} onClick={() => run(() => p.onScopes!(confirm.member, scopeDraft), `Saved what ${confirm.member.name} can do`)}>
+            Save
           </Button>
         )}
       </Alert>
@@ -306,7 +348,7 @@ export function ChannelControls({ children, ...p }: ControlsProps & { children: 
 
 /** The faces in the header and, behind them, everyone in the channel: role, load, and what the owner can do. */
 export function People({ here, subtitle, live }: { here: Member[]; subtitle: string; live: boolean }) {
-  const { p, busy, run, ask, editRole } = useControls()
+  const { p, busy, run, ask, editRole, editScopes } = useControls()
   const [open, setOpen] = useState(false)
   const active = p.roster.filter((m) => m.active).sort((a, b) => Number(b.owner) - Number(a.owner) || Number(p.online.has(b.name)) - Number(p.online.has(a.name)))
   const former = p.roster.filter((m) => !m.active)
@@ -352,6 +394,7 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
                   </p>
                   <p className="truncate text-[12px] text-ink-2" title={`${now?.about ? `Rules: ${now.about}\n` : ""}Key ${m.pk.slice(0, 16)}`}>
                     {showLoad && load.level !== "free" ? loadLine(load) : memberLine(now ?? m)}
+                    {now && !m.owner && scopesLine(now.scopes) && <span> · {scopesLine(now.scopes)}</span>}
                   </p>
                 </button>
                 {showLoad && (
@@ -372,6 +415,7 @@ export function People({ here, subtitle, live }: { here: Member[]; subtitle: str
                     }
                   >
                     <MenuItem onClick={act(() => editRole(m))}>Set role…</MenuItem>
+                    {p.onScopes && <MenuItem onClick={act(() => editScopes(m))}>What they can do…</MenuItem>}
                     <MenuSeparator />
                     <MenuItem tone="danger" onClick={act(() => ask({ kind: "remove", member: m }))}>
                       Remove from channel…
@@ -484,6 +528,7 @@ function Invite({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("")
   const [role, setRole] = useState("")
   const [rules, setRules] = useState("")
+  const [newScopes, setNewScopes] = useState<Scope[]>(() => (p.roomId ? defaultScopes(p.roomId) : [...SCOPES]))
   const n = name.trim()
   const badName = !!n && !NAME_RE.test(n)
   const command = [
@@ -536,6 +581,11 @@ function Invite({ onDone }: { onDone: () => void }) {
           </p>
         </div>
       )}
+      <div className="mt-5 border-t border-line pt-4">
+        <p className="mb-2 text-[12.5px] font-medium text-ink">New members can</p>
+        <ScopePicker value={newScopes} onChange={(s) => (setNewScopes(s), p.roomId && saveDefaultScopes(p.roomId, s))} />
+        <p className="mt-2 text-[12px] leading-snug text-ink-3">You confirm it for each one when you approve them, and can change it later from People.</p>
+      </div>
       <datalist id="kiwi-roles">
         {ROLES.map((r) => (
           <option key={r} value={r} />
