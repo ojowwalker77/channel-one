@@ -1,10 +1,10 @@
 // Per-harness hook files: write, idempotent re-install, uninstall leaves the user's own entries.
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, updateConfig } from "../src/config.ts";
-import { autoInstallExtraHooks, autoInstallHooks, cursorStopFollowup, extraInstalled, installDetected, installExtra, installHooks, stopStyle, uninstallExtra } from "../src/hooks.ts";
+import { autoInstallExtraHooks, autoInstallHooks, cursorStopFollowup, extraInstalled, installDetected, installExtra, installHooks, stopStyle, uninstallDetected, uninstallExtra } from "../src/hooks.ts";
 
 const made: string[] = [];
 const prev = new Map<string, string | undefined>();
@@ -44,6 +44,68 @@ afterEach(() => {
 function read(path: string): any {
   return JSON.parse(readFileSync(path, "utf8"));
 }
+
+function realHomeStamp(): string {
+  const root = homedir();
+  const paths = [
+    join(root, ".grok"),
+    join(root, ".grok", "hooks"),
+    join(root, ".grok", "hooks", "kiwi.json"),
+    join(root, ".codex"),
+    join(root, ".codex", "hooks.json"),
+    join(root, ".cursor"),
+    join(root, ".cursor", "hooks.json"),
+    join(root, ".gemini"),
+    join(root, ".gemini", "settings.json"),
+    join(root, ".claude"),
+    join(root, ".claude", "settings.json"),
+  ];
+  return paths
+    .map((p) => {
+      try {
+        const s = statSync(p);
+        return `${p} ${s.mtimeMs} ${s.size} ${s.mode}`;
+      } catch (e) {
+        if (typeof e === "object" && e !== null && "code" in e && e.code === "ENOENT") return `${p} absent`;
+        throw e;
+      }
+    })
+    .join("\n");
+}
+
+test("a harness session during tests does not touch the real home", () => {
+  const root = homedir();
+  for (const key of ["KIWI_CODEX_DIR", "KIWI_GEMINI_DIR", "KIWI_CURSOR_DIR", "KIWI_GROK_DIR", "CLAUDE_CONFIG_DIR"]) {
+    const dir = process.env[key];
+    expect(dir, key).toBeTruthy();
+    expect(dir!.startsWith(`${root}/`), key).toBe(false);
+  }
+  expect(process.env.CLAUDECODE).toBeUndefined();
+  expect(process.env.CODEX_THREAD_ID).toBeUndefined();
+  expect(process.env.GEMINI_CLI).toBeUndefined();
+  expect(process.env.CURSOR_AGENT).toBeUndefined();
+  expect(process.env.GROK_SESSION_ID).toBeUndefined();
+
+  const before = realHomeStamp();
+  setEnv({
+    KIWI_HOME: scratch("hk-preload-home-"),
+    CLAUDECODE: "1",
+    CODEX_THREAD_ID: "thr_test",
+    GEMINI_CLI: "1",
+    CURSOR_AGENT: "1",
+    GROK_SESSION_ID: "sess_test",
+  });
+  expect(autoInstallHooks()).toContain(process.env.CLAUDE_CONFIG_DIR!);
+  const extras = autoInstallExtraHooks();
+  expect(extras).toContain("Codex hooks");
+  expect(extras).toContain("Gemini hooks");
+  expect(extras).toContain("Cursor hooks");
+  expect(extras).toContain("Grok hooks");
+  expect(existsSync(join(process.env.KIWI_GROK_DIR!, "hooks", "kiwi.json"))).toBe(true);
+  installDetected();
+  uninstallDetected();
+  expect(realHomeStamp()).toBe(before);
+});
 
 test("codex, gemini, cursor, and grok install, re-install once, and uninstall keeps user entries", () => {
   const claude = scratch("hk-claude-");
