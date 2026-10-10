@@ -19,6 +19,7 @@ import {
 import { sign, signText, verify, verifyText, type Identity } from "./identity.ts";
 import { commitTo, joinCheckCode, joinNonce, ownerNonceStatement, spendAuto, type SigningBudget } from "./sas.ts";
 import { canPost, scopesOf, wireScopes, type Scope } from "./scopes.ts";
+import type { ChannelState } from "./state.ts";
 import { handleFor, inlineText, makeRecord, NAME_RE, nameKey, openRecord, RESERVED_NAMES, sealRecord, type JoinRequest, type Member, type MemberInfo } from "./membership.ts";
 import {
   CLOSE_CLOSED,
@@ -259,6 +260,8 @@ export class Channel {
       xpk: id.xpk!,
       rec: await sealRecord(key, await makeRecord(owner, roomId, { ...info, pk: id.pk, xpk: id.xpk!, owner: isOwner })),
       keys: { "0": await wrapFor(owner, roomId, 0, id.pk, id.xpk!, key) },
+      // Read-only from the start: the relay refuses their posts from the first one.
+      ...(!isOwner && !canPost(scopesOf(info)) ? { post: false } : {}),
     });
     const members = [await enroll(owner, ownerInfo, true), ...(await Promise.all(agents.map((a) => enroll(a, a.info, false))))];
     const sealedTitle = title ? await seal(key, roomId, await sign(owner, { what: "channel-title", room: roomId, name: title.slice(0, 80) })) : undefined;
@@ -440,7 +443,7 @@ export class Channel {
 
   /** The verified member list. Records that fail verification are dropped. */
   async members(): Promise<Member[]> {
-    const { members } = await this.request<{ members: { pk: string; xpk: string; rec: string; e: number; active: number }[] }>("/members");
+    const { members } = await this.request<{ members: { pk: string; xpk: string; rec: string; e: number; active: number; read_only?: number }[] }>("/members");
     const out: Member[] = [];
     for (const m of members) {
       let key = this.access.keys[String(m.e)];
@@ -449,7 +452,7 @@ export class Channel {
         key = this.access.keys[String(m.e)];
       }
       const member = key ? await openRecord(key, m.rec, this.roomId, this.access.ownerPk, m.pk) : null;
-      if (member) out.push({ ...member, active: !!m.active });
+      if (member) out.push({ ...member, active: !!m.active, ...(m.read_only ? { readOnly: true } : {}) });
       // A key the relay says is a member, with no record we can verify: show it, so the owner can remove it.
       else if (m.active) out.push({ name: `unverified-${m.pk.slice(0, 6)}`, pk: m.pk, xpk: m.xpk, owner: false, at: 0, active: true, unverified: true });
     }
@@ -665,6 +668,27 @@ export class Channel {
   async setCanPost(pk: string, post: boolean): Promise<void> {
     this.ownerOnly();
     await this.request(`/members/${pk}/post`, { method: "PUT", body: JSON.stringify({ post }) });
+  }
+
+  /**
+   * Owner: make the relay's "can post" bit match what the log says each member may do. A scope.set
+   * lands first and the bit follows in a second call; if that one failed, or the relay's bit was
+   * changed some other way, this puts it right. Returns the keys it changed.
+   */
+  async reconcilePosting(state: Pick<ChannelState, "members">, members?: Member[]): Promise<string[]> {
+    this.ownerOnly();
+    const changed: string[] = [];
+    for (const m of members ?? (await this.members())) {
+      if (!m.active || m.owner || m.unverified) continue;
+      const folded = state.members.get(m.name);
+      // Only the key the log knows as this name's: a key the fold hasn't seen yet keeps its record's word.
+      if (!folded || folded.pk !== m.pk) continue;
+      const want = canPost(folded.scopes);
+      if (want === !m.readOnly) continue;
+      await this.setCanPost(m.pk, want);
+      changed.push(m.pk);
+    }
+    return changed;
   }
 
   /** Remove a member and rotate the key so they can't read anything newer. */

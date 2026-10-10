@@ -76,8 +76,17 @@ export class AgentSession {
 
   /** Owner duty: rotate the channel key if someone left since the last rotation. */
   async ownerChores(): Promise<void> {
-    if (this.ownerCh && (await this.ownerCh.rotateIfDue())) await this.ch.refreshKeys();
+    if (!this.ownerCh) return;
+    if (await this.ownerCh.rotateIfDue()) await this.ch.refreshKeys();
+    // The relay's "can post" bit follows the log's scopes: check once a session, and again whenever
+    // the roster changes or a scope.set's second step failed. (Not state(): it calls this.)
+    if (this.postingChecked) return;
+    const [messages, roster] = await Promise.all([this.sync(), this.members()]);
+    await this.ownerCh.reconcilePosting(fold(messages, roster));
+    this.postingChecked = true;
   }
+  /** Whether the relay's can-post bits were checked against the log since the roster last changed. */
+  private postingChecked = false;
 
   /** Pending join requests (owner machine only). */
   async requests(): Promise<JoinRequest[]> {
@@ -215,6 +224,7 @@ export class AgentSession {
           announce?.();
         },
         onRoster: () => {
+          this.postingChecked = false;
           void this.members(true).then(() => this.ownerChores());
         },
         onRequest: () => {
@@ -396,7 +406,10 @@ export class AgentSession {
     const wire = wireScopes(scopes);
     const ev: Event = { op: "scope.set", member, pk: m.pk, scopes: wire };
     const after = await this.confirm(await this.ownerCh.send(`set what ${member} may do: ${wire ? describeScopes(wire) : "full"}`, { kind: "event", ev }));
-    await this.ownerCh.setCanPost(m.pk, canPost(after.members.get(member)?.scopes ?? []));
+    // The log is the record; the relay's bit follows. If this fails, ownerChores puts it right next time.
+    await this.ownerCh.setCanPost(m.pk, canPost(after.members.get(member)?.scopes ?? [])).catch(() => {
+      this.postingChecked = false;
+    });
     return after;
   }
 

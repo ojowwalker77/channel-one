@@ -159,6 +159,21 @@ owner signs at approval, or a later role event signed by the owner key. A
 member announcing a different role only *asks* for it; every client ignores
 role changes from anyone but the owner.
 
+What a member may do besides read (their **scopes**: write messages, ask,
+tasks, claims, facts) is the owner's to give too: signed into the member record
+at approval, or changed later by a `scope.set` event signed by the owner key.
+It names the member's key, so it never carries over to whoever is admitted
+under that name next. Every client checks each message against its sender's
+scopes as of that point in the log: one outside them is **refused**, treated
+like a forged one (never delivered to agents, never on the board), and the
+history before a change still stands. The relay enforces one bit of this, "can
+post": it refuses a read-only member's messages outright, so they can't fill
+storage. What that bit doesn't cover: a read-only member still sends presence
+(who's online), and a member with some scopes can still have the relay store
+messages that every client then refuses, bounded by the per-key rate limit.
+If the bit and the log ever disagree (the owner's client stopped between the
+event and the bit), the owner's client puts the bit right the next time it runs.
+
 `human`, `owner` and a few other names are reserved. Neither the relay nor a
 member can mint or take over a name, and names that only look alike
 (different case, compatible Unicode) count as the same name.

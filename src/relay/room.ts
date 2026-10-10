@@ -422,7 +422,8 @@ export class RoomStore {
     if (ownerUser) this.set("owner_user", ownerUser);
     // The channel's name, sealed with its key: members can read it, the relay can't.
     if (body.title && typeof body.title.iv === "string" && typeof body.title.ct === "string" && body.title.ct.length < 2048) this.set("title", JSON.stringify(body.title));
-    for (const m of members) this.putMember(m, 0);
+    // The owner may always post, whatever the body says.
+    for (const m of members) this.putMember(m.pk === owner.pk ? { ...m, post: true } : m, 0);
   }
 
   /** The channel's sealed icon (owner-set; the relay can't read it), and when it last changed. */
@@ -680,8 +681,9 @@ export class RoomStore {
     if (body.request) this.sql.run("UPDATE requests SET status = 'approved' WHERE id = ? AND pk = ?", body.request, body.pk);
   }
 
-  members(): { pk: string; xpk: string; rec: string; e: number; active: number }[] {
-    return this.sql.all("SELECT pk, xpk, rec, rec_e AS e, active FROM members ORDER BY since");
+  /** `read_only`: the relay refuses that key's posts, so the owner can check the bit matches what they set. */
+  members(): { pk: string; xpk: string; rec: string; e: number; active: number; read_only: number }[] {
+    return this.sql.all("SELECT pk, xpk, rec, rec_e AS e, active, read_only FROM members ORDER BY since");
   }
 
   keysFor(pk: string): { epoch: number; keys: Record<string, string> } {

@@ -79,6 +79,8 @@ export interface Member extends MemberInfo {
   active: boolean;
   /** The relay lists this key as a member, but there's no record the owner signed for it. */
   unverified?: boolean;
+  /** The relay refuses this key's posts (the one bit of member scopes it enforces). */
+  readOnly?: boolean;
 }
 
 export const NAME_RE = /^[\p{L}\p{N}_.\-]{1,32}$/u;
