@@ -15,3 +15,23 @@ jobs:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile && (cd web && bun install --frozen-lockfile)
       - run: bun run typecheck
+
+  # Opens every menu, popover and dialog on the production build: Base UI throws on a
+  # misplaced part only at render, which typecheck can't see (the b085ae8 crash).
+  ui-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile && (cd web && bun install --frozen-lockfile)
+      - run: bunx playwright-core install --with-deps --only-shell chromium
+      - run: cd web && bun run build
+      - run: bun run smoke:ui
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-smoke-failure
+          path: /tmp/kiwi-smoke-failure.png
+          if-no-files-found: ignore
