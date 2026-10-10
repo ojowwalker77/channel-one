@@ -803,7 +803,15 @@ export class Channel {
           });
         };
         ws.onmessage = (ev) => {
-          const f = JSON.parse(String(ev.data)) as ServerFrame | { t: "pong" };
+          let f: ServerFrame | { t: "pong" };
+          try {
+            f = JSON.parse(String(ev.data)) as ServerFrame | { t: "pong" };
+          } catch {
+            return; // not a frame: ignore it, keep listening
+          }
+          // Frames are handled strictly in order, one at a time. A frame whose handling throws
+          // (a consumer's bug, a bad payload) is reported and dropped: the chain must never break,
+          // or every later frame, and the reconnect after a close, would wait on it forever.
           queue = queue.then(async () => {
             if (f.t === "msg") {
               if (f.seq <= last) return;
@@ -834,12 +842,15 @@ export class Channel {
               // The relay replays at most one page on connect; reconnect for the rest.
               if (f.more) ws.close(4000, "more");
             }
+          }).catch((err: unknown) => {
+            opts.onStatus?.(`dropped a ${f.t} frame whose handling failed: ${err instanceof Error ? err.message : String(err)}`);
           });
         };
         ws.onclose = (ev) => {
           clearInterval(ping);
           opts.signal?.removeEventListener("abort", abort);
-          queue.then(() => resolve({ code: ev.code, reason: ev.reason }));
+          // After the frames already received are handled (the queue never rejects, see above).
+          void queue.finally(() => resolve({ code: ev.code, reason: ev.reason }));
         };
         ws.onerror = () => {};
       });
