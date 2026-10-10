@@ -82,6 +82,7 @@ exports[`the relay's error texts are exactly these 1`] = `
   "429 too many pending join requests",
   "429 too many vault saves; try again in a few minutes",
   "429 you own \${most} channels, the most this relay allows per person; close one to create another",
+  "503 the channel is busy or restarting; try again in a moment",
   "body bad ephemeral frame",
   "body bad json",
   "body dev sign-in only takes requests made on this machine, not through a proxy",

@@ -417,6 +417,10 @@ const routes: RoomRoute[] = [
 /** The table, for tests that check every route declares a guard. */
 export const routeTable = describeRoutes(routes);
 
+// The whole request handling, built once: each request only supplies its context.
+// An unknown path still asks for a member first, as it always has.
+const program = answer(dispatch(routes, guards, Effect.flatMap(member, () => refuse(404, "not found"))));
+
 /** Handle one HTTP request to a room. Adapters apply `fx`. */
 export async function onHttp(store: RoomStore, req: Request, path: string, ctx: RelayContext = {}): Promise<{ res: Response; fx?: Effects }> {
   // Missing fingerprint: 426 before this reads or wipes the room. The adapters also refuse
@@ -429,13 +433,9 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
   // Shared-code rooms from before owners existed: delete them outright the first time anything touches them.
   if (store.isLegacy()) return { res: Response.json({ error: "no such channel", tag: "ChannelGone" }, { status: 404 }), fx: { wipe: true } };
   const relay: Required<RelayContext> = { human: ctx.human ?? null, vouch: ctx.vouch ?? null, policy: ctx.policy ?? OPEN_POLICY, ownedChannels: ctx.ownedChannels ?? (async () => 0) };
-  // An unknown path still asks for a member first, as it always has.
-  const otherwise = Effect.flatMap(member, () => refuse(404, "not found"));
-  const program = answer(dispatch(routes, guards, otherwise)).pipe(
-    Effect.provideService(Room, store),
-    Effect.provideService(Relay, relay),
-    Effect.provideService(Request_, await incoming(req, path)),
-  );
+
+  // One context for this request, handed to the runtime as is (cheaper than layering three provides).
+  const context = Context.make(Room, store).pipe(Context.add(Relay, relay), Context.add(Request_, await incoming(req, path)));
   // Anything else (a bug, a storage error) propagates, and the adapter answers 500 as before.
-  return Effect.runPromise(program);
+  return Effect.runPromiseWith(context)(program);
 }
