@@ -262,6 +262,9 @@ WorkOS when the owner reviews requests, and shown only to the owner.
 exchange keys), channel keys and other files this program writes are mode
 0600. Other accounts on the machine can't read them. `bin` stays 0755 so
 the executable can run; the parent directory is what keeps it private.
+That chmod runs only when the directory already holds kiwi state
+(`config.json` or `identities/`), and only on kiwi's own entries. A
+`KIWI_HOME` pointed at a home directory or a project is otherwise left alone.
 Decrypted images from `kiwi show` and `kiwi save` are written mode 0600.
 Under `~/.kiwi/downloads` the directories are 0700 too. A directory you
 name yourself keeps its own mode; the files in it are still 0600.

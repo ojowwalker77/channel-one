@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import type { ChannelAccess } from "./crypto.ts";
 import { generateIdentity, withExchangeKey, type Identity } from "./identity.ts";
 import type { Message } from "./protocol.ts";
@@ -73,14 +73,35 @@ export function home(): string {
   return dir;
 }
 
-/** Directories already walked this process. home() is on the hot path; one walk is enough. */
+/** Directories already considered this process. home() is on the hot path; one look is enough. */
 const tightened = new Set<string>();
 
+/** Top-level names kiwi itself creates. Nothing else is walked. `bin` is not here, so it stays 0755. */
+const KIWI_DIRS = ["cache", "cursors", "downloads", "hook-state", "identities", "listeners"] as const;
+const KIWI_FILES = ["config.json", "machine.json"] as const;
+
+function isRealDir(p: string): boolean {
+  try {
+    return lstatSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isRealFile(p: string): boolean {
+  try {
+    return lstatSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Make an existing home private, once: the directory and every real subdirectory
- * except `bin` become 0700, and files already under `downloads` become 0600.
- * `bin` stays as installed (0755) so the executable keeps working; the parent
- * is what stops other accounts. Symlinks are not followed.
+ * Make an existing kiwi home private, once. The root is chmodded only when it
+ * already holds kiwi state (`config.json` or `identities/`). Only kiwi's own
+ * entries are walked, never the rest of the tree: KIWI_HOME is user-supplied,
+ * and pointing it at a home directory or a project must not chmod that tree.
+ * Symlinks are not followed.
  */
 function tightenHome(dir: string): void {
   if (tightened.has(dir)) return;
@@ -92,19 +113,31 @@ function tightenHome(dir: string): void {
   }
   if (!st.isDirectory()) return;
   tightened.add(dir);
+  if (!isRealFile(join(dir, "config.json")) && !isRealDir(join(dir, "identities"))) return;
   try {
     chmodSync(dir, 0o700);
-    lockTree(dir, dir);
+    for (const name of KIWI_DIRS) lockKiwiDir(join(dir, name), name === "downloads");
+    for (const name of KIWI_FILES) {
+      const p = join(dir, name);
+      if (!isRealFile(p)) continue;
+      try {
+        chmodSync(p, 0o600);
+      } catch {}
+    }
   } catch {
     // A file this user can't chmod must not stop startup.
   }
 }
 
-function lockTree(dir: string, root: string): void {
-  const downloads = join(root, "downloads");
-  const privateFiles = dir === downloads || dir.startsWith(downloads + sep);
+/** chmod one kiwi directory and what is inside it. Files become 0600 only under downloads. */
+function lockKiwiDir(dir: string, privateFiles: boolean): void {
+  if (!isRealDir(dir)) return;
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    return;
+  }
   for (const name of readdirSync(dir)) {
-    if (dir === root && name === "bin") continue;
     const p = join(dir, name);
     let child;
     try {
@@ -114,12 +147,7 @@ function lockTree(dir: string, root: string): void {
     }
     if (child.isSymbolicLink()) continue;
     if (child.isDirectory()) {
-      try {
-        chmodSync(p, 0o700);
-      } catch {
-        continue;
-      }
-      lockTree(p, root);
+      lockKiwiDir(p, privateFiles);
       continue;
     }
     if (child.isFile() && privateFiles) {

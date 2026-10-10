@@ -51,7 +51,7 @@ test("saveImages writes 0600 files, and 0700 directories only under downloads", 
   expect(mode(user)).toBe(0o755);
 });
 
-test("home() locks an existing tree once and does not follow symlinks or touch bin", () => {
+test("home() locks only kiwi's own entries, once, and does not follow symlinks", () => {
   const dir = scratch("kiwi-home-");
   chmodSync(dir, 0o755);
   const room = join(dir, "downloads", "room");
@@ -60,11 +60,16 @@ test("home() locks an existing tree once and does not follow symlinks or touch b
   chmodSync(room, 0o755);
   const img = join(room, "pic");
   writeFileSync(img, "png", { mode: 0o644 });
+  writeFileSync(join(dir, "config.json"), "{}\n", { mode: 0o644 });
   mkdirSync(join(dir, "bin"));
   chmodSync(join(dir, "bin"), 0o755);
   writeFileSync(join(dir, "bin", "kiwi"), "#!/bin/sh\n", { mode: 0o755 });
   mkdirSync(join(dir, "identities"));
   chmodSync(join(dir, "identities"), 0o755);
+  mkdirSync(join(dir, "src"));
+  chmodSync(join(dir, "src"), 0o755);
+  writeFileSync(join(dir, "src", "app.ts"), "x", { mode: 0o644 });
+  writeFileSync(join(dir, "notes.txt"), "hi", { mode: 0o644 });
 
   const outside = scratch("kiwi-outside-");
   chmodSync(outside, 0o755);
@@ -76,12 +81,16 @@ test("home() locks an existing tree once and does not follow symlinks or touch b
   process.env.KIWI_HOME = dir;
   expect(home()).toBe(dir);
   expect(mode(dir)).toBe(0o700);
+  expect(mode(join(dir, "config.json"))).toBe(0o600);
   expect(mode(join(dir, "downloads"))).toBe(0o700);
   expect(mode(room)).toBe(0o700);
   expect(mode(img)).toBe(0o600);
   expect(mode(join(dir, "identities"))).toBe(0o700);
   expect(mode(join(dir, "bin"))).toBe(0o755);
   expect(mode(join(dir, "bin", "kiwi"))).toBe(0o755);
+  expect(mode(join(dir, "src"))).toBe(0o755);
+  expect(mode(join(dir, "src", "app.ts"))).toBe(0o644);
+  expect(mode(join(dir, "notes.txt"))).toBe(0o644);
   expect(mode(outside)).toBe(0o755);
   expect(mode(secret)).toBe(0o644);
   expect(lstatSync(join(dir, "linked")).isSymbolicLink()).toBe(true);
@@ -89,6 +98,26 @@ test("home() locks an existing tree once and does not follow symlinks or touch b
   chmodSync(dir, 0o755);
   expect(home()).toBe(dir);
   expect(mode(dir)).toBe(0o755);
+});
+
+test("KIWI_HOME with no kiwi state leaves unrelated files and directories untouched", () => {
+  const dir = scratch("kiwi-foreign-");
+  chmodSync(dir, 0o755);
+  mkdirSync(join(dir, "src"));
+  chmodSync(join(dir, "src"), 0o755);
+  writeFileSync(join(dir, "src", "app.ts"), "x", { mode: 0o644 });
+  writeFileSync(join(dir, "notes.txt"), "hi", { mode: 0o644 });
+  mkdirSync(join(dir, "downloads"));
+  chmodSync(join(dir, "downloads"), 0o755);
+  writeFileSync(join(dir, "downloads", "pic"), "png", { mode: 0o644 });
+  process.env.KIWI_HOME = dir;
+  expect(home()).toBe(dir);
+  expect(mode(dir)).toBe(0o755);
+  expect(mode(join(dir, "src"))).toBe(0o755);
+  expect(mode(join(dir, "src", "app.ts"))).toBe(0o644);
+  expect(mode(join(dir, "notes.txt"))).toBe(0o644);
+  expect(mode(join(dir, "downloads"))).toBe(0o755);
+  expect(mode(join(dir, "downloads", "pic"))).toBe(0o644);
 });
 
 test("names '.' and '..' stay inside the cursors directory", () => {
