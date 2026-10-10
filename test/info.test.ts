@@ -56,3 +56,11 @@ test("this client sends it: joining still pins the owner", async () => {
   const ask = await Channel.requestJoin(relay, code, joiner, { name: "win" }, "dev:bob");
   expect(ask.requestId).toBeTruthy();
 });
+
+test("a probe that doesn't know the owner yet (the dashboard's owner link) passes the code's fingerprint", async () => {
+  const probe = new Channel({ roomId, ownerPk: "", ownerXpk: "", epoch: 0, keys: {} }, relay, await generateIdentity("probe"));
+  const i = await probe.info(decodeJoinCode(code).ownerFp);
+  expect(i.ownerName).toBe("Alice (dev)");
+  // Without it, it still gets the owner key (the compat path), never a 404 from an empty key's fingerprint.
+  expect(typeof (await probe.info()).ownerPk).toBe("string");
+});

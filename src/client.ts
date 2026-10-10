@@ -356,8 +356,14 @@ export class Channel {
     return this.refreshing;
   }
 
-  async info(): Promise<Info> {
-    return call<Info>(this.relay, this.roomId, "/info", {}, { fp: await ownerFingerprint(this.access.ownerPk) });
+  /**
+   * The channel's public info. `fp` is the join code's fingerprint half, proof we hold the code; by
+   * default it's the known owner key's. A probe that doesn't know the owner yet passes the code's.
+   * (A 404 here is never read as "closed": only member routes decide that, see gone().)
+   */
+  async info(fp?: string): Promise<Info> {
+    const proof = fp ?? (this.access.ownerPk ? await ownerFingerprint(this.access.ownerPk) : undefined);
+    return call<Info>(this.relay, this.roomId, "/info", {}, proof ? { fp: proof } : {});
   }
 
   /** Remember that this room's title is owner-signed, and tell whoever persists access. */

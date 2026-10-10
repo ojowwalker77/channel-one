@@ -388,7 +388,7 @@ export async function memberFromLink(code: string, identity: Identity): Promise<
   }
   const id = await withExchangeKey(identity)
   const probe = new Channel({ roomId, ownerPk: "", ownerXpk: "", epoch: 0, keys: {} }, location.origin, id)
-  const info = await probe.info()
+  const info = await probe.info(ownerFp)
   // The link's channel must be the one the code names: same owner, properly signed.
   if ((await ownerFingerprint(info.ownerPk)) !== ownerFp) throw new Error("The relay is serving a different owner than this code names.")
   const statement = await ownerStatement(roomId, info)
