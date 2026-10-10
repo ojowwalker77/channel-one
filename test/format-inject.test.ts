@@ -18,12 +18,13 @@ function blank(): ChannelState {
     openAsks: [],
     threadOf: new Map(),
     threadPeople: new Map(),
+    scopeSets: new Map(),
     head: 1,
   };
 }
 
 function member(name: string, role: string): Member {
-  return { name, pk: "k".repeat(32), role, owner: false, joined: 0, active: true, lastSeen: 0, messages: 0 };
+  return { name, pk: "k".repeat(32), role, owner: false, joined: 0, active: true, lastSeen: 0, messages: 0, scopes: ["post", "ask", "tasks", "claims", "facts"] };
 }
 
 function noFakeRow(s: string) {

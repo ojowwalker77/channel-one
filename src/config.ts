@@ -83,7 +83,7 @@ export function home(): string {
 const tightened = new Set<string>();
 
 /** Top-level names kiwi itself creates. Nothing else is walked. `bin` is not here, so it stays 0755. */
-const KIWI_DIRS = ["cache", "cursors", "downloads", "hook-state", "identities", "listeners"] as const;
+const KIWI_DIRS = ["cache", "cursors", "downloads", "hook-state", "identities", "listeners", "records"] as const;
 const KIWI_FILES = ["config.json", "machine.json"] as const;
 
 function isRealDir(p: string): boolean {
