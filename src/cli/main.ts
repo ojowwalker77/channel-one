@@ -20,7 +20,7 @@ import { parseTaskId, similarOpenTasks, taskId, type ChannelState } from "../sta
 import { VERSION } from "../version.ts";
 import { channelFiles, runSh, sessionViews } from "../sh.ts";
 import { forgetMachine, linkUrl, loadMachine, machineCode, machineStatus, newMachine, registerMachine, saveMachine, unlinkMachine, vouchFor } from "../machine.ts";
-import { autoInstallHooks, bindDirectory, bindingFor, EXTRA_HARNESSES, extraInstalled, hooksInstalled, hooksStatus, installDetected, installExtra, installHooks, mcFor, runHook, uninstallDetected, uninstallExtra, uninstallHooks, type ExtraHarness } from "../hooks.ts";
+import { autoInstallExtraHooks, autoInstallHooks, bindDirectory, bindingFor, EXTRA_HARNESSES, extraInstalled, hooksInstalled, hooksStatus, installDetected, installExtra, installHooks, mcFor, runHook, uninstallDetected, uninstallExtra, uninstallHooks, type ExtraHarness } from "../hooks.ts";
 import { claimPlace } from "../where.ts";
 
 const HELP = `kiwi ${VERSION} — Channels by Kiwi Init: real-time coordination for AI agents
@@ -50,7 +50,8 @@ Membership (the owner's human decides who gets in)
 Hooks
   kiwi hooks install|uninstall|status [name]   keep agents listening. name is claude, codex, gemini, cursor, or grok.
                                                With no name, install detects which of those are on this machine
-                                               (user-level files only). Claude also installs on join from Claude Code.
+                                               (user-level files only). Joining from inside one installs that harness
+                                               (Claude Code, Codex, Gemini, Cursor, or Grok).
                                                uninstall NAME opts that harness out until the next install.
 
 Talk
@@ -289,6 +290,8 @@ function settleIn(alias: string, name: string): void {
   }
   const installed = autoInstallHooks();
   if (installed) process.stderr.write(`kiwi: installed Claude Code hooks (${installed}) so this agent keeps listening; \`kiwi hooks uninstall\` removes them\n`);
+  const extras = autoInstallExtraHooks();
+  if (extras) process.stderr.write(`kiwi: installed ${extras} so this agent keeps listening; \`kiwi hooks uninstall\` removes them\n`);
 }
 
 /** Open a page in this computer's browser; if that fails, the printed link is still there. */
@@ -1147,7 +1150,7 @@ Then go to step 2.
 5. Go to step 2.
 
 Claude Code: instead of step 2, run a Monitor on \`${mc} tail\`. If that Monitor ends, start it again. Do not also run wait. Joining from Claude Code installs these hooks.
-Codex, Gemini, Cursor, and Grok: run \`${mc} hooks install\` once. It writes user-level hooks for whichever of those are installed. Then do not run tail or wait. The hooks hand you unread messages and keep the turn open while some remain. Cursor's stop hook is a short line that says to run \`${mc} read\`; do that, reply, and let the turn end.
+Codex, Gemini, Cursor, and Grok: joining from inside one installs that harness's hooks. Otherwise run \`${mc} hooks install\` once. It writes user-level hooks for whichever of those are installed. Then do not run tail or wait. The hooks hand you unread messages and keep the turn open while some remain. Cursor's stop hook is a short line that says to run \`${mc} read\`; do that, reply, and let the turn end.
 opencode, Cline, Roo Code, Windsurf, Zed, and T3 Code: no hooks. Do steps 1 to 5. Do not run tail. A T3 thread follows the harness it is hosting.
 ${role}
 ## Reference

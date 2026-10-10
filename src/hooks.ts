@@ -1,11 +1,12 @@
 // Harness hooks: make "how to join" the only instruction an agent needs.
 //
 // `kiwi join` / `kiwi create` bind the agent's working directory to its channel
-// and, inside Claude Code, install three user-level hooks. `kiwi hooks install`
-// does the same for Codex, Gemini, Cursor, and Grok (Stop only) when those
-// harnesses are on this machine. User-level files only, so nothing asks for a
-// project trust prompt. They do nothing in any session whose directory isn't
-// bound, so they're safe to keep installed globally:
+// and install user-level hooks for the harness this process is inside: Claude
+// Code when CLAUDECODE is set, and Codex, Gemini, Cursor, or Grok when that
+// harness's own session env is set. `kiwi hooks install` writes every detected
+// harness. User-level files only, so nothing asks for a project trust prompt.
+// They do nothing in any session whose directory isn't bound, so they're safe
+// to keep installed globally:
 //
 //   SessionStart      tell the agent who it is on which channel, and to start listening
 //   UserPromptSubmit  hand the agent any unread messages along with the human's prompt
@@ -223,6 +224,30 @@ const HARNESS_ENV: Record<ExtraHarness, string> = {
   grok: "KIWI_GROK_DIR",
 };
 
+/**
+ * Set on the shell commands the harness runs, the same idea as CLAUDECODE.
+ * A present install directory is not enough: join must not write a harness
+ * the agent is not inside. Checked 2026-10-10:
+ *   Codex  CODEX_THREAD_ID   injected into shell commands when a thread id is
+ *          present, including when include_only is set (openai/codex
+ *          codex-rs/core/src/exec_env.rs and
+ *          codex-rs/protocol/src/shell_environment.rs, CODEX_THREAD_ID_ENV_VAR).
+ *   Gemini GEMINI_CLI=1     set by run_shell_command
+ *          (https://geminicli.com/docs/tools/shell).
+ *   Cursor CURSOR_AGENT     set while the agent runs; shell config is told to
+ *          detect the session with it (https://cursor.com/docs/agent/terminal).
+ *   Grok   GROK_SESSION_ID  this session's id, injected on every hook
+ *          (user guide 10-hooks.md) and present on this agent's shell commands.
+ *          GROK_AGENT is an agent-definition name (user guide 05-configuration.md),
+ *          so it is not a session marker.
+ */
+const SESSION_ENV: Record<ExtraHarness, string> = {
+  codex: "CODEX_THREAD_ID",
+  gemini: "GEMINI_CLI",
+  cursor: "CURSOR_AGENT",
+  grok: "GROK_SESSION_ID",
+};
+
 function harnessRoot(h: ExtraHarness): string {
   const over = process.env[HARNESS_ENV[h]];
   if (over) return over;
@@ -357,6 +382,29 @@ export function extraInstalled(h: ExtraHarness): boolean {
   if (h === "gemini") return claudeShapedInstalled(harnessPath(h), GEMINI_EVENTS);
   if (h === "grok") return claudeShapedInstalled(harnessPath(h), { Stop: "stop" });
   return claudeShapedInstalled(harnessPath(h), EVENTS);
+}
+
+const HARNESS_LABEL: Record<ExtraHarness, string> = { codex: "Codex", gemini: "Gemini", cursor: "Cursor", grok: "Grok" };
+
+/**
+ * Install the harness this process is running inside. Does not change
+ * harnessHooks: "off" and KIWI_NO_HOOKS skip, and a file that already has our
+ * command is left as it is. Returns null when nothing was written.
+ */
+export function autoInstallExtraHooks(): string | null {
+  if (process.env.KIWI_NO_HOOKS) return null;
+  const choice = loadConfig().harnessHooks ?? {};
+  const wrote: string[] = [];
+  for (const h of EXTRA_HARNESSES) {
+    if (!process.env[SESSION_ENV[h]] || choice[h] === "off") continue;
+    try {
+      if (extraInstalled(h)) continue;
+      wrote.push(`${HARNESS_LABEL[h]} hooks (${installExtra(h)})`);
+    } catch {
+      // A corrupt file must not fail join.
+    }
+  }
+  return wrote.length ? wrote.join(", ") : null;
 }
 
 /** Claude, plus every detected harness that this computer has not opted out of. */
