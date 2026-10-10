@@ -18,7 +18,7 @@
 import { Bash, InMemoryFs, type CommandName, type IFileSystem } from "just-bash";
 import { identitiesIn, loadConfig, readCursor } from "./config.ts";
 import { AgentSession, wants } from "./agent.ts";
-import { describeEvent, formatClaims, formatMessage, formatStatus, formatTask, memberJson, statusJson } from "./format.ts";
+import { describeEvent, formatClaims, formatMessage, formatStatus, formatTask, markedText, memberJson, statusJson } from "./format.ts";
 import type { Message } from "./protocol.ts";
 import { taskId, type ChannelState } from "./state.ts";
 
@@ -108,7 +108,7 @@ function channelTree(v: ChannelView, now: number): Record<string, string> {
     const { online: _, ...json } = memberJson(state, m.name, new Map(), now);
     files[`members/${segment(m.name)}.json`] = JSON.stringify(json, null, 2) + "\n";
   }
-  for (const f of state.facts.values()) files[`facts/${segment(f.key)}`] = f.value + "\n";
+  for (const f of state.facts.values()) files[`facts/${segment(f.key)}`] = markedText(f.value) + "\n";
   files["claims"] = formatClaims(state, now) + "\n";
   return files;
 }

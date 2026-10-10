@@ -6,7 +6,7 @@ import { Channel, ChannelGone, isDirectedAt, isForAgent, QUIET_DROP_MS, RelayErr
 import { appendCache, loadIdentity, markSeen, readCache, readCursor, readSeen, saveAccess, signingBudget, writeCursor, type ChannelConfig } from "./config.ts";
 import { TOO_MANY_REQUESTS } from "./sas.ts";
 import type { ChannelAccess } from "./crypto.ts";
-import type { JoinRequest } from "./membership.ts";
+import { inlineText, type JoinRequest } from "./membership.ts";
 import type { Identity } from "./identity.ts";
 import { TASK_STATES, type Color, type Event, type ImageAttachment, type Kind, type Message, type Presence, type TaskState } from "./protocol.ts";
 import { claimConflict, fold, overlaps, taskId, waitingOn, wouldCycle, type ChannelState, type Roster } from "./state.ts";
@@ -259,7 +259,8 @@ export class AgentSession {
           // Only trust presence signed by the key the owner admitted under that name.
           if (!p.sigOk || roster.find((r) => r.name === p.from && r.active)?.pk !== p.pk) return;
           if (!found.has(p.from)) heard();
-          found.set(p.from, p);
+          const role = typeof p.role === "string" ? inlineText(p.role, 80) || undefined : undefined;
+          found.set(p.from, { ...p, ...(typeof p.role === "string" ? { role } : {}) });
         },
       })
       .catch(() => {});

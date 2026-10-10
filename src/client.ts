@@ -832,7 +832,10 @@ export class Channel {
                 const p = (await open(k, this.roomId, f.iv, f.ct)) as (Presence & { e?: number }) | null;
                 if (p?.type === "presence" && typeof p.from === "string") {
                   const { e: _e, ...rest } = p;
-                  opts.onPresence({ ...rest, sigOk: await verify(rest) });
+                  const sigOk = await verify(rest);
+                  // role is self-reported. Flatten it before anyone renders status, so it can't invent a line.
+                  const role = typeof rest.role === "string" ? inlineText(rest.role, 80) || undefined : undefined;
+                  opts.onPresence({ ...rest, ...(typeof rest.role === "string" ? { role } : {}), sigOk });
                   break;
                 }
               }
