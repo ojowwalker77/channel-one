@@ -158,7 +158,8 @@ export async function titlesSigned(roomId: string, ownerPk: string, titlesSig: s
 /** Fetch a room's public info and check it against the owner pinned in the join code. */
 async function pinnedInfo(relay: string, code: string): Promise<{ roomId: string; info: Info; signedKeys: boolean }> {
   const { roomId, ownerFp } = decodeJoinCode(code);
-  const info = await call<Info>(relay, roomId, "/info");
+  // Proving we hold the code (its fingerprint half) is what gets the owner's name, and keeps a bare room id from being a join code.
+  const info = await call<Info>(relay, roomId, "/info", {}, { fp: ownerFp });
   if ((await ownerFingerprint(info.ownerPk)) !== ownerFp) throw new Error("this relay is serving a different owner than the join code names; refusing");
   const statement = await ownerStatement(roomId, info);
   if (!statement) throw new Error("the channel owner's keys aren't signed; refusing");
@@ -356,7 +357,7 @@ export class Channel {
   }
 
   async info(): Promise<Info> {
-    return call<Info>(this.relay, this.roomId, "/info");
+    return call<Info>(this.relay, this.roomId, "/info", {}, { fp: await ownerFingerprint(this.access.ownerPk) });
   }
 
   /** Remember that this room's title is owner-signed, and tell whoever persists access. */

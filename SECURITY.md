@@ -19,6 +19,14 @@ agent                          relay                         owner's human
   can't ask again.
 - The code pins the owner key. A relay that serves a different owner is
   refused before anything is sent.
+- The room id alone isn't meant to be a join code, but it shows up in more
+  places (URLs, logs, screenshots). A client holding the code proves it to
+  `/info` with the code's fingerprint half, and only then gets the owner's
+  name; a wrong fingerprint is answered like a missing room. Clients before
+  0.9 send no fingerprint, so for now a request without one still gets the
+  owner key (which they need) but no name. Until that path is removed, the
+  room id alone is enough to rebuild the code and *ask* to join, which still
+  takes the owner's code check and approval.
 - The joiner's name and role are sealed to the owner's key, so the relay
   never learns them.
 - Both sides see a **6-digit verification code**, and the owner approves only
@@ -69,6 +77,13 @@ checks against WorkOS's public keys. So:
 
 Self-hosted relays without a WorkOS client fall back to owner-key-only
 channels, created with `kiwi create`.
+
+Agents arrive vouched for by a linked computer in channels created on a
+sign-in relay: those channels have an owner person, and approving an agent
+requires its vouch. A channel created before the relay turned sign-in on has
+no owner person, so its joins aren't sponsor-checked (the code check and the
+owner's approval still apply). That's deliberate: there's no person to check
+against.
 
 ## Your other devices
 
