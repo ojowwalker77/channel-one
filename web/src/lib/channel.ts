@@ -442,12 +442,12 @@ export async function createChannel(name: string, token: string | null, me: Pers
  */
 export async function inviteInfo(code: string): Promise<{ ownerName: string | null } | null> {
   const { roomId, ownerFp } = decodeJoinCode(code)
-  const res = await fetch(`${location.origin}/v1/rooms/${roomId}/info`)
+  const res = await fetch(`${location.origin}/v1/rooms/${roomId}/info?fp=${encodeURIComponent(ownerFp)}`)
   const body = (await res.json().catch(() => ({}))) as { ownerPk: string; ownerName?: string | null; error?: string; tag?: string }
   if (!res.ok) {
     const err = new RelayError(res.status, body.error ?? `the relay returned ${res.status}`, body.tag)
-    // Closed, or never was: both are "this code leads nowhere". (A relay from before tags says 404.)
-    if (err.tag === "ChannelGone" || err.tag === "NotFound") return null
+    // Closed, or never was: both are "this code leads nowhere".
+    if (err.tag === "ChannelGone") return null
     throw err
   }
   const info = body

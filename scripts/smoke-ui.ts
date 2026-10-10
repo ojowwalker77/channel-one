@@ -4,9 +4,10 @@
 // see it: b085ae8 was one, and it blanked the page in prod.
 //
 // Beyond menus, it walks the flows only real state reaches: a passkey set up and
-// unlocked on Chromium's virtual authenticator, a computer linked through its
-// #link page by `kiwi setup`, that computer's agent asking to join and approved,
-// and the task it adds opened from the board.
+// unlocked on Chromium's virtual authenticator, the invite preview a join link
+// shows someone who isn't in yet, a computer linked through its #link page by
+// `kiwi setup`, that computer's agent asking to join and approved, and the task
+// it adds opened from the board.
 //
 //   bun run web:build && bun scripts/smoke-ui.ts
 //
@@ -156,6 +157,20 @@ try {
   await page.getByRole("button", { name: "Create channel" }).click()
   await page.waitForURL(/#mc2-/)
   await page.getByPlaceholder(/^Write to the channel/).waitFor()
+
+  // Someone who isn't in yet, opening the join link: the preview names the owner.
+  // That fetch has to send the code's fingerprint, or /info answers 426 and the name never arrives.
+  at = "invite preview"
+  const inviteCode = decodeURIComponent(new URL(page.url()).hash.slice(1))
+  const guest = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  guest.on("pageerror", (e) => errors.push(`${at}: ${e.message}`))
+  try {
+    await guest.goto(`${BASE}#${encodeURIComponent(inviteCode)}`)
+    await guest.getByRole("heading", { name: "Smoke (dev) invited you to a channel" }).waitFor({ timeout: 10000 })
+    console.log(`ok  ${at}`)
+  } finally {
+    await guest.close()
+  }
 
   await opens("People", () => page.getByRole("button", { name: /\d+ members?$/ }).click())
   await opens("Invite", () => page.getByRole("button", { name: "Invite" }).click())

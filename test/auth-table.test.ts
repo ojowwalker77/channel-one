@@ -151,8 +151,9 @@ describe("routes with their own checks", () => {
     expect(await room("POST", `/requests/${requestId}/reveal`, { as: stranger, body: { nonce: "x" } })).not.toBe(200);
   });
 
-  test("GET /info is public (the join code is the secret)", async () => {
-    expect(await room("GET", "/info")).toBe(200);
+  test("GET /info needs the code's fingerprint", async () => {
+    expect(await room("GET", "/info")).toBe(426);
+    expect(await room("GET", `/info?fp=${decodeJoinCode(code).ownerFp}`)).toBe(200);
   });
 });
 

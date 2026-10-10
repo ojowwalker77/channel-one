@@ -137,8 +137,20 @@ function allow(key: string, limit: number): boolean {
 const MAX_PENDING = 20;
 /** Pending requests expire after this long. */
 const REQUEST_TTL_MS = 60 * 60_000;
-/** What clients from before the join check (kiwi 0.4.x) are told. */
+/** What a client that speaks an old path is told. */
 const UPDATE_KIWI = "update kiwi to join or approve here: curl -fsSL https://channels.kiwiinit.com/install | sh (Windows: irm https://channels.kiwiinit.com/install.ps1 | iex)";
+
+/**
+ * GET /info with no `fp` is refused before the room is opened. A room id is not
+ * a join code: only a client holding the code's fingerprint half may learn the
+ * owner key or the owner's name. A present but wrong fingerprint falls through
+ * and is answered like a missing room.
+ */
+export function requireInfoFingerprint(method: string, path: string, url: URL): void {
+  if (method.toUpperCase() === "GET" && path === "/info" && url.searchParams.get("fp") === null) {
+    throw new HttpError(426, UPDATE_KIWI);
+  }
+}
 
 const frame = (f: ServerFrame) => JSON.stringify(f);
 
@@ -758,7 +770,7 @@ export function onClientFrame(store: RoomStore, raw: string, sender = ""): Effec
 
 /**
  * The HTTP API (all under /v1/rooms/<room>):
- *   GET    /info                      public: owner keys, epoch, whether a rotation is due
+ *   GET    /info?fp=<fingerprint>     holder of the join code: owner keys, epoch, whether a rotation is due
  *   POST   /create                    owner: create the room
  *   POST   /requests                  anyone with the code: ask to join (self-signed)
  *   GET    /requests/<id>             the requester: status, and wrapped keys once approved
@@ -803,6 +815,10 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
   };
   const ok = (data: unknown, fx?: Effects) => ({ res: Response.json(data), fx });
 
+  // Missing fingerprint: 426 before this reads or wipes the room. The adapters also refuse
+  // before they open the room at all.
+  requireInfoFingerprint(method, path, url);
+
   // Shared-code rooms from before owners existed: delete them outright the first time anything touches them.
   if (store.isLegacy()) return { res: Response.json({ error: "no such channel", tag: "ChannelGone" }, { status: 404 }), fx: { wipe: true } };
 
@@ -816,16 +832,13 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
 
   if (path === "/info" && method === "GET") {
     const m = store.meta();
-    // The join code's second half is the owner key's fingerprint. A client holding the code sends it
-    // (?fp=): a wrong one is answered like a missing room, so a room id alone doesn't make a join code.
+    // The join code's second half is the owner key's fingerprint. A wrong one is answered like a
+    // missing room. Requests with no fp never reach here (requireInfoFingerprint).
     const fp = url.searchParams.get("fp");
-    const holdsCode = fp !== null && fp === (await ownerFingerprint(m.ownerPk));
-    if (fp !== null && !holdsCode) throw new HttpError(404, "no such channel", "ChannelGone");
-    // Who invited you, as sign-in knows them: only for someone holding the code. Clients before 0.8.2
-    // send no fp and still get the owner key, which they need. That key gives the fp, so until this
-    // path goes (one release after 0.8.2), a room id is still enough for the code and the name. See SECURITY.md.
+    if (fp !== (await ownerFingerprint(m.ownerPk))) throw new HttpError(404, "no such channel", "ChannelGone");
+    // Who invited you, as sign-in knows them: only for someone holding the code.
     const owner = store.ownerUser();
-    const ownerName = holdsCode && owner && human?.profile ? ((await human.profile(owner).catch(() => null))?.name ?? null) : null;
+    const ownerName = owner && human?.profile ? ((await human.profile(owner).catch(() => null))?.name ?? null) : null;
     return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, titlesSig: store.getTitlesSig(), epoch: m.epoch, rotate: m.rotate, title: store.title(), ownerName, iconAt: store.iconAt() });
   }
   if (path === "/create" && method === "POST") {

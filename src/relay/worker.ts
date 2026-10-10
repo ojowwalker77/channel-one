@@ -23,6 +23,7 @@ import {
   onClientFrame,
   onHttp,
   parseRoomPath,
+  requireInfoFingerprint,
   welcomeFrames,
   wsHeaders,
   type DirectoryEntry,
@@ -76,6 +77,8 @@ export class Channel extends DurableObject<Env> {
     try {
       const url = new URL(req.url);
       const route = parseRoomPath(url.pathname)!;
+      // No fingerprint: 426 before this object reads the room.
+      requireInfoFingerprint(req.method, route.rest, url);
       const store = this.store(route.roomId);
       if (route.rest === "/ws") {
         if (store.isLegacy()) {
@@ -347,6 +350,12 @@ export default {
     }
     const route = parseRoomPath(url.pathname);
     if (!route) return errorResponse(new HttpError(404, "not found"));
+    // No fingerprint: 426 before the room's object is woken.
+    try {
+      requireInfoFingerprint(req.method, route.rest, url);
+    } catch (err) {
+      return errorResponse(err);
+    }
     return env.CHANNELS.get(env.CHANNELS.idFromName(route.roomId)).fetch(req);
   },
 } satisfies ExportedHandler<Env>;

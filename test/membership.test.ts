@@ -169,7 +169,11 @@ describe("rooms from before owners existed", () => {
     db.run("CREATE TABLE msgs (seq INTEGER PRIMARY KEY, ts INTEGER, iv TEXT, ct TEXT)");
     db.run("INSERT INTO msgs VALUES (1, 0, 'iv', 'old ciphertext')");
     db.close();
-    const res = await fetch(new URL(`/v1/rooms/${roomId}/info`, relay));
+    // No fingerprint never opens the room, so it does not wipe it.
+    const bare = await fetch(new URL(`/v1/rooms/${roomId}/info`, relay));
+    expect(bare.status).toBe(426);
+    expect(existsSync(file)).toBe(true);
+    const res = await fetch(new URL(`/v1/rooms/${roomId}/info?fp=x`, relay));
     expect(res.status).toBe(404);
     expect(existsSync(file)).toBe(false);
   });
