@@ -119,18 +119,21 @@ export function Spinner({ className }: { className?: string }) {
 }
 
 /** Text tabs: the current one in ink, the rest quiet. Arrow keys move between them. */
-export function Tabs<T extends string>({ value, options, onChange, stretch }: { value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void; stretch?: boolean }) {
+export function Tabs<T extends string>({ value, options, onChange, stretch, label }: { value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void; stretch?: boolean; label?: string }) {
   return (
     <div
       className={cx("flex items-center gap-0.5", stretch && "rounded-[9px] bg-wash p-0.5")}
       role="tablist"
+      aria-label={label}
       onKeyDown={(e) => {
         if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return
         e.preventDefault()
         const at = options.findIndex((o) => o.value === value)
         const next = options[(at + (e.key === "ArrowRight" ? 1 : -1) + options.length) % options.length]!
         onChange(next.value)
-        requestAnimationFrame(() => (e.currentTarget.querySelector<HTMLElement>('[aria-selected="true"]') ?? null)?.focus())
+        // currentTarget is cleared once the handler returns, so keep the list for the next frame.
+        const list = e.currentTarget
+        requestAnimationFrame(() => list.querySelector<HTMLElement>('[aria-selected="true"]')?.focus())
       }}
     >
       {options.map((o) => (

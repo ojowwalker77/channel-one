@@ -286,13 +286,20 @@ export function Composer({ me, people, replyTo, nameOf, onClearReply, disabled, 
                 complete(matches[mention.index]!)
                 return
               }
-              if (e.key === "Escape") return setMention(null)
+              if (e.key === "Escape") {
+                e.stopPropagation()
+                return setMention(null)
+              }
             }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
               void submit()
             }
-            if (e.key === "Escape" && replyTo && !thread) onClearReply()
+            // A thread panel listens for Escape. Swallow it only when it clears a reply in the main composer.
+            if (e.key === "Escape" && replyTo && !thread) {
+              e.stopPropagation()
+              onClearReply()
+            }
           }}
           className="block max-h-[220px] min-h-[48px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[14.5px] leading-[1.5] outline-none placeholder:text-ink-3 focus-visible:outline-none"
         />

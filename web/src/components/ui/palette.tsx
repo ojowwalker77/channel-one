@@ -68,6 +68,10 @@ export function Palette({ open, onClose, commands }: { open: boolean; onClose: (
         if (o) return
         setQuery("")
         setIndex(0)
+        // ⌘K has no trigger for the dialog to return to. The shortcut saved the focused element.
+        const back = paletteReturn
+        paletteReturn = null
+        if (back?.isConnected) back.focus()
       }}
     >
       <Dialog.Portal>
@@ -87,6 +91,12 @@ export function Palette({ open, onClose, commands }: { open: boolean; onClose: (
                   e.preventDefault()
                   const d = e.key === "ArrowDown" ? 1 : -1
                   setIndex((at + d + shown.length) % Math.max(1, shown.length))
+                } else if (e.key === "Home") {
+                  e.preventDefault()
+                  setIndex(0)
+                } else if (e.key === "End") {
+                  e.preventDefault()
+                  setIndex(Math.max(0, shown.length - 1))
                 } else if (e.key === "Enter") {
                   e.preventDefault()
                   choose(shown[at])
@@ -94,6 +104,8 @@ export function Palette({ open, onClose, commands }: { open: boolean; onClose: (
               }}
               placeholder="Go to a channel or run a command"
               role="combobox"
+              aria-label="Go to a channel or run a command"
+              aria-autocomplete="list"
               aria-expanded
               aria-controls="palette-list"
               aria-activedescendant={shown[at] ? `palette-${shown[at].id}` : undefined}
@@ -101,25 +113,32 @@ export function Palette({ open, onClose, commands }: { open: boolean; onClose: (
             />
           </label>
           <div ref={list} id="palette-list" role="listbox" className="min-h-0 flex-1 overflow-y-auto p-1.5">
-            {shown.length === 0 && <p className="px-3 py-6 text-center text-[13px] text-ink-3">Nothing matches “{query}”.</p>}
-            {shown.map((c, i) => (
-              <div key={c.id}>
-                {(i === 0 || shown[i - 1]!.group !== c.group) && <p className="px-2.5 pt-2 pb-1 text-[11.5px] font-medium text-ink-3">{c.group}</p>}
-                <div
-                  id={`palette-${c.id}`}
-                  data-index={i}
-                  role="option"
-                  aria-selected={i === at}
-                  onMouseMove={() => i !== at && setIndex(i)}
-                  onClick={() => choose(c)}
-                  className={cx("flex h-9 cursor-default items-center gap-3 rounded-[8px] px-2.5 text-[13.5px]", i === at && "bg-wash-2")}
-                >
-                  {c.leading}
-                  <span className="min-w-0 flex-1 truncate">{c.label}</span>
-                  {c.hint && <span className="shrink-0 text-[12px] text-ink-3 tabular-nums">{c.hint}</span>}
+            {shown.length === 0 && <p className="px-3 py-6 text-center text-[13px] text-ink-2">Nothing matches “{query}”.</p>}
+            {GROUPS.map((group) => {
+              const items = shown.flatMap((c, i) => (c.group === group ? [{ c, i }] : []))
+              if (!items.length) return null
+              return (
+                <div key={group} role="group" aria-label={group}>
+                  <p className="px-2.5 pt-2 pb-1 text-[11.5px] font-medium text-ink-2">{group}</p>
+                  {items.map(({ c, i }) => (
+                    <div
+                      key={c.id}
+                      id={`palette-${c.id}`}
+                      data-index={i}
+                      role="option"
+                      aria-selected={i === at}
+                      onMouseMove={() => i !== at && setIndex(i)}
+                      onClick={() => choose(c)}
+                      className={cx("flex h-9 cursor-default items-center gap-3 rounded-[8px] px-2.5 text-[13.5px]", i === at && "bg-wash-2")}
+                    >
+                      {c.leading}
+                      <span className="min-w-0 flex-1 truncate">{c.label}</span>
+                      {c.hint && <span className="shrink-0 text-[12px] text-ink-2 tabular-nums">{c.hint}</span>}
+                    </div>
+                  ))}
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </Dialog.Popup>
       </Dialog.Portal>
@@ -127,12 +146,16 @@ export function Palette({ open, onClose, commands }: { open: boolean; onClose: (
   )
 }
 
+/** Where ⌘K was pressed, so closing the palette can put focus back. A button opener leaves this empty. */
+let paletteReturn: HTMLElement | null = null
+
 /** ⌘K on a Mac, Ctrl+K elsewhere, from anywhere in the app. */
 export function usePaletteShortcut(open: () => void) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
         e.preventDefault()
+        paletteReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null
         open()
       }
     }
