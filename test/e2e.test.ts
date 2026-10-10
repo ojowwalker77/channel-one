@@ -13,6 +13,15 @@ const external = process.env.KIWI_TEST_RELAY;
 // Real network round trips (and process spawns) need more than Bun's 5s default.
 setDefaultTimeout(60_000);
 
+/** Poll until `pred` holds. A fixed sleep is how this suite flakes when the machine is busy. */
+async function untilTrue(pred: () => boolean | Promise<boolean>, label: string, ms = 15_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!(await pred())) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${label}`);
+    await Bun.sleep(25);
+  }
+}
+
 const dataDir = mkdtempSync(join(tmpdir(), "mc-relay-"));
 let server: ReturnType<typeof startRelay> | undefined;
 let relay: string;
@@ -139,11 +148,11 @@ describe("presence over a membership channel", () => {
     const seenPresence: string[] = [];
     const ac = new AbortController();
     const done = winCh.stream(0, (m) => void got.push(m), { signal: ac.signal, onPresence: (p) => void seenPresence.push(`${p.from}:${p.sigOk}`) });
-    while (got.length < 1) await Bun.sleep(10);
+    await untilTrue(() => got.length >= 1, "replayed message");
     const ac2 = new AbortController();
     const macStream = macCh.stream(await macCh.head(), () => {}, { signal: ac2.signal, onOpen: ({ presence }) => void presence({ client: "test" }) });
     await macCh.send("live");
-    while (got.length < 2 || !seenPresence.length) await Bun.sleep(10);
+    await untilTrue(() => got.length >= 2 && seenPresence.length > 0, "live message and presence");
     ac.abort();
     ac2.abort();
     await Promise.all([done, macStream]);
@@ -176,7 +185,10 @@ describe("agents coordinating through the CLI", () => {
     // checked on its own, so it has no code to approve; the owner denies it by key.
     const evil = mc(home("evil"), "join", code, "proj", "--as", "win", "--timeout", "20s");
     let listed = "";
-    for (let i = 0; i < 40 && !/RECLAIMS win's seat/.test(listed); i++) (await Bun.sleep(250), (listed = await ok(lead, "requests")));
+    await untilTrue(async () => {
+      listed = await ok(lead, "requests");
+      return /RECLAIMS win's seat/.test(listed);
+    }, "reclaim listed");
     expect(listed).toMatch(/unchecked RECLAIMS win's seat · old key \S+, last seen .* · new key (\S+)/);
     const evilKey = /new key (\S+)/.exec(listed)![1]!;
     // Under another name it would be a plain join, but without --yes (and no terminal), approval refuses.
@@ -195,8 +207,7 @@ describe("agents coordinating through the CLI", () => {
 
   test("tail wakes on messages for you, skips your own, and announces presence", async () => {
     const tail = lines(mc(win, "tail"));
-    await Bun.sleep(800);
-    expect(await ok(mac, "who")).toContain("win — windows · tail");
+    await untilTrue(async () => (await ok(mac, "who")).includes("win — windows · tail"), "tail in who");
     await ok(win, "send", "my own message");
     await ok(mac, "send", "--to", "win", "--kind", "status", "capture is up");
     await tail.until((l) => l.some((x) => x.includes("capture is up")));
@@ -362,10 +373,19 @@ describe("images and cross-channel tasks through the CLI", () => {
     });
     const watching = mc(a, "watch", "--webhook", `http://127.0.0.1:${server.port}/hook`);
     const linesP = lines(watching);
-    await Bun.sleep(1500);
+    await untilTrue(async () => (await ok(b, "who")).includes("· watch"), "watch is listening");
     await ok(b, "send", "ping the hook");
-    const end = Date.now() + 15_000;
-    while (!hooks.length && Date.now() < end) await Bun.sleep(50);
+    // The first POST may be something else. Wait until this message's body is there, then stop.
+    await untilTrue(
+      () => hooks.some((h) => {
+        try {
+          return (JSON.parse(h) as { text?: string }).text === "ping the hook";
+        } catch {
+          return false;
+        }
+      }),
+      "webhook body",
+    );
     watching.kill();
     await linesP.stop().catch(() => {});
     server.stop(true);
@@ -518,8 +538,7 @@ describe("Claude Code hooks", () => {
 
     // Listening: session start says so, and a caught-up agent may stop.
     const tail = lines(mc(a, "tail"));
-    await Bun.sleep(800);
-    expect(await hook(a, a, "session-start", { cwd: a })).toContain("A listener is already running");
+    await untilTrue(async () => (await hook(a, a, "session-start", { cwd: a })).includes("A listener is already running"), "listener is running");
     expect(await hook(a, a, "stop", { cwd: a, session_id: "s2" })).toBe("");
     await ok(o, "send", "--to", "worker", "while listening");
     await tail.until((l) => l.some((x) => x.includes("while listening")));
@@ -593,7 +612,22 @@ describe("MCP server", () => {
     const h = home("mcp-exit");
     await ok(h, "create", "e", "--as", "solo");
     const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, KIWI_HOME: h, KIWI_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    await Bun.sleep(500);
+    const reader = p.stdout.getReader();
+    let buf = "";
+    p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } } }) + "\n");
+    p.stdin.flush();
+    await untilTrue(async () => {
+      const nl = buf.indexOf("\n");
+      if (nl >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        return (JSON.parse(line) as { id?: number }).id === 1;
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error("mcp exited before initialize");
+      buf += new TextDecoder().decode(value);
+      return false;
+    }, "mcp initialize");
     p.stdin.end();
     const code = await Promise.race([p.exited, Bun.sleep(5000).then(() => "still running")]);
     if (code === "still running") p.kill();
@@ -694,9 +728,7 @@ describe("MCP server", () => {
       expect(arrived).toContain("Next: handle these. If one needs an answer, call reply. Then call wait_for_messages.");
 
       const waiting = call("wait_for_messages", { timeout_seconds: 20 });
-      let seen = false;
-      for (let i = 0; i < 8 && !seen; i++) seen = (await ok(other, "who")).includes("listener");
-      expect(seen).toBe(true);
+      await untilTrue(async () => (await ok(other, "who")).includes("listener"), "mcp listener in who");
       await ok(other, "send", "--to", "listener", "ping the listener");
 
       const heard = await waiting;
@@ -778,27 +810,15 @@ describe("MCP server", () => {
       const waitId = ++id;
       p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: waitId, method: "tools/call", params: { name: "wait_for_messages", arguments: { timeout_seconds: 30 } } }) + "\n");
       p.stdin.flush();
-      let seen = false;
-      for (let i = 0; i < 8 && !seen; i++) seen = (await ok(other, "who")).includes("listener");
-      expect(seen).toBe(true);
+      await untilTrue(async () => (await ok(other, "who")).includes("listener"), "mcp listener in who");
       await ok(other, "send", "--to", "listener", "still here");
 
-      let advanced = false;
-      for (let i = 0; i < 80 && !advanced; i++) {
-        advanced = storedCursor(h) > parked;
-        if (!advanced) await Bun.sleep(10);
-      }
-      expect(advanced).toBe(true);
+      await untilTrue(() => storedCursor(h) > parked, "cursor advanced");
       // Cancel in the linger window, after the cursor moved and before the result is sent.
       p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: waitId, reason: "client timeout" } }) + "\n");
       p.stdin.flush();
 
-      let rewound = false;
-      for (let i = 0; i < 80 && !rewound; i++) {
-        rewound = storedCursor(h) <= parked;
-        if (!rewound) await Bun.sleep(10);
-      }
-      expect(rewound).toBe(true);
+      await untilTrue(() => storedCursor(h) <= parked, "cursor rewound");
 
       const again = await call("wait_for_messages", { timeout_seconds: 20 });
       expect(again).toContain("still here");

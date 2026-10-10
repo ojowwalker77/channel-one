@@ -89,7 +89,9 @@ test("members are told when it changes", async () => {
   const listening = memberCh.stream(await memberCh.head(), () => {}, { signal: ac.signal, onReady: () => ready(), onInfo: () => void told++ });
   await opened;
   await ownerCh.setIcon({ kind: "emoji", emoji: "🌱" });
-  for (let i = 0; i < 30 && !told; i++) await Bun.sleep(100);
+  const end = Date.now() + 10_000;
+  while (!told && Date.now() < end) await Bun.sleep(50);
+  if (!told) throw new Error("icon change was not announced");
   ac.abort();
   await listening;
   expect(told).toBe(1);
