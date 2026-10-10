@@ -58,7 +58,7 @@ Talk
   kiwi show N [dir]                              message #N in full: its replies, what it answers, its images saved
   kiwi save N [dir]                              download message #N's images into dir
   kiwi tail [--chat|--for-me|--all|--thread N] [--json]   stream messages for you, one per line (for a Monitor)
-  kiwi wait [same] [--timeout 10m]               block until the next message for you, print, exit
+  kiwi wait [same] [--timeout 10m]               block until a message for you; on timeout print "no messages yet" and exit 2
   kiwi watch --webhook URL [same]                POST every message to URL as JSON (wakes threads, CI, phones; all chat by default)
   kiwi read [same]                               print unread messages without blocking
      for you = to you or your role, --to all, people's broadcasts, broadcast questions, and threads you're in;
@@ -843,7 +843,10 @@ const commands: Record<string, () => Promise<void>> = {
       },
     );
     clearTimeout(timeout);
-    if (!got) die("timed out", 2);
+    if (!got) {
+      out(`no messages yet. Next: run this command again:\n  ${mcFor(s.alias, s.me)} wait --timeout 10m`);
+      process.exit(2);
+    }
   },
 
   async watch() {
@@ -1088,14 +1091,24 @@ export function agentPrompt(alias: string, agent: string, as: { role?: string; a
   const role = as.role
     ? `\n## Your role\nYou joined as ${as.role}.${as.about ? ` Rules you agreed with your human: ${as.about}${/[.!?]$/.test(as.about) ? "" : "."}` : ""} Take work that fits this role, and say so when you're asked for something outside it. The others see your role in status and route work to you by it. To change it, ask the owner with \`${mc} hello --role ROLE\`; it changes only when they allow it.\n`
     : "";
-  return `You are agent "${agent}" in channel "${alias}" on Kiwi Channels. Other agents (often on other machines) and the user ("human") are on it too. Use it to coordinate directly and fast. Never wait for the user to relay anything.
+  return `You are agent "${agent}" in channel "${alias}" on Kiwi Channels. Other agents and the user ("human") are on it too.
+
+## Do this. Do not stop unless your human says stop.
+1. Run this command:
+${mc} status
+2. Run this command:
+${mc} wait --timeout 10m
+3. If it prints messages, handle each one. A line looks like: #42 win → ${agent} [ask] re #40: text. If one needs an answer, run:
+${mc} reply NUMBER "your answer"
+Then go to step 2.
+4. If it prints "no messages yet", that is normal. Go to step 2.
+5. Go to step 2.
+
+Claude Code only: instead of step 2, run a Monitor on \`${mc} tail\`. If that Monitor ends, start it again. Do not also run wait.
+Any other harness: do steps 1 to 5. Do not run tail.
 ${role}
-## Stay reachable (always)
-Run a Monitor on \`${mc} tail\` with the longest timeout allowed. In Claude Code, hooks remind you if you stop listening and hand you anything you missed. Each line is a message for you:
-  #42 win → mac [ask] re #40: <text>
-"For you" means: to you or your role, to everyone (\`--to all\`), people's broadcasts, broadcast questions, and every thread you're in (you wrote in it or were named). Other agents' conversations stay out; a coordinator follows them with \`tail --chat\`, and \`tail --thread 42\` follows one thread. \`${mc} show 42\` prints a message in full (with its images saved), \`${mc} thread 42\` its whole thread.
-When the monitor ends, start it again right away. It resumes from your read cursor, so nothing is lost.
-No Monitor tool? Run \`${mc} wait\` in the background instead, handle what it prints, then run it again.
+## Reference
+"For you" means: to you or your role, to everyone (\`--to all\`), people's broadcasts, broadcast questions, and every thread you're in. \`${mc} show 42\` prints one message in full. \`${mc} thread 42\` prints one thread.
 
 ## Look before you act
 \`${mc} status\` shows members (and who is online), each member's role and load (free, busy or overloaded, with what they're doing), open tasks and their owners, claimed paths, shared facts, and questions waiting on you. Run it when you start, and before picking up new work. Before assigning a task, pick someone whose role fits and who isn't overloaded (\`${mc} status --json\` gives the same as data).

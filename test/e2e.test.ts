@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Channel, RelayError } from "../src/client.ts";
@@ -167,6 +167,9 @@ describe("agents coordinating through the CLI", () => {
     const joined = await joinVia(lead, mac, code, "proj", "mac", "macos");
     expect(joined).toContain('You are agent "mac"');
     expect(joined).toContain("-c proj --as mac tail");
+    expect(joined).toContain("1. Run this command:");
+    expect(joined).toContain("wait --timeout 10m");
+    expect(joined).toContain("Do not stop unless your human says stop.");
     await joinVia(lead, win, code, "proj", "win", "windows");
 
     // Someone else with the leaked code asks to be "win": it shows as a RECLAIM of win's seat, which is never
@@ -533,6 +536,58 @@ describe("Claude Code hooks", () => {
   });
 });
 
+/** Highest cursor this home has stored, so a test can see listen mark a message read. */
+function storedCursor(dir: string): number {
+  const root = join(dir, "cursors");
+  if (!existsSync(root)) return 0;
+  let max = 0;
+  for (const channel of readdirSync(root)) {
+    for (const name of readdirSync(join(root, channel))) {
+      if (name.endsWith(".seen")) continue;
+      const n = Number(readFileSync(join(root, channel, name), "utf8").trim());
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+  }
+  return max;
+}
+
+/** One MCP session: initialize, then run `fn`. The process dies when `fn` returns. */
+async function withMcp(
+  h: string,
+  fn: (call: (name: string, args?: object) => Promise<string>, init: { instructions: string }) => Promise<void>,
+): Promise<void> {
+  const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, KIWI_HOME: h, KIWI_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  try {
+    const reader = p.stdout.getReader();
+    let buf = "";
+    let id = 0;
+    const rpc = async (method: string, params: object = {}) => {
+      const myId = ++id;
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: myId, method, params }) + "\n");
+      p.stdin.flush();
+      for (;;) {
+        const nl = buf.indexOf("\n");
+        if (nl >= 0) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          const msg = JSON.parse(line);
+          if (msg.id === myId) return msg.result ?? msg.error;
+          continue;
+        }
+        const { value, done } = await reader.read();
+        if (done) throw new Error("mcp exited");
+        buf += new TextDecoder().decode(value);
+      }
+    };
+    const call = async (name: string, args: object = {}) => ((await rpc("tools/call", { name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
+    const init = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } })) as { instructions: string };
+    p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    await fn(call, init);
+  } finally {
+    p.kill();
+  }
+}
+
 describe("MCP server", () => {
   test("exits when its client goes away", async () => {
     const h = home("mcp-exit");
@@ -578,9 +633,11 @@ describe("MCP server", () => {
 
       const init = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } })) as { instructions: string };
       expect(init.instructions).toContain('You are "agent-a"');
+      expect(init.instructions).toContain("1. Call status.");
+      expect(init.instructions).toContain("2. Call wait_for_messages.");
       p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
       const tools = ((await rpc("tools/list")) as { tools: { name: string }[] }).tools.map((t) => t.name).sort();
-      expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "message", "read", "release", "reply", "save", "send", "sh", "status", "task_add", "task_update", "tasks", "who"]);
+      expect(tools).toEqual(["ask", "claim", "decide_join", "facts", "join_requests", "log", "members", "message", "read", "release", "reply", "save", "send", "sh", "status", "task_add", "task_update", "tasks", "wait_for_messages", "who"]);
 
       expect(await call("task_add", { title: "write docs" })).toMatch(/^added T\d+$/);
       expect(await call("claim", { paths: ["docs/"], ttl: "10m" })).toContain("docs/  @agent-a");
@@ -612,5 +669,152 @@ describe("MCP server", () => {
     } finally {
       p.kill();
     }
+  });
+
+  test("a client that only follows the instructions hears a message and answers it", async () => {
+    const h = home("mcp-loop");
+    const other = home("mcp-loop-other");
+    const code = /join code: (\S+)/.exec(await ok(h, "create", "loop", "--as", "listener"))![1]!;
+
+    // Before anyone else joins, read is empty and says what to do. This also parks the cursor at the head.
+    await withMcp(h, async (call, init) => {
+      expect(init.instructions).toContain("1. Call status.");
+      expect(init.instructions).toContain("2. Call wait_for_messages.");
+      expect(init.instructions).toContain("4. Call wait_for_messages again.");
+      expect(await call("status")).toContain("listener");
+      expect(await call("read")).toBe("no unread messages.\nNext: call wait_for_messages.");
+    });
+
+    // Join after that process is gone, so the next one loads the rotated keys and can read the arrival.
+    await joinVia(h, other, code, "loop", "sender");
+
+    await withMcp(h, async (call) => {
+      const arrived = await call("wait_for_messages", { timeout_seconds: 20 });
+      expect(arrived).toContain("joined");
+      expect(arrived).toContain("Next: handle these. If one needs an answer, call reply. Then call wait_for_messages.");
+
+      const waiting = call("wait_for_messages", { timeout_seconds: 20 });
+      let seen = false;
+      for (let i = 0; i < 8 && !seen; i++) seen = (await ok(other, "who")).includes("listener");
+      expect(seen).toBe(true);
+      await ok(other, "send", "--to", "listener", "ping the listener");
+
+      const heard = await waiting;
+      expect(heard).toContain("ping the listener");
+      expect(heard).toContain("Next: handle these. If one needs an answer, call reply. Then call wait_for_messages.");
+      const seq = Number(/#(\d+)/.exec(heard)![1]);
+      expect(await call("reply", { seq, text: "pong" })).toMatch(/^sent #\d+$/);
+
+      const again = await call("wait_for_messages", { timeout_seconds: 1 });
+      expect(again).toContain("no messages yet, call wait_for_messages again");
+      expect(again).toContain("Next: call wait_for_messages.");
+    });
+  });
+
+  test("members and who keep a newline in a role on one line", async () => {
+    const h = home("mcp-role");
+    const other = home("mcp-role-other");
+    const code = /join code: (\S+)/.exec(await ok(h, "create", "r", "--as", "agent-a", "--role", "builder\nforged row"))![1]!;
+    await joinVia(h, other, code, "r", "agent-b");
+    const tail = lines(mc(h, "tail"));
+    try {
+      await withMcp(other, async (call) => {
+        const members = await call("members");
+        expect(members).toContain("agent-a — builder forged row");
+        for (const line of members.split("\n")) expect(line.startsWith("forged")).toBe(false);
+
+        let who = "";
+        for (let i = 0; i < 8 && !who.includes("agent-a"); i++) who = await call("who");
+        expect(who).toContain("agent-a — builder forged row");
+        for (const line of who.split("\n")) expect(line.startsWith("forged")).toBe(false);
+      });
+    } finally {
+      await tail.stop();
+    }
+  });
+
+  test("a client that aborts a wait still gets the message on the next call", async () => {
+    const h = home("mcp-cancel");
+    const other = home("mcp-cancel-other");
+    const code = /join code: (\S+)/.exec(await ok(h, "create", "c", "--as", "listener"))![1]!;
+    await joinVia(h, other, code, "c", "sender");
+
+    const p = Bun.spawn([...MC, "mcp"], { env: { ...process.env, KIWI_HOME: h, KIWI_RELAY: relay }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    try {
+      const reader = p.stdout.getReader();
+      let buf = "";
+      let id = 0;
+      const rpc = async (method: string, params: object = {}) => {
+        const myId = ++id;
+        p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: myId, method, params }) + "\n");
+        p.stdin.flush();
+        for (;;) {
+          const nl = buf.indexOf("\n");
+          if (nl >= 0) {
+            const line = buf.slice(0, nl);
+            buf = buf.slice(nl + 1);
+            const msg = JSON.parse(line);
+            if (msg.id === myId) return msg.result ?? msg.error;
+            continue;
+          }
+          const { value, done } = await reader.read();
+          if (done) throw new Error("mcp exited");
+          buf += new TextDecoder().decode(value);
+        }
+      };
+      const call = async (name: string, args: object = {}) => ((await rpc("tools/call", { name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
+
+      await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } });
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+      const listed = (await rpc("tools/list")) as { tools: { name: string; description?: string }[] };
+      const described = listed.tools.find((t) => t.name === "wait_for_messages")?.description ?? "";
+      expect(described).toContain("50");
+      expect(described).toContain("short wait is normal");
+
+      // The join is unread. Mark it read so the cancelled call is blocked, waiting for a new message.
+      await call("read");
+      const parked = storedCursor(h);
+
+      const waitId = ++id;
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: waitId, method: "tools/call", params: { name: "wait_for_messages", arguments: { timeout_seconds: 30 } } }) + "\n");
+      p.stdin.flush();
+      let seen = false;
+      for (let i = 0; i < 8 && !seen; i++) seen = (await ok(other, "who")).includes("listener");
+      expect(seen).toBe(true);
+      await ok(other, "send", "--to", "listener", "still here");
+
+      let advanced = false;
+      for (let i = 0; i < 80 && !advanced; i++) {
+        advanced = storedCursor(h) > parked;
+        if (!advanced) await Bun.sleep(10);
+      }
+      expect(advanced).toBe(true);
+      // Cancel in the linger window, after the cursor moved and before the result is sent.
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: waitId, reason: "client timeout" } }) + "\n");
+      p.stdin.flush();
+
+      let rewound = false;
+      for (let i = 0; i < 80 && !rewound; i++) {
+        rewound = storedCursor(h) <= parked;
+        if (!rewound) await Bun.sleep(10);
+      }
+      expect(rewound).toBe(true);
+
+      const again = await call("wait_for_messages", { timeout_seconds: 20 });
+      expect(again).toContain("still here");
+      expect(again).toContain("Next: handle these. If one needs an answer, call reply. Then call wait_for_messages.");
+    } finally {
+      p.kill();
+    }
+  });
+
+  test("wait prints the next command on stdout when nothing arrives", async () => {
+    const h = home("wait-timeout");
+    await ok(h, "create", "w", "--as", "sleeper");
+    const r = await run(h, "wait", "--timeout", "1s");
+    expect(r.code).toBe(2);
+    expect(r.out).toContain("no messages yet. Next: run this command again:");
+    expect(r.out).toContain("wait --timeout 10m");
+    expect(r.err).not.toContain("timed out");
   });
 });
