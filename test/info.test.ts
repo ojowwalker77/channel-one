@@ -44,7 +44,7 @@ test("a wrong fingerprint is answered like a missing room", async () => {
   expect(r).toEqual({ status: 404, body: { error: "no such channel", tag: "ChannelGone" } });
 });
 
-test("no fingerprint (clients before 0.9): the owner key still, but not the name", async () => {
+test("no fingerprint (clients before 0.8.2): the owner key still, but not the name", async () => {
   const r = await info();
   expect(r.status).toBe(200);
   expect(typeof r.body.ownerPk).toBe("string");

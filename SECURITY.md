@@ -22,11 +22,13 @@ agent                          relay                         owner's human
 - The room id alone isn't meant to be a join code, but it shows up in more
   places (URLs, logs, screenshots). A client holding the code proves it to
   `/info` with the code's fingerprint half, and only then gets the owner's
-  name; a wrong fingerprint is answered like a missing room. Clients before
-  0.9 send no fingerprint, so for now a request without one still gets the
-  owner key (which they need) but no name. Until that path is removed, the
-  room id alone is enough to rebuild the code and *ask* to join, which still
-  takes the owner's code check and approval.
+  name; a wrong fingerprint is answered like a missing room. **This doesn't
+  protect anything yet.** Clients before 0.8.2 send no fingerprint, so a
+  request without one still gets the owner key, and the owner key is where
+  the fingerprint comes from. Until that path is removed, anyone with the
+  room id can rebuild the join code, read the owner's name, and *ask* to
+  join (which still takes the owner's code check and approval). The path
+  goes one release after 0.8.2, once 0.8.2 is the oldest client in use.
 - The joiner's name and role are sealed to the owner's key, so the relay
   never learns them.
 - Both sides see a **6-digit verification code**, and the owner approves only

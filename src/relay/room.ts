@@ -821,8 +821,9 @@ export async function onHttp(store: RoomStore, req: Request, path: string, ctx: 
     const fp = url.searchParams.get("fp");
     const holdsCode = fp !== null && fp === (await ownerFingerprint(m.ownerPk));
     if (fp !== null && !holdsCode) throw new HttpError(404, "no such channel", "ChannelGone");
-    // Who invited you, as sign-in knows them: only for someone holding the code. (Clients before 0.9
-    // send no fp; they still get the owner key, which they need, but not the name. See SECURITY.md.)
+    // Who invited you, as sign-in knows them: only for someone holding the code. Clients before 0.8.2
+    // send no fp and still get the owner key, which they need. That key gives the fp, so until this
+    // path goes (one release after 0.8.2), a room id is still enough for the code and the name. See SECURITY.md.
     const owner = store.ownerUser();
     const ownerName = holdsCode && owner && human?.profile ? ((await human.profile(owner).catch(() => null))?.name ?? null) : null;
     return ok({ ownerPk: m.ownerPk, ownerXpk: m.ownerXpk, ownerSig: m.ownerSig, titlesSig: store.getTitlesSig(), epoch: m.epoch, rotate: m.rotate, title: store.title(), ownerName, iconAt: store.iconAt() });
